@@ -186,6 +186,10 @@ key_ms: u64 = 0,
 /// output rests `cursor_rest_ms`, so it doesn't jump around after the
 /// redraws (0: resting).
 busy_ms: u64 = 0,
+/// The view scrolled back to follow the shell's cursor up an input line
+/// taller than the window (`followCursor`); the user scrolling (its
+/// `scroll_moves`) ends it.
+follow: ?u32 = null,
 /// The selection was made with Shift + arrows in a shell's input line: its
 /// head follows the shell's cursor (see `editMove`).
 key_sel: bool = false,
@@ -366,6 +370,7 @@ pub fn pump(w: *JobWindow, gfx: *Gfx) bool {
     var budget: usize = 512 * 1024;
     const deadline = c.SDL_GetTicksNS() + pump_ns;
     if (w.out.echo and c.SDL_GetTicks() -| w.echo_ms > echo_ms_max) w.out.echo = false;
+    w.proc.flush(); // the rest of a big paste, as the job reads it
     // A program redrawing its screen (docker's progress, …) writes a frame
     // in many small writes: while they keep coming (`settle_ms` apart at
     // most), read on, so a half-drawn frame isn't shown (the text would
@@ -396,6 +401,7 @@ pub fn pump(w: *JobWindow, gfx: *Gfx) bool {
         const now = c.SDL_GetTicks();
         if (now -| w.key_ms > echo_wait_ms) w.busy_ms = now;
     }
+    if (changed) w.followCursor();
     // A command started: a listing one is remembered (`refreshListing`).
     if (w.out.cmd_seq != w.cmd_seen) {
         w.cmd_seen = w.out.cmd_seq;
@@ -624,9 +630,38 @@ fn input(w: *JobWindow, bytes: []const u8) void {
         w.out.echo = true;
         w.echo_ms = c.SDL_GetTicks();
     }
-    w.out.scroll = 0;
+    if (!w.following()) w.out.scroll = 0;
     w.key_ms = c.SDL_GetTicks();
     w.proc.write(bytes);
+}
+
+fn following(w: *const JobWindow) bool {
+    const f = w.follow orelse return false;
+    return f == w.out.scroll_moves and w.out.at_prompt;
+}
+
+/// A shell at its prompt editing an input line taller than the window
+/// (zsh, gtty's hooks: a big paste) moves its cursor up into the rows
+/// scrolled off: the view follows it there and back down.
+fn followCursor(w: *JobWindow) void {
+    const s = &w.out;
+    if (!s.at_prompt or s.alt != null or s.rows == 0) {
+        w.follow = null;
+        return;
+    }
+    if (w.follow != null and !w.following()) w.follow = null;
+    const live_top = s.viewEnd() -| s.rows;
+    const top = live_top -| s.scroll;
+    var want = s.scroll;
+    if (s.cur_row < top) {
+        want = live_top - s.cur_row;
+    } else if (w.follow != null and s.cur_row >= top + s.rows) {
+        want = (live_top + s.rows - 1) -| s.cur_row;
+    } else return;
+    if (want == s.scroll) return;
+    s.scroll = want;
+    s.generation +%= 1;
+    w.follow = if (want == 0) null else s.scroll_moves;
 }
 
 /// Paste text into the job, as a terminal does: it replaces a selection
@@ -2323,7 +2358,7 @@ fn drawTitle(w: *JobWindow, gfx: *Gfx, theme: *const Theme, chrome: *Gfx.Face) v
 }
 
 fn showCursor(w: *const JobWindow) bool {
-    return w.focused and w.proc.running() and w.out.scroll == 0 and
+    return w.focused and w.proc.running() and (w.out.scroll == 0 or w.following()) and
         !w.out.cursor_hidden and w.busy_ms == 0;
 }
 

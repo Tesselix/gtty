@@ -22,6 +22,10 @@ out_open: bool = false,
 err_open: bool = false,
 exited: bool = false,
 exit_code: i32 = 0,
+/// Input the PTY had no room for yet (its queue is ~1 KB on macOS: a big
+/// paste fills it before the child reads); sent by `flush` as it reads.
+pending: std.ArrayList(u8) = .empty,
+gpa: ?std.mem.Allocator = null,
 
 pub const Options = struct {
     argv: []const []const u8,
@@ -46,7 +50,7 @@ pub fn spawn(gpa: std.mem.Allocator, opts: Options) !Process {
     for (opts.env, 0..) |e, i| env[i] = e.ptr;
     env[opts.env.len] = null;
 
-    var p: Process = .{};
+    var p: Process = .{ .gpa = gpa };
     const rc = c.gtty_spawn(
         @ptrCast(argv.ptr),
         @intFromBool(opts.split_stderr),
@@ -90,15 +94,30 @@ pub fn waitOutput(p: *Process, ms: c_int) bool {
     return c.gtty_wait_readable(p.out_fd, ms) == 1;
 }
 
-/// Send bytes to the child's stdin.
+/// Send bytes to the child's stdin. What doesn't fit in the PTY now waits
+/// in `pending` (in order) for `flush`.
 pub fn write(p: *Process, bytes: []const u8) void {
     if (!p.out_open) return;
     var rest = bytes;
-    var tries: usize = 0;
-    while (rest.len > 0 and tries < 1000) : (tries += 1) {
+    if (p.pending.items.len == 0) {
         const n = c.gtty_write(p.out_fd, rest.ptr, rest.len);
         if (n < 0) return;
         rest = rest[@intCast(n)..];
+        if (rest.len == 0) return;
+    }
+    const gpa = p.gpa orelse return;
+    p.pending.appendSlice(gpa, rest) catch return;
+    p.flush();
+}
+
+/// Send what is waiting in `pending`, as much as the PTY takes now.
+pub fn flush(p: *Process) void {
+    while (p.pending.items.len > 0) {
+        if (!p.out_open) return p.pending.clearRetainingCapacity();
+        const n = c.gtty_write(p.out_fd, p.pending.items.ptr, p.pending.items.len);
+        if (n < 0) return p.pending.clearRetainingCapacity();
+        if (n == 0) return;
+        p.pending.replaceRangeAssumeCapacity(0, @intCast(n), &.{});
     }
 }
 
@@ -146,6 +165,8 @@ pub fn terminate(p: *Process, reaper: *Reaper) void {
     p.out_open = false;
     p.err_open = false;
     p.exited = true;
+    if (p.gpa) |gpa| p.pending.deinit(gpa);
+    p.pending = .empty;
 }
 
 /// Collects processes we hung up on, so they don't stay as zombies.

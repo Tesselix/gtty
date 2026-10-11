@@ -374,6 +374,18 @@ the shell. Users expect it to behave like a shell in a terminal.
   key are dropped (`clipboardKey`). The shell hooks turn off the paste
   highlight (zsh `zle_highlight=(paste:none)`, bash
   `enable-active-region off`; the user's config wins).
+  Input the PTY can't take yet (its queue is ~1 KB on macOS) waits in
+  `Process.pending`, sent by `flush` each `pump` (fixed 2026-10-11: a big
+  paste lost all but ~10 lines). **Tall input lines** (2026-10-11): zle
+  shows only the end of a line taller than the screen (`>....`); the zsh
+  hooks set `LINES=100000` at `zle-line-init` (`__gtty_tall`; only there:
+  a change while the line has text makes zle print it twice) and put the
+  real value back in preexec / precmd; `Screen.prompt_row` (the D mark)
+  lets cursor up / reverse index go above the screen's top while at the
+  prompt (`upLimit`), and `JobWindow.followCursor` scrolls the view to
+  the cursor (`follow`; the user scrolling ends it). A resize while
+  editing: trimmed again until the next line. Commands > 1 KB are read
+  back cut (`readCommand`, crashed before).
 - **Right-click menu** (`src/ui/Menu.zig`, `App.menu`, `openMenu` /
   `menuClick`): right click on a job window's text or footer in the windows
   area, or on the prompt → **Copy** (the window's selection; dimmed with

@@ -67,8 +67,17 @@ const zshenv =
     \\  # A paste shows as typed text, not highlighted (the user's .zshrc
     \\  # can still set zle_highlight).
     \\  zle_highlight=(paste:none)
-    \\  __gtty_preexec() { builtin print -n '\e]133;C\a' }
-    \\  __gtty_precmd() { builtin printf '\e]133;D;%s\a\e]7;file://%s%s\a' $? "$HOST" "${PWD//\%/%25}" }
+    \\  __gtty_preexec() { __gtty_lines_back; builtin print -n '\e]133;C\a' }
+    \\  __gtty_precmd() { builtin printf '\e]133;D;%s\a\e]7;file://%s%s\a' $? "$HOST" "${PWD//\%/%25}"; __gtty_lines_back }
+    \\  # An input line taller than the screen (a big paste): zle would show
+    \\  # only its end under ">....". While a line is edited LINES is huge,
+    \\  # so zle draws all of it and the window scrolls (gtty lets zle's
+    \\  # cursor go back up to the prompt); the real LINES is back before a
+    \\  # command runs. Set only at line-init: a change while the line has
+    \\  # text makes zle print it again where the cursor is. A resize while
+    \\  # editing brings the real LINES back until the next line.
+    \\  __gtty_tall() { (( LINES < 100000 )) && __gtty_lines=$LINES && LINES=100000; return 0 }
+    \\  __gtty_lines_back() { (( LINES == 100000 && ${__gtty_lines:-0} > 0 )) && LINES=$__gtty_lines; return 0 }
     \\  # First in both lists (the D mark needs the command's $?), added
     \\  # after the user's startup files so a config that resets the lists
     \\  # can't drop them.
@@ -81,6 +90,7 @@ const zshenv =
     \\    (( ${+precmd_functions} )) || precmd_functions=()
     \\    preexec_functions=(__gtty_preexec ${preexec_functions:#__gtty_preexec})
     \\    precmd_functions=(__gtty_precmd ${${precmd_functions:#__gtty_precmd}:#__gtty_prompt_end} __gtty_prompt_end)
+    \\    autoload -Uz add-zle-hook-widget 2>/dev/null && add-zle-hook-widget line-init __gtty_tall 2>/dev/null
     \\  }
     \\  # gtty's AI: run its script N in a subshell (`gtty-ai N 'request'`;
     \\  # the request words are only there to be read).
