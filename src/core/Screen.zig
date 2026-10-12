@@ -191,6 +191,12 @@ done_seq: u32 = 0,
 /// command line read back from it at the C mark (`last_cmd`, the cells
 /// typed there; `cmd_seq` counts them).
 cmd_start: ?Pos = null,
+/// Where the prompt starts (the cursor at the D mark). While the shell
+/// waits there, cursor up may go back to it even above the screen's top:
+/// an input line taller than the screen (a big paste) is drawn whole by
+/// zsh (gtty's hooks give it a huge LINES then) and scrolls; its redraws
+/// move back up into the rows scrolled off.
+prompt_row: ?usize = null,
 last_cmd_buf: [1024]u8 = undefined,
 last_cmd_len: usize = 0,
 cmd_seq: u32 = 0,
@@ -481,6 +487,7 @@ fn oscEnd(s: *Screen) void {
         },
         'C' => {
             s.readCommand();
+            s.prompt_row = null;
             if (s.ai == .armed) s.ai = .running;
             s.last_output = .{ .start = s.fed + 1 };
             s.out_rows = .{ .start = s.cur_row + @intFromBool(s.cur_col > 0), .end = null };
@@ -491,6 +498,7 @@ fn oscEnd(s: *Screen) void {
         'D' => {
             if (s.ai == .running) s.ai = .off;
             s.at_prompt = true;
+            s.prompt_row = s.cur_row;
             s.zone = .none;
             if (s.last_output) |*o| if (o.end == null) {
                 o.end = s.osc_start;
@@ -638,7 +646,7 @@ fn dispatchCsi(s: *Screen, final: u8) void {
         'm' => s.sgr(),
         'A' => {
             const n = s.param(0, 1);
-            const up = @min(n, s.cur_row -| top);
+            const up = @min(n, s.cur_row -| s.upLimit(top));
             s.cur_row -= up;
         },
         'B', 'e' => {
@@ -771,13 +779,17 @@ fn readCommand(s: *Screen) void {
     s.cmd_start = null;
     var n: usize = 0;
     var row = st.row;
-    while (row <= s.cur_row and row < s.lines.items.len) : (row += 1) {
+    // A command longer than the buffer (a big paste) is kept cut, whole
+    // characters only.
+    rows: while (row <= s.cur_row and row < s.lines.items.len) : (row += 1) {
         const l = s.lines.items[row].items;
         var col: usize = if (row == st.row) st.col else 0;
         while (col < l.len) : (col += 1) {
             const cell = l[col];
             if (cell.attrs.zone != .input or cell.cp == 0) continue;
-            n += std.unicode.utf8Encode(cell.cp, s.last_cmd_buf[n..][0..@min(4, s.last_cmd_buf.len - n)]) catch break;
+            const len = std.unicode.utf8CodepointSequenceLength(cell.cp) catch continue;
+            if (n + len > s.last_cmd_buf.len) break :rows;
+            n += std.unicode.utf8Encode(cell.cp, s.last_cmd_buf[n..][0..len]) catch continue;
         }
         if (!s.isWrapped(row) and row < s.cur_row and n < s.last_cmd_buf.len) {
             s.last_cmd_buf[n] = '\n';
@@ -1091,8 +1103,20 @@ fn blankLine(s: *Screen) Line {
     return l;
 }
 
+/// How far up the cursor may go: the screen's top, or the prompt's row
+/// above it (`prompt_row`).
+fn upLimit(s: *const Screen, top: usize) usize {
+    if (!s.at_prompt or s.alt != null) return top;
+    const p = s.prompt_row orelse return top;
+    return @min(top, p);
+}
+
 fn reverseIndex(s: *Screen) void {
     const top = s.screenTop();
+    if (s.cur_row <= top and s.cur_row > s.upLimit(top)) {
+        s.cur_row -= 1;
+        return;
+    }
     if (s.cur_row >= top and s.cur_row - top == s.region_top) {
         s.scrollRows(s.region_top, s.regionBot(), 1, true);
     } else if (s.cur_row > top) s.cur_row -= 1;
@@ -1200,6 +1224,8 @@ fn trim(s: *Screen) void {
         if (r.end) |*e| e.* -|= chunk;
     }
     if (s.typed_row) |*t| t.* -|= chunk;
+    if (s.cmd_start) |*st| st.row -|= chunk;
+    if (s.prompt_row) |*p| p.* -|= chunk;
     s.lf_row -|= chunk;
     if (s.alt) |*a| {
         a.base -|= chunk;
@@ -2104,4 +2130,35 @@ test "the command line, read back at C" {
     try std.testing.expectEqualStrings("ls -l", s.lastCommand());
     try std.testing.expectEqual(@as(u32, 1), s.cmd_seq);
     try std.testing.expect(!s.inputPending());
+}
+
+test "a command line longer than the buffer is cut, no crash" {
+    var s = Screen.init(std.testing.allocator);
+    defer s.deinit();
+    s.resize(40, 5);
+    s.feed("\x1b]133;D;0\x07$ \x1b]133;B\x07");
+    for (0..60) |_| s.feed("echo \xc3\xa9t\xc3\xa9 ./go/pkg/mod/cache\r\n"); // > 1 KB, 2-byte chars
+    s.feed("\x1b]133;C\x07");
+    const cmd = s.lastCommand();
+    try std.testing.expect(cmd.len > 900 and cmd.len <= s.last_cmd_buf.len);
+    try std.testing.expect(std.unicode.utf8ValidateSlice(cmd));
+    try std.testing.expectEqual(@as(u32, 1), s.cmd_seq);
+}
+
+test "at the prompt the cursor goes up past the screen's top to the prompt" {
+    var s = Screen.init(std.testing.allocator);
+    defer s.deinit();
+    s.resize(40, 4);
+    s.feed("out\r\n\x1b]133;D;0\x07$ \x1b]133;B\x07");
+    const prompt = s.cur_row;
+    for (0..10) |_| s.feed("line\r\n"); // an input line taller than the screen
+    s.feed("\x1b[20A");
+    try std.testing.expectEqual(prompt, s.cur_row); // not further: the earlier output
+    s.feed("\x1b[10B"); // the screen's bottom row
+    try std.testing.expectEqual(s.screenTop() + 3, s.cur_row);
+    s.feed("\x1b[3A\x1bM\x1bM"); // to the top, then reverse index above it
+    try std.testing.expectEqual(s.screenTop() - 2, s.cur_row);
+    // Running a command: the screen's top is the limit again.
+    s.feed("\x1b]133;C\x07\x1b[10B\x1b[20A");
+    try std.testing.expectEqual(s.screenTop(), s.cur_row);
 }
