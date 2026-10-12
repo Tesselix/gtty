@@ -60,7 +60,20 @@ cp packaging/macos/dmg-background.tiff "$STAGE/dmg/.background/background.tiff"
 cp src/assets/AppIcon.icns "$STAGE/dmg/.VolumeIcon.icns"
 VOL="gtty $VERSION"
 RW="$STAGE/rw.dmg"
-hdiutil create -quiet -volname "$VOL" -srcfolder "$STAGE/dmg" -fs HFS+ -format UDRW -size 40m "$RW"
+# hdiutil now and then fails with "Resource busy" (CI runners): a few
+# tries. Its errors go to stderr (no -quiet: that closes stderr too, and
+# a failure left the log empty).
+retry() { # retry <tries> <command…>
+    n=$1; shift
+    i=1
+    until "$@"; do
+        [ "$i" -ge "$n" ] && return 1
+        echo "  retrying: $*" >&2
+        i=$((i + 1))
+        sleep 3
+    done
+}
+hdiutil create -volname "$VOL" -srcfolder "$STAGE/dmg" -fs HFS+ -format UDRW -size 40m "$RW" >/dev/null
 # Mounted where Finder sees it (/Volumes/<name>), as it will be for users.
 MNT=$(hdiutil attach -noautoopen "$RW" | sed -n 's|^/dev/[^[:space:]]*[[:space:]]*Apple_HFS[[:space:]]*||p')
 [ -d "$MNT" ] || { echo "dmg did not mount" >&2; exit 1; }
@@ -92,10 +105,10 @@ then
 fi
 rm -rf "$MNT/.fseventsd" "$MNT/.Trashes"
 sync
-hdiutil detach -quiet "$MNT" || { sleep 2; hdiutil detach -quiet -force "$MNT"; }
+retry 5 hdiutil detach "$MNT" >/dev/null || hdiutil detach -force "$MNT" >/dev/null
 DMG="dist/gtty-$VERSION-macos.dmg"
-rm -f "$DMG"
-hdiutil convert -quiet "$RW" -format UDZO -imagekey zlib-level=9 -o "$DMG"
+convert_dmg() { rm -f "$DMG"; hdiutil convert "$RW" -format UDZO -imagekey zlib-level=9 -o "$DMG" >/dev/null; }
+retry 3 convert_dmg
 if [ -n "${GTTY_SIGN_ID:-}" ]; then
     codesign --force --timestamp --sign "$GTTY_SIGN_ID" "$DMG"
     if [ -n "${GTTY_NOTARY_KEY:-}" ]; then
