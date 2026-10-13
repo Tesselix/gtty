@@ -81,6 +81,8 @@ fn configure(b: *std.Build, mod: *std.Build.Module, target: std.Build.ResolvedTa
         mod.addCSourceFile(.{ .file = b.path("src/sys/gtty_trash.m"), .flags = &.{"-Wall"} });
         // Open With ▸ Other…: choose an app (NSOpenPanel).
         mod.addCSourceFile(.{ .file = b.path("src/sys/gtty_appchooser.m"), .flags = &.{"-Wall"} });
+        // Copied files on the system clipboard (NSPasteboard).
+        mod.addCSourceFile(.{ .file = b.path("src/sys/gtty_fileclip.m"), .flags = &.{"-Wall"} });
     } else {
         mod.addCSourceFile(.{ .file = b.path("src/sys/gtty_menu.c"), .flags = &.{ "-std=gnu11", "-Wall" } });
         // Dragging files out under Wayland (libwayland-client via dlopen).
@@ -89,6 +91,8 @@ fn configure(b: *std.Build, mod: *std.Build.Module, target: std.Build.ResolvedTa
         mod.addCSourceFile(.{ .file = b.path("src/sys/gtty_trash.c"), .flags = &.{ "-std=gnu11", "-Wall" } });
         // Open With ▸ Other…: the desktop portal's app chooser (libgio via dlopen).
         mod.addCSourceFile(.{ .file = b.path("src/sys/gtty_appchooser.c"), .flags = &.{ "-std=gnu11", "-Wall" } });
+        // Copied files on the system clipboard (SDL: text/uri-list).
+        mod.addCSourceFile(.{ .file = b.path("src/sys/gtty_fileclip.c"), .flags = &.{ "-std=gnu11", "-Wall" } });
     }
 
     if (target.result.os.tag == .macos) {

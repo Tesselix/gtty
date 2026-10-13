@@ -276,12 +276,11 @@ Settings… → General → "File names: mark on hover, double-click opens".
 **Right-click** an outlined file or folder name for what you can do with
 it: **Open with <app>** / **Open With…** (a folder: **cd <its name>**,
 **Open in Finder**, on Linux **Open in Files**), **Rename…**, **Copy**,
-**Copy Name**, **Cut**, **Paste**, **Move to Trash** (where the system has
+**Cut**, **Paste**, **Move to Trash** (where the system has
 a trash) and **Delete…**.
 
 **A single click** on an outlined name copies its name as text (the name
-flashes), ready to paste into a command line; **Copy Name** in the menu
-does the same.
+flashes), ready to paste into a command line.
 
 Opening a file takes one row. When the file has a default app, the row
 is **Open with <that app>**, with the app's icon: click it to open the
@@ -309,17 +308,23 @@ still go to the shell):
 (a box marks each; ⌘-click again to take one out, a plain click clears),
 then use a key or right-click one of them.
 
-Copied or cut files wait on gtty's own file clipboard (not the system's).
+**Copy** works as in Finder or Files: the files go on the system
+clipboard, and the app you paste into decides what it gets. Finder (or
+Files) copies the files there, a text field gets their full paths.
+Files you copy in Finder or Files paste into gtty the same way.
 **Paste pastes what you copied last:** after copying files, every Paste
-(⌘V, or **Paste** in any right-click menu) copies or moves them into the
-folder (the folder name under the mouse, else the folder the window's
-shell is in); after copying text (a name, a selection, or in another
-app), Paste types the text.
+(⌘V, or **Paste** in any right-click menu) opens a small menu:
+**Paste Name** and **Paste Path** type the name or the full path into
+the window, **Copy File into X** (after a cut: **Move File into X**)
+copies or moves the file into the folder (the folder name under the
+mouse, else the folder the window's shell is in). ↑ / ↓ choose,
+Enter picks (the file row is selected), Esc closes it. After copying
+text (a name, a selection, or in another app), Paste types the text.
 
 **Rename** opens a small field over the name with the name selected up
 to its extension: type the new name (arrows, words with ⌥, Shift to
-select, Backspace…), **Enter** renames, **Esc** leaves it. **Paste** and
-**Delete** ask first (Enter: yes, Esc: no); with no answer in 10 seconds
+select, Backspace…), **Enter** renames, **Esc** leaves it. **Delete**
+asks first (Enter: yes, Esc: no); with no answer in 10 seconds
 nothing happens. A pasted name that's already there gets a number, so
 nothing is overwritten; Delete removes for good (Move to Trash doesn't).
 After a paste, delete, rename, trash or drop, the shell runs your last
