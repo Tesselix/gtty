@@ -58,11 +58,12 @@ Your shell's own prompt shows the new branch after your next Enter.
 The **folder chip** shows the name of the folder the window's program is
 in (not in an ssh session).
 
-- **Hover** or **click** it: the full path. A click on the path (or the
-  **copy** button) copies it.
-- Move onto the **expand** button (^), or click it: the folders
+- **Hover** or **click** it: the full path. A click on the path copies it
+  (the path flashes).
+- Rest the mouse on that box for a moment, move onto its **expand**
+  button (^), or click the button: the folders
   above this one, `/` on top and the current folder at the bottom (marked
-  green), with the parent folder above it already chosen. Type to filter,
+  green; choosing it copies its path), with the parent folder above it already chosen. Type to filter,
   ↑/↓ to choose, **Enter** (or a click) `cd`s the shell there. This works
   while the shell waits for your input; while a command runs, the box says
   the shell is busy.

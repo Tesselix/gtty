@@ -142,14 +142,16 @@ the shell. Users expect it to behave like a shell in a terminal.
   hidden once the job finished; decided 2026-10-08). The exit-code
   badge of a failed window sits in the strip's right end.
   - **Folder chip peek** (`Peek.kind` folder, `Peek.openFolder`,
-    `App.openFolderPeek`): hover or a click = the peek (copy, full path;
-    the copy button flashes the path white, `Peek.flashText`); the mouse
-    onto its expand button, or a click on it or on the path, expands it
-    (`Peek.click`, `Peek.motion`; changed 2026-10-10: the path click
-    copied before, with no sign): the
+    `App.openFolderPeek`): hover or a click = the peek (expand, full path;
+    no copy button, 2026-10-14): a click on the path copies it (flashes
+    white, `Peek.flashText`); the mouse resting on the peek
+    (`Peek.expand_hover_ms` = `chip_hover_ms`, each move starts over,
+    `hover_ms`; held off after a copy / fold until it leaves, `hold`), or
+    onto its expand button, or a click on that, expands it (`Peek.click`,
+    `Peek.motion`, `Peek.tick`): the
     folders above (`/` on top) and
-    the current folder last (green dot, by the chip; picking it = "already
-    here"), the parent above it selected; filter + keys as the branch
+    the current folder last (green dot, by the chip; picking it copies
+    its path, the row flashes, `flash_row`; 2026-10-14), the parent above it selected; filter + keys as the branch
     list (2026-10-08). A pick returns `Action.cd` → `JobWindow.cdTo` when the
     shell is at its prompt (green "cd sent", closes after 1 s; that feeds
     the History ▸ list), else red "the shell is busy" + beep. Closes when

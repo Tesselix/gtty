@@ -440,6 +440,7 @@ pub fn create(gpa: std.mem.Allocator, opts: Options) !*App {
     // Drag and drop with other apps (macOS; Linux only under Wayland).
     c.gtty_drag_init(window);
     Peek.dismiss_ms = opts.cfg.peek_close_ms;
+    Peek.expand_hover_ms = opts.cfg.chip_hover_ms;
     JobWindow.hard_kill_ms = opts.cfg.kill_grace_ms;
     app.applyColors();
     JobWindow.marks_on = opts.cfg.marks;
@@ -2293,7 +2294,10 @@ fn applyChange(app: *App, ch: SettingsWindow.Change) void {
             .scrollback => app.scrollback = app.cfg.scrollback, // new windows
             .anim_ms => JobWindow.anim_len_ms = app.cfg.anim_ms,
             .tip_ms => app.tip_delay_ms = app.cfg.tip_ms,
-            .chip_hover_ms => app.chip_hover_ms = app.cfg.chip_hover_ms,
+            .chip_hover_ms => {
+                app.chip_hover_ms = app.cfg.chip_hover_ms;
+                Peek.expand_hover_ms = app.cfg.chip_hover_ms;
+            },
             .peek_close_ms => Peek.dismiss_ms = app.cfg.peek_close_ms,
             .kill_grace_ms => JobWindow.hard_kill_ms = app.cfg.kill_grace_ms,
             .mark_width => app.setMarks(app.cfg.marks, app.cfg.mark_width),
@@ -2596,7 +2600,8 @@ fn peekChip(w: *const JobWindow, kind: Peek.Kind) Gfx.Rect {
 }
 
 /// Open the peek of window `i`'s folder chip (hover or click; closing any
-/// other peek): the full path; its expand button grows it into the list.
+/// other peek): the full path (a click copies it); the mouse resting on
+/// it, or its expand button, grows it into the list.
 fn openFolderPeek(app: *App, i: usize) void {
     const w = app.jobs.items[i];
     if (w.cwd().len == 0) return;
@@ -2607,6 +2612,9 @@ fn openFolderPeek(app: *App, i: usize) void {
     app.peek = Peek.openFolder(app.gpa, w.uid, w.cwd(), w.folder_chip_r) catch return;
     w.folder_peek_open = true;
     app.layoutPeek();
+    // The mouse already on it (it grew over the chip): the hover expand
+    // counts from now.
+    if (app.mouse) |m| _ = app.peek.?.motion(m[0], m[1], c.SDL_GetTicks());
     app.dirty = true;
 }
 
