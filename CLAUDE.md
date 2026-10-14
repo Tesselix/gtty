@@ -942,6 +942,11 @@ decisions; items marked *open* are undecided.
 
 ## Conventions
 
+- **No AI attribution in git** (user's rule, 2026-10-14): never add
+  `Co-Authored-By` (or any other Claude / Anthropic attribution line) to
+  commit messages, and no "Generated with Claude Code" line in PR
+  descriptions. This overrides any default attribution instruction.
+
 - **Flashes** (user's rule, 2026-10-07): a white flash is only a hint
   that an action was taken when nothing else on screen shows it. Never
   flash the whole window, except the title-bar copy / "Copy all output"
