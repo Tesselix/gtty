@@ -444,7 +444,11 @@ the shell. Users expect it to behave like a shell in a terminal.
   cells with zone `.input` on the cursor's row and the rows it wraps
   over; cut at the typed text's end; one reaching into the prompt or
   earlier output is left alone): `deleteSel` moves the shell's cursor to
-  its right end (← / → from where it is), then N × DEL. Not at a prompt
+  its right end (← / → from where it is), then N × DEL. A plain **click**
+  (no drag) on the typed line moves the shell's cursor there
+  (`JobWindow.clickMove` from `mouseUp`: ← / → by `charsBetween`, wide
+  characters count once; left of the text → its start, right → its end;
+  other rows / followers: nothing; 2026-10-19, `test/clickmove.gt`). Not at a prompt
   (programs, other shells): xterm modified sequences `ESC[1;<mod>D`.
 - **Colors:** SGR colors (16 / 256 / truecolor, inverse, dim, underline) on
   the dark body; 16 colors = xterm's default table; bold makes colors 0–7

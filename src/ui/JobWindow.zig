@@ -775,15 +775,12 @@ fn cellsBetween(cols: u16, a: Screen.Pos, b: Screen.Pos) isize {
     return rows * @as(isize, cols) + @as(isize, b.col) - @as(isize, a.col);
 }
 
-/// A mouse selection inside the line the user is typing at a shell's
-/// prompt: its ends, cut at the end of the typed text. Null when there is
-/// none, or the selection reaches into the prompt or earlier output. The
-/// typed text is the cells marked as input (after the hooks' prompt-end
-/// mark) on the cursor's row and the rows it wraps over.
-pub fn inputSel(w: *const JobWindow) ?[2]Screen.Pos {
+/// The line the user is typing at a shell's prompt: from its first typed
+/// cell to just after its last. The typed text is the cells marked as
+/// input (after the hooks' prompt-end mark) on the cursor's row and the
+/// rows it wraps over. Null when nothing is typed there.
+fn inputSpan(w: *const JobWindow) ?[2]Screen.Pos {
     if (!w.atPrompt()) return null;
-    const sel = w.out.sel orelse return null;
-    if (sel.empty()) return null;
     const lines = w.out.lines.items;
     const wrapped = w.out.wrapped.items;
     const cur = w.cursorPos();
@@ -799,13 +796,56 @@ pub fn inputSel(w: *const JobWindow) ?[2]Screen.Pos {
         if (start == null) start = p;
         end = .{ .row = r, .col = @intCast(i + 1) };
     };
-    const s = start orelse return null;
+    return .{ start orelse return null, end };
+}
+
+/// A mouse selection inside the line the user is typing at a shell's
+/// prompt (`inputSpan`): its ends, cut at the end of the typed text. Null
+/// when there is none, or the selection reaches into the prompt or earlier
+/// output.
+pub fn inputSel(w: *const JobWindow) ?[2]Screen.Pos {
+    const sel = w.out.sel orelse return null;
+    if (sel.empty()) return null;
+    const s, const end = w.inputSpan() orelse return null;
     var a, var b = sel.ordered();
     if (a.before(s)) return null;
     if (end.before(b)) b = end;
     if (end.before(a)) a = end;
     if (!a.before(b)) return null;
     return .{ a, b };
+}
+
+/// A plain click on the line being typed at a shell's prompt: the shell's
+/// cursor goes there (← / → from where it is). A click left of the typed
+/// text (on the prompt) goes to its start, right of it to its end; a click
+/// on another row does nothing.
+fn clickMove(w: *JobWindow, p: Screen.Pos) void {
+    if (w.sync == .follower) return;
+    const s, const end = w.inputSpan() orelse return;
+    if (p.row < s.row or p.row > end.row) return;
+    const to = if (p.before(s)) s else if (end.before(p)) end else p;
+    const d = w.charsBetween(w.cursorPos(), to);
+    if (d > 0) w.repeat("\x1b[C", @intCast(d)) else if (d < 0) w.repeat("\x1b[D", @intCast(-d));
+}
+
+/// Characters from `a` to `b` (negative when `b` comes first): cells, less
+/// the spacers after wide characters and the pads before a wrapped one,
+/// which the shell's ← / → step over.
+fn charsBetween(w: *const JobWindow, a: Screen.Pos, b: Screen.Pos) isize {
+    if (b.before(a)) return -w.charsBetween(b, a);
+    const lines = w.out.lines.items;
+    var n: isize = 0;
+    var r = a.row;
+    while (r <= b.row and r < lines.len) : (r += 1) {
+        const from: usize = if (r == a.row) a.col else 0;
+        const to: usize = if (r == b.row) b.col else w.out.cols;
+        const cells = lines[r].items;
+        for (from..to) |i| {
+            if (i < cells.len and cells[i].cp == 0) continue;
+            n += 1;
+        }
+    }
+    return n;
 }
 
 fn repeat(w: *JobWindow, bytes: []const u8, n: usize) void {
@@ -2015,6 +2055,7 @@ pub fn mouseUp(w: *JobWindow) void {
     if (was != .select) return;
     if (w.out.sel) |sel| if (sel.empty()) {
         w.out.sel = null;
+        w.clickMove(sel.anchor);
     };
 }
 

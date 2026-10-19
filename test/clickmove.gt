@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# A click on the line being typed at a shell's prompt moves the shell's
+# cursor there. Run from the repo root (macOS, 1x display), with a prompt
+# of two characters (`%# `):
+#   zig build && ZDOTDIR=<dir whose .zshrc sets PROMPT='%# '> zig-out/bin/gtty --script test/clickmove.gt
+# Output row y 47, cell width 8: column k starts at x = 23 + 8k.
+/s zsh
+/wait 1500
+/type clear
+/wait 500
+/text echo hello world
+/wait 300
+# before "hello" (col 7): types X there
+/click 79 47
+/wait 300
+/text X
+/wait 300
+# right of the text: back to its end
+/click 600 47
+/wait 300
+/text !
+/wait 300
+# on the prompt: to the start
+/click 20 47
+/wait 300
+/text :
+/wait 300
+/shot clickmove.bmp
+/key enter
+/wait 500
+/quit
