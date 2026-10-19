@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# The paste menu: ⌘C on a file name puts the file on gtty's file clipboard
+# and its full path on the clipboard; ⌘V opens Paste Name / Paste Path /
+# Copy File into X (selected; Enter). Run in a scratch folder:
+#   mkdir -p w/sub && cd w && touch keep.txt notes.txt
+#   gtty --script $REPO/test/pastemenu.gt
+# Expect: p1 the menu; p2 the full path of notes.txt typed at the shell's
+# prompt; p3 the paste menu from the file menu's Paste; p4 notes.txt
+# typed after the path; sub stays empty. Shots go to the
+# folder above.
+/s bash
+/wait 1500
+/type clear
+/wait 500
+/type LC_ALL=C ls -1
+/wait 800
+# copy notes.txt, ⌘V over the window: the menu
+/move 50 84
+/wait 300
+/key cmd+c
+/wait 300
+/move 400 300
+/wait 300
+/key cmd+v
+/wait 300
+/shot ../p1-menu.bmp
+# ↑: Paste Path (the separator is skipped)
+/key up
+/wait 200
+/key enter
+/wait 500
+/shot ../p2-path.bmp
+# the file menu's Paste: the paste menu at the same place; Paste Name
+/rclick 50 84
+/wait 300
+/click 110 220
+/wait 300
+/shot ../p3-filemenu.bmp
+/key up
+/key up
+/key enter
+/wait 500
+/shot ../p4-name.bmp
+/quit

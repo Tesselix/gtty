@@ -85,6 +85,9 @@ pub const Purpose = union(enum) {
     /// The right-click menu on a folder chip or its peek (window id):
     /// `codes[i]` = `chip_copy_name`, `chip_copy_path`, `chip_open`.
     folder_chip: ids.Id,
+    /// Paste with files on gtty's file clipboard (the target takes the
+    /// text rows): `codes[i]` = `paste_name`, `paste_path`, `paste_file`.
+    paste_files: Target,
 };
 
 /// The app picker's "Other…" row: the system's choose-an-app dialog.
@@ -119,6 +122,12 @@ pub const new_window_key = if (builtin.os.tag == .macos) "⌘N" else "Ctrl+Shift
 pub const chip_copy_name = 0;
 pub const chip_copy_path = 1;
 pub const chip_open = 2;
+
+/// The paste menu's rows (files copied last): their names or full paths
+/// as text, or the files themselves (copied / moved into a folder).
+pub const paste_name = 0;
+pub const paste_path = 1;
+pub const paste_file = 2;
 
 pub const edit_keys: [2][]const u8 = if (builtin.os.tag == .macos)
     .{ "⌘C", "⌘V" }
@@ -309,6 +318,22 @@ pub fn motion(m: *Menu, x: f32, y: f32) bool {
     m.over = now;
     m.over_arrow = arrow;
     return true;
+}
+
+/// ↑ / ↓: the next enabled row up / down (`dir` -1 / 1), wrapping.
+pub fn step(m: *Menu, dir: i32) void {
+    if (m.n == 0) return;
+    const n: i32 = @intCast(m.n);
+    var i: i32 = if (m.over) |o| @intCast(o) else if (dir > 0) -1 else n;
+    var tries: usize = 0;
+    while (tries < m.n) : (tries += 1) {
+        i = @mod(i + dir, n);
+        if (m.isEnabled(@intCast(i))) {
+            m.over = @intCast(i);
+            m.over_arrow = false;
+            return;
+        }
+    }
 }
 
 pub fn draw(m: *const Menu, gfx: *Gfx, theme: *const Theme, f: *Gfx.Face, ui: f32) void {

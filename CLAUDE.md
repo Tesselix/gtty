@@ -142,14 +142,16 @@ the shell. Users expect it to behave like a shell in a terminal.
   hidden once the job finished; decided 2026-10-08). The exit-code
   badge of a failed window sits in the strip's right end.
   - **Folder chip peek** (`Peek.kind` folder, `Peek.openFolder`,
-    `App.openFolderPeek`): hover or a click = the peek (copy, full path;
-    the copy button flashes the path white, `Peek.flashText`); the mouse
-    onto its expand button, or a click on it or on the path, expands it
-    (`Peek.click`, `Peek.motion`; changed 2026-10-10: the path click
-    copied before, with no sign): the
+    `App.openFolderPeek`): hover or a click = the peek (expand, full path;
+    no copy button, 2026-10-14): a click on the path copies it (flashes
+    white, `Peek.flashText`); the mouse resting on the peek
+    (`Peek.expand_hover_ms` = `chip_hover_ms`, each move starts over,
+    `hover_ms`; held off after a copy / fold until it leaves, `hold`), or
+    onto its expand button, or a click on that, expands it (`Peek.click`,
+    `Peek.motion`, `Peek.tick`): the
     folders above (`/` on top) and
-    the current folder last (green dot, by the chip; picking it = "already
-    here"), the parent above it selected; filter + keys as the branch
+    the current folder last (green dot, by the chip; picking it copies
+    its path, the row flashes, `flash_row`; 2026-10-14), the parent above it selected; filter + keys as the branch
     list (2026-10-08). A pick returns `Action.cd` → `JobWindow.cdTo` when the
     shell is at its prompt (green "cd sent", closes after 1 s; that feeds
     the History ▸ list), else red "the shell is busy" + beep. Closes when
@@ -203,28 +205,38 @@ the shell. Users expect it to behave like a shell in a terminal.
   clears it). Right-click on a name = the file menu (`Menu.Purpose.files`,
   `openFileMenu` / `fileMenuPick`, files in `App.menu_files`): Open /
   Open with <app> / Open With… (files; see below), cd <name> (16 characters, …; `cd_label_max`) / Open in Finder (folders); no title row (it opens at the name), Rename… (F2),
-  Copy (⌘C), Copy Name(s) (`copyNames`: the base names as text, one per
-  line), Cut (⌘X), Paste (⌘V; no other text: files into the folder
-  clicked, else the window's folder; text typed into the job), Move to Trash (⌘⌫, Linux Ctrl+Delete; only when
+  Copy (⌘C; one copy: the paste decides, so no Copy Name / Copy Path
+  rows, 2026-10-13), Cut (⌘X), Paste (⌘V; files
+  waiting: the paste menu, see below; else text typed into the job), Move to Trash (⌘⌫, Linux Ctrl+Delete; only when
   `gtty_trash_supported`), Delete… (⌫ / Delete). **Shortcuts act only
   while the mouse "has" the name** (`pointerFresh`: it moved or clicked
   after the last key, `last_point_ms` / `last_key_ms`), so typing with
   the pointer resting on a name stays the shell's; a text selection wins
   for ⌘C (`fileCopyKey` / `filePasteKey` in `copySelection` /
   `pasteKey`; the rest in `fileKey`, before the job's keys). Copy / cut
-  put the files on gtty's own file clipboard (`file_clip`,
-  `file_clip_move`; not the system's): status line "copy X:
-  select a destination, ⌘V pastes" (`clipHelp`); the names copied flash
+  put the files on the **system clipboard** as file managers do
+  (`gtty_fileclip_set`, `src/sys/gtty_fileclip.{m,c}`: macOS
+  NSPasteboard file URLs + the paths as text; Linux SDL clipboard
+  `text/uri-list`, `x-special/gnome-copied-files`, text), so Finder /
+  Files paste the files and text apps the paths; the paths also go in
+  the paste history. `file_clip` mirrors the clipboard's files
+  (`syncFileClip` on every clipboard update, ⌘V and opening a menu;
+  files gone are left out; files copied in Finder count too), a cut
+  (`file_clip_move`) holds while the same files stay there: status line
+  "copied X: ⌘V pastes it, its name or its path" (`clipHelp`); the names copied flash
   white for 350 ms (`App.flashTargets` → `JobWindow.flashNames`,
   `name_flash`; no bubble). **The last copy decides what Paste does**
   (2026-10-08): any new clipboard text (gtty's copy or another app's,
   `SDL_EVENT_CLIPBOARD_UPDATE` → `clipboardChanged`) empties
   `file_clip`; while files wait there, every Paste (⌘V: the mouse's
-  folder name / window, else `currentJob`'s folder, `pasteFilesInto`;
-  the right-click menu's plain "Paste" row, `pasteFolder`) pastes the
-  files, else the text. Paste asks (Modal:
-  "Copy / Move into X?", Enter = OK, Esc / no answer = nothing), then
-  `startFileOp` (copy / move / remove in `gtty_copy.c`: a free name, a
+  folder name / window, else `currentJob`'s folder over the prompt;
+  the right-click menus' "Paste" row) opens the **paste menu**
+  (2026-10-13; `openPasteMenu`, `Menu.Purpose.paste_files`: text
+  target + `paste_dest` / `paste_dest_window`): Paste Name(s) / Paste
+  Path(s) (`fileClipText` → `pasteText`; dimmed when the target takes
+  no text) and Copy / Move File(s) into X (selected; ↑ / ↓ + Enter,
+  `Menu.step`, `menuRowPick`; no modal, the row names the folder) →
+  `pasteFiles` → `startFileOp` (copy / move / remove in `gtty_copy.c`: a free name, a
   folder never into itself; move = rename(2), across disks cp + rm; a
   cut is used once). Delete asks (danger button, the names listed),
   `rm -rf` in the background. Trash: no question, so the names flash
@@ -236,7 +248,7 @@ the shell. Users expect it to behave like a shell in a terminal.
   red line, stays open), Esc / timeout = nothing. Every result of an
   asked action: FileFx bubble on the window (no flash); cancelled /
   refused: only the status line; `filesChanged` (outlines looked for again).
-  Remote names: none of this (normal menu). Tests: `test/fileactions.gt`, `test/fileactions-2.gt`.
+  Remote names: none of this (normal menu). Tests: `test/fileactions.gt`, `test/fileactions-2.gt`, `test/pastemenu.gt`.
   **Opening: one row** (added 2026-10-08, `loadPicker` → `picker_apps`
   + `picker_icons` when the menu opens; icons: `gtty_app_icon`, macOS
   NSWorkspace, Linux none yet; `Row.icon`, `Gfx.imageRgba` / `image`):
@@ -931,6 +943,11 @@ decisions; items marked *open* are undecided.
   pixel size, lines/discs for icons, embedded JetBrains Mono.
 
 ## Conventions
+
+- **No AI attribution in git** (user's rule, 2026-10-14): never add
+  `Co-Authored-By` (or any other Claude / Anthropic attribution line) to
+  commit messages, and no "Generated with Claude Code" line in PR
+  descriptions. This overrides any default attribution instruction.
 
 - **Flashes** (user's rule, 2026-10-07): a white flash is only a hint
   that an action was taken when nothing else on screen shows it. Never

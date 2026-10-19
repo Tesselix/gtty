@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
 # SPDX-License-Identifier: GPL-3.0-or-later
-# File actions: copy / cut + paste onto a folder name (asks, Enter), ⌘-click
+# File actions: copy / cut + paste onto a folder name (paste menu, Enter), ⌘-click
 # two names + Backspace (asks, Enter deletes). Run in a scratch folder:
 #   mkdir -p w/sub && cd w && touch 'My File.txt' keep.txt notes.txt
 #   gtty --script $REPO/test/fileactions.gt

@@ -114,6 +114,7 @@ src/
   core/Config.zig     settings file (~/.config/gtty/config): load, save
   sys/gtty_menu.m     gtty in the macOS menu bar (gtty_menu.c: none)
   sys/gtty_trash.m    Move to Trash (NSFileManager; gtty_trash.c: gio / trash-put / kioclient)
+  sys/gtty_fileclip.m Copied files on the system clipboard (NSPasteboard; gtty_fileclip.c: SDL, text/uri-list)
   ui/tiling.zig       how many windows fit in the windows area, and where
   core/git.zig        current branch from .git/HEAD; git commands in the background
   ui/commands.zig     gtty command parser (`name`, `/name`)

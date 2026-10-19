@@ -70,13 +70,20 @@ retry() { # retry <tries> <command…>
         [ "$i" -ge "$n" ] && return 1
         echo "  retrying: $*" >&2
         i=$((i + 1))
-        sleep 3
+        sleep $((i * 3))
     done
 }
-hdiutil create -volname "$VOL" -srcfolder "$STAGE/dmg" -fs HFS+ -format UDRW -size 40m "$RW" >/dev/null
+create_rw() { rm -f "$RW"; hdiutil create -volname "$VOL" -srcfolder "$STAGE/dmg" -fs HFS+ -format UDRW -size 40m "$RW" >/dev/null; }
+retry 5 create_rw
 # Mounted where Finder sees it (/Volumes/<name>), as it will be for users.
-MNT=$(hdiutil attach -noautoopen "$RW" | sed -n 's|^/dev/[^[:space:]]*[[:space:]]*Apple_HFS[[:space:]]*||p')
-[ -d "$MNT" ] || { echo "dmg did not mount" >&2; exit 1; }
+attach_rw() { ATTACH=$(hdiutil attach -noautoopen "$RW"); }
+retry 5 attach_rw
+MNT=$(printf '%s\n' "$ATTACH" | sed -n 's|^/dev/[^[:space:]]*[[:space:]]*Apple_HFS[[:space:]]*||p')
+# The whole disk (/dev/diskN): detached by it, since a detach that
+# unmounts the volume but can't eject the disk ("Resource busy") leaves
+# the mount path gone and every retry by path fails.
+DEV=$(printf '%s\n' "$ATTACH" | sed -n '1s|^\(/dev/disk[0-9]*\).*|\1|p')
+[ -d "$MNT" ] && [ -n "$DEV" ] || { echo "dmg did not mount" >&2; exit 1; }
 SetFile -a C "$MNT"   # use .VolumeIcon.icns
 if ! osascript <<EOF
 tell application "Finder"
@@ -105,7 +112,7 @@ then
 fi
 rm -rf "$MNT/.fseventsd" "$MNT/.Trashes"
 sync
-retry 5 hdiutil detach "$MNT" >/dev/null || hdiutil detach -force "$MNT" >/dev/null
+retry 5 hdiutil detach "$DEV" >/dev/null || hdiutil detach -force "$DEV" >/dev/null
 DMG="dist/gtty-$VERSION-macos.dmg"
 convert_dmg() { rm -f "$DMG"; hdiutil convert "$RW" -format UDZO -imagekey zlib-level=9 -o "$DMG" >/dev/null; }
 retry 3 convert_dmg
