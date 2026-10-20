@@ -43,6 +43,15 @@ pub fn text(e: *const LineEdit, out: []u8) []const u8 {
     return out[0..n];
 }
 
+/// The selected text as UTF-8 in `out` (empty: none).
+pub fn selectedText(e: *const LineEdit, out: []u8) []const u8 {
+    const s = e.selection();
+    var part = e.*;
+    @memcpy(part.buf[0 .. s[1] - s[0]], e.buf[s[0]..s[1]]);
+    part.len = s[1] - s[0];
+    return part.text(out);
+}
+
 /// The selection [lo, hi) (lo == hi: none).
 pub fn selection(e: *const LineEdit) [2]usize {
     return .{ @min(e.anchor, e.cursor), @max(e.anchor, e.cursor) };
@@ -142,6 +151,18 @@ pub fn delete(e: *LineEdit, word: bool) void {
     if (e.deleteSel()) return;
     e.anchor = if (word) e.wordRightOf(e.cursor) else @min(e.cursor + 1, e.len);
     _ = e.deleteSel();
+}
+
+/// The word (or run of other characters) around position `i`.
+pub fn wordAt(e: *const LineEdit, i: usize) [2]usize {
+    if (e.len == 0) return .{ 0, 0 };
+    const at = @min(i, e.len - 1);
+    const kind = isWord(e.buf[at]);
+    var lo = at;
+    while (lo > 0 and isWord(e.buf[lo - 1]) == kind) lo -= 1;
+    var hi = at + 1;
+    while (hi < e.len and isWord(e.buf[hi]) == kind) hi += 1;
+    return .{ lo, hi };
 }
 
 pub fn selectAll(e: *LineEdit) void {

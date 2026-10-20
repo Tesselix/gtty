@@ -245,6 +245,14 @@ fn toggleExpand(p: *Peek) void {
     p.refilter();
 }
 
+/// Expanded at once (a chip opened from the keyboard: the list has the
+/// keys).
+pub fn expand(p: *Peek) void {
+    if (!p.expanded) p.toggleExpand();
+    p.hold = true;
+    p.hover_ms = 0;
+}
+
 /// Switch to the selected branch (in the background).
 fn pick(p: *Peek) Action {
     if (p.state == .busy or p.sel >= p.shown.items.len) return .none;

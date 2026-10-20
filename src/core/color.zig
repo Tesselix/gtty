@@ -111,6 +111,8 @@ pub const Theme = struct {
     sync: Rgb = Rgb.hex(0xd0459a),
     /// The pink mixed into symbolic link names (`link_tint` of it).
     link: Rgb = Rgb.hex(0xff5fc8),
+    /// Find (⌘F): the matches' background (their text in `bg`).
+    find: Rgb = Rgb.hex(0xe5c07b),
 
     /// Minimum WCAG-style contrast ratio between text and its background.
     min_contrast: f32 = 3.0,

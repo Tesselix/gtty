@@ -102,6 +102,8 @@ test {
     _ = @import("ui/file_path.zig");
     _ = @import("ui/FileOpener.zig");
     _ = @import("ui/LineEdit.zig");
+    _ = @import("ui/find.zig");
+    _ = @import("ui/Prompt.zig");
     _ = @import("ui/PastePreview.zig");
     _ = @import("core/remote.zig");
     _ = @import("core/RemoteLink.zig");

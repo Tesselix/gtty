@@ -141,6 +141,14 @@ the shell. Users expect it to behave like a shell in a terminal.
   the label `git`, `no_git_label`, and no peek — an open one closes;
   hidden once the job finished; decided 2026-10-08). The exit-code
   badge of a failed window sits in the strip's right end.
+  - **Chip shortcuts** (2026-10-20; `App.chipKey` / `chipShortcut`):
+    ⌘1 folder, ⌘2 git, ⌘3 recent (Linux Ctrl+Shift+1…3; matched by
+    scancode, so Shift's `!` still counts) open the chip of the focused
+    window, else the current one, **expanded** (`Peek.expand`: the list
+    has the keys); the same key again or Esc closes it. Chip missing (or
+    git outside a repo): beep + notice. Each chip ends in a dim key-cap
+    with its number (`chipCapW`, `drawChip`'s `num`). Test:
+    `test/chipkeys.gt` (`/key cmd+1`).
   - **Folder chip peek** (`Peek.kind` folder, `Peek.openFolder`,
     `App.openFolderPeek`): hover or a click = the peek (expand, full path;
     no copy button, 2026-10-14): a click on the path copies it (flashes
@@ -176,7 +184,10 @@ the shell. Users expect it to behave like a shell in a terminal.
     not cd, ls family, find, pwd, du, echo, …); only folders strictly
     under `$HOME` (`underHome`), none from ssh / mosh windows
     (`App.tickRecent`). Kept: uses within 3 days of the newest use
-    (`window_s`, relative, so time away doesn't empty it), ≤ 200.
+    (`window_s`, relative, so time away doesn't empty it), ≤ 200;
+    folders that are gone (stat: ENOENT / ENOTDIR / not a folder; no
+    permission stays) are forgotten on every `sync` and on opening the
+    list (`dropMissing`, 2026-10-20), out of the file too.
     **File** (shared by all gtty processes): `$GTTY_RECENT`, else
     `$XDG_STATE_HOME/gtty/recent-folders`, else
     `~/.local/state/gtty/recent-folders` (0600, lines `uses\tlast\tpath`);
@@ -188,7 +199,9 @@ the shell. Users expect it to behave like a shell in a terminal.
     0.5 s hover (`chip_hover_ms`) or a click; [copy] [expand ^] full branch
     [×]; grows up from the chip in the normal text size. Mouse away → 5 s
     countdown on the thicker bottom border; any click elsewhere closes it
-    (and still acts).
+    (and still acts). Esc closes any peek, folded or expanded, and stops
+    there (never reaches the job; the keyboard is the focused window's
+    again; `onKey`, 2026-10-20, `test/peek-esc.gt`).
   - **Expanded peek:** `git for-each-ref` list (current marked green),
     filter box with the keyboard (prompt label says so), ↑/↓/PgUp/PgDn/
     Enter/Esc, wheel; picking runs `git switch` in the background
@@ -302,6 +315,38 @@ the shell. Users expect it to behave like a shell in a terminal.
   user input to a job must go through `typeBytes` / `send` so it is
   mirrored and gated (`runAi` still writes the PTY directly; the AI
   never targets a follower). Test: `test/sync.gt`.
+- **Find** (added 2026-10-20; ⌘F, Linux Ctrl+Shift+F, `findKeyPressed`
+  → `App.openFind`: the focused window, else the current one): a box in
+  the title bar right of the title, before minimize (`JobWindow.find_r`,
+  `find_text`: a `LineEdit`, null = closed; windows area only), with a
+  dim `find` placeholder, the number of matches on screen (red 0) and a
+  ×. Every match on screen is highlighted from the second character
+  (`find.min_len`; any case, `find.fold`; across wrapped rows;
+  `find.rowHits` per drawn row in `drawPane`: dark text on
+  `Theme.find`, amber; the selection wins). The box has the keyboard
+  while `JobWindow.find_keys` (one window at most; `App.findTarget`):
+  typed text, its editing keys (`JobWindow.findKey`), ⌘V / ⌘A in it,
+  other keys dropped, ⌘ / Ctrl+Shift keys gtty's; Enter / Tab / any
+  click elsewhere leave it (highlights stay), Esc or × closes find, ⌘F
+  again selects its text; the prompt label says so. Mouse in the box
+  (`JobWindow.findPress` / `findDrag`, `App.text_drag`): a click puts
+  the cursor there (Shift extends), double click a word, triple all,
+  dragging selects; ⌘C / ⌘X copy / cut its selection. Test:
+  `test/find.gt`.
+- **Prompt editing** (2026-10-20, as a text editor; `Prompt.anchor`,
+  `move`, `press` / `dragTo` / `posAt` from the last draw, `lay`;
+  `App.promptKey`): ← / → (⌥ / Ctrl by words, ⌘ to the ends), Home /
+  End, Shift selects; Backspace / Delete (words with ⌥ / Ctrl, ⌘⌫ all
+  before), typing / paste replace the selection; ⌘A / ⌘C / ⌘X on the
+  prompt's text while it has the keyboard (`copyText`); a click in it
+  places the cursor (Shift extends), double click a word, triple all,
+  drag selects; the right-click menu's Copy takes its selection. Test:
+  `test/prompt-edit.gt`.
+- **Copy last input** (added 2026-10-20; right-click menu row under Copy
+  last output, `Menu.edit_input`): only while a shell waits at its
+  prompt after running a command (`JobWindow.lastInput`: the command line
+  read back at the hooks' C mark, `Screen.lastCommand`, ≤ 1 KB); copies
+  it (`toClipboard`). Test: `test/copyinput.gt`.
 - **Tooltips** on the left title-bar actions (checkbox, copy, A−, A+,
   color, sync, files) after 0.5 s hover (`JobWindow.tip`, `App.updateTip`/`drawTip`).
 - **Text:** mouse selection (drag, double/triple click), ⌘C (Ctrl+Shift+C on
@@ -444,7 +489,18 @@ the shell. Users expect it to behave like a shell in a terminal.
   cells with zone `.input` on the cursor's row and the rows it wraps
   over; cut at the typed text's end; one reaching into the prompt or
   earlier output is left alone): `deleteSel` moves the shell's cursor to
-  its right end (← / → from where it is), then N × DEL. A plain **click**
+  its right end (← / → from where it is), then N × DEL. The typed line
+  (`inputSpan`) runs from the prompt's row (`prompt_row`) down, so a
+  command over several lines (line breaks from a paste) is one input;
+  distances are characters (`charsBetween`: a line break is one, a row
+  counts to its last input cell, `inputRowEnd`; the selection's ends are
+  clamped into the typed text, `clampInput`). A mouse selection leaves
+  the cursor where it is (2026-10-20, the user's rule): only typing, a
+  paste, Backspace or Delete erase it and put the cursor there; one
+  starting on the prompt takes only the typed part (one reaching into
+  earlier output stays plain). A key that types a character keeps a
+  keyboard selection (`editKey`), so its text replaces it. Tests:
+  `test/input-mouse.gt`, `test/typeover.gt`. A plain **click**
   (no drag) on the typed line moves the shell's cursor there
   (`JobWindow.clickMove` from `mouseUp`: ← / → by `charsBetween`, wide
   characters count once; left of the text → its start, right → its end;
@@ -806,8 +862,8 @@ decisions; items marked *open* are undecided.
 - **Script mode** (`gtty --script file`) is how to test UI changes: each line
   is typed into the prompt; hooks run directly: `/wait ms`, `/shot x.bmp`
   (screenshot; convert with `sips -s format png`), `/type text` (text + Enter
-  through the real keyboard path), `/click x y` (real mouse event, window coords), `/dclick x y` (double click), `/down x y` / `/up x y` (left button), `/rclick x y` (right click), `/move x y` (mouse move, no button: hover / tooltips), `/drag x1 y1 x2 y2` (press, move, release), `/text text` (typed, no Enter),
-  `/key ctrl+shift+left` (a key with modifiers: ctrl shift alt cmd + left right up down home end backspace delete enter escape tab c v x insert a n t period pageup pagedown f2), `/resize w h`
+  through the real keyboard path), `/click x y` (real mouse event, window coords), `/dclick x y` (double click), `/down x y` / `/up x y` (left button), `/rclick x y` (right click), `/move x y` (mouse move, no button: hover / tooltips), `/drag x1 y1 x2 y2` (press, move, release), `/text text` (typed, no Enter; each ASCII character's key down first, as a keyboard sends it, `scriptTyping`),
+  `/key ctrl+shift+left` (a key with modifiers: ctrl shift alt cmd + left right up down home end backspace delete enter escape tab c v x insert a n t f period pageup pagedown f2 1 2 3), `/resize w h`
   (gtty's OS window), `/menu run|settings|new-shell|new-window|sync-typing|about` (a menu pick; macOS
   menus can't be clicked from a script), `/target main|settings` (where
   the next /click /move /drag /text /key /type /shot go), `/mods
@@ -1033,7 +1089,8 @@ checking its license first; record third-party components in
 - Remote sessions, open: switching branches from the remote git chip;
   several copies at once / big-file warning; remotes without ps / lsof /
   /proc. Not yet tried against a real server (only the stand-in ssh).
-- Find: a future job window command, not a subscriber.
+- Find, more: next / previous match (Enter / ⇧Enter) scrolling back
+  through the scrollback; today only what is on screen is highlighted.
 - Running border lights ("snakes") for running jobs; maximized thin title bar.
 - More chips; folder chip: siblings, a remote folder; peek shrink
   animation, selecting text inside a peek;

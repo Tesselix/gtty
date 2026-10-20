@@ -118,6 +118,30 @@ pub fn top(r: *RecentFolders, home: []const u8, out: [][]const u8) []const []con
     return out[0..n];
 }
 
+/// Forget the folders that are gone (removed, renamed, or no longer a
+/// folder); one that can't be looked at (no permission) stays. Returns
+/// how many went.
+pub fn dropMissing(r: *RecentFolders) usize {
+    var n: usize = 0;
+    var i: usize = 0;
+    while (i < r.entries.items.len) {
+        if (isGone(r.gpa, r.entries.items[i].path)) {
+            r.gpa.free(r.entries.swapRemove(i).path);
+            n += 1;
+        } else i += 1;
+    }
+    return n;
+}
+
+fn isGone(gpa: std.mem.Allocator, p: []const u8) bool {
+    const z = gpa.dupeZ(u8, p) catch return false;
+    defer gpa.free(z);
+    var st: c.struct_stat = undefined;
+    if (c.stat(z.ptr, &st) == 0) return (st.st_mode & c.S_IFMT) != c.S_IFDIR;
+    const e = std.c._errno().*;
+    return e == @intFromEnum(std.c.E.NOENT) or e == @intFromEnum(std.c.E.NOTDIR);
+}
+
 fn isDir(gpa: std.mem.Allocator, p: []const u8) bool {
     const z = gpa.dupeZ(u8, p) catch return false;
     defer gpa.free(z);
@@ -166,17 +190,18 @@ pub fn path(buf: []u8) ?[:0]const u8 {
     return std.fmt.bufPrintSentinel(buf, "{s}/.local/state/gtty/recent-folders", .{std.mem.span(home)}, 0) catch null;
 }
 
-/// Read the file again and fold in this process's new uses; write it
-/// back when they were any. The list is then the file's (other gtty
-/// processes' uses included).
+/// Read the file again and fold in this process's new uses, minus the
+/// folders that are gone (`dropMissing`); write it back when anything
+/// changed. The list is then the file's (other gtty processes' uses
+/// included).
 pub fn sync(r: *RecentFolders) void {
     var pbuf: [4096]u8 = undefined;
     const p = path(&pbuf) orelse return;
     var disk = RecentFolders.init(r.gpa);
     defer disk.deinit();
     disk.load(p);
-    const write = r.dirty;
     r.mergeInto(&disk);
+    const write = disk.dropMissing() > 0 or r.dirty;
     std.mem.swap(std.ArrayList(Entry), &r.entries, &disk.entries);
     r.dirty = false;
     if (write) r.save(p);
@@ -297,6 +322,18 @@ test "kept: 3 days before the newest use; most used first" {
     std.mem.sort(Entry, r.entries.items, {}, better);
     try t.expectEqualStrings("/h/b", r.entries.items[0].path);
     try t.expectEqualStrings("/h/c", r.entries.items[1].path);
+}
+
+test "folders that are gone are dropped" {
+    const t = std.testing;
+    var r = RecentFolders.init(t.allocator);
+    defer r.deinit();
+    r.useAt("/", 100);
+    r.useAt("/no/such/folder/gtty-test", 100);
+    r.useAt("/dev/null", 100); // not a folder
+    try t.expectEqual(@as(usize, 2), r.dropMissing());
+    try t.expectEqual(@as(usize, 1), r.entries.items.len);
+    try t.expectEqualStrings("/", r.entries.items[0].path);
 }
 
 test "merge adds only this process's new uses" {

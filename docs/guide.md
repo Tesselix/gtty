@@ -68,6 +68,12 @@ in (not in an ssh session).
   while the shell waits for your input; while a command runs, the box says
   the shell is busy.
 
+**From the keyboard:** each chip shows a number. **⌘1** opens the folder
+chip's list, **⌘2** the branches, **⌘3** the recent folders (Linux:
+**Ctrl+Shift+1**, **2**, **3**), for the window you're typing in, already
+expanded so you can type to filter and press Enter. The same key again, or
+**Esc**, closes it and the keyboard is back in the window.
+
 Every window has a number (`#4`) so you can tell them apart. Click any window
 in either grid to bring it into the middle; the one that was there moves to
 a grid.
@@ -131,6 +137,16 @@ Turn the marks off, change their width or their colors in **Settings →
 General** (or start with `GTTY_MARKS=0`, `GTTY_MARK_WIDTH=6`,
 `GTTY_MARK_INPUT=#00ff00`).
 
+### Find
+
+**⌘F** (Linux: **Ctrl+Shift+F**) opens a small find box in the title
+bar of the window you're working in. Type into it: from the second
+letter on, every match on screen is highlighted (any case), and the box
+shows how many there are. **Enter** gives the keyboard back to the window
+(the highlights stay while you scroll); a click on the box takes it
+again. **Esc** in the box, or its **×**, closes find. ⌘F with the box
+open selects its text.
+
 ### Copy, paste and the right-click menu
 
 - **⌘C** (Linux: **Ctrl+Shift+C**) copies the selected text; **⌘V**
@@ -138,6 +154,9 @@ General** (or start with `GTTY_MARKS=0`, `GTTY_MARK_WIDTH=6`,
   into, or into the prompt. Plain Ctrl+C and Ctrl+V go to the program, as
   in any terminal. One press always pastes once.
 - **Right click** a window's text or the prompt: **Copy** and **Paste**.
+- **Copy last input** (right-click menu of a zsh or bash window waiting
+  for your input, once it has run a command): copies the last command
+  line you ran.
 - **Paste ▶** — click the arrow next to Paste for your **last 5 copies**
   in gtty (newest first, each copy listed once; line breaks shown as ⏎).
   Pick one to paste it.
@@ -178,6 +197,7 @@ fix it.
 | ⌘C (Linux: Ctrl+Shift+C) | copy the selected text |
 | ⌘V (Linux: Ctrl+Shift+V), Shift+Insert | paste into the window you're typing into, or the prompt |
 | Right click | menu with **Copy**, **Paste ▶** (your last copies) and **History ▶** (earlier folders) |
+| ⌘F (Linux: Ctrl+Shift+F) | find in the window: matches on screen highlighted |
 | ⌘/Ctrl + = − 0 | zoom in / out / reset |
 | Mouse wheel, PageUp / PageDown | scroll; over a grid, scroll the grid |
 | ⌘T (Linux: Ctrl+Shift+T) | new shell, in the folder of the window you're working in |
@@ -185,6 +205,7 @@ fix it.
 | ⌘W | close the window you're typing into |
 | F11 | maximize |
 | Up / Down at the prompt | earlier commands |
+| At the prompt and in the find box | edit as in a text editor: click to put the cursor there, drag or Shift + arrows to select (⌥ by words, ⌘ to the ends), double click a word, ⌘A / ⌘C / ⌘X |
 | ⌥ ← / → (or Ctrl ← / →) in a shell | jump a word back / forward |
 | ⌘ ← / →, Home / End in a shell | start / end of the line |
 | Shift + any of those | mark the text the cursor passes over; ⌘C copies it, Backspace / Delete erase it, typing replaces it |

@@ -133,6 +133,9 @@ grid_bar_r: Rect = .{},
 /// Dragging the scroll bar's thumb (`grid_grab` = where on it it was
 /// taken); the mouse is over the bar (drawn wider).
 grid_drag: bool = false,
+/// The left button went down in the prompt's text or a find box: moving
+/// selects there (`onMotion`).
+text_drag: union(enum) { none, prompt, find: ids_mod.Id } = .none,
 grid_grab: f32 = 0,
 over_grid_bar: bool = false,
 /// The next relayout animates windows that change place (set by
@@ -1494,6 +1497,11 @@ fn copyJob(app: *App, w: *JobWindow) void {
 fn copySelection(app: *App) void {
     // No text selected: the file the mouse has, or the selected files.
     if (app.fileCopyKey()) return;
+    // The prompt has the keyboard and text selected in it: that.
+    if (app.focusedJob() == null) if (app.prompt.selectedText()) |t| {
+        defer app.gpa.free(t);
+        return app.copyText(t);
+    };
     const first = app.activeShown() orelse return;
     var w = app.jobs.items[first];
     if (w.selectedText(app.gpa)) |t| app.gpa.free(t) else for (app.extras.items) |e| if (e.out.sel != null) {
@@ -1506,6 +1514,16 @@ fn copySelection(app: *App) void {
     const text = w.selectedText(app.gpa) orelse return app.say("nothing selected", app.theme.dim);
     defer app.gpa.free(text);
     app.toClipboard(w, text);
+}
+
+/// Text copied from the prompt or a find box: the clipboard and the
+/// paste history.
+fn copyText(app: *App, text: []const u8) void {
+    const z = app.gpa.dupeZ(u8, text) catch return;
+    defer app.gpa.free(z);
+    if (text.len > 0) app.pushPasteHistory(text);
+    _ = c.SDL_SetClipboardText(z.ptr);
+    app.say("copied", app.theme.ok);
 }
 
 /// A copy from a job window (selection, title-bar copy, menu Copy): it
@@ -1726,9 +1744,11 @@ fn openMenu(app: *App, x: f32, y: f32) bool {
     var paste_ok = true;
     var folders: ?bool = null;
     var output: ?[]const u8 = null;
+    var input = false;
     var job: ?*JobWindow = null;
     if (app.maximizedShown() == null and app.prompt.rect.contains(x, y)) {
         target = .prompt;
+        copy_ok = app.prompt.selection() != null;
     } else {
         const i = app.windowAt(x, y) orelse return false;
         if (!app.isShown(i)) return false;
@@ -1743,13 +1763,14 @@ fn openMenu(app: *App, x: f32, y: f32) bool {
         paste_ok = w.running() and w.sync != .follower; // read-only: sync typing
         folders = w.folders_left.items.len > 0;
         output = if (w.copiesLast()) "Copy last output" else "Copy all output";
+        input = w.lastInput() != null;
         job = w;
     }
     const history_ok = paste_ok and app.paste_history.items.len > 0;
     // Paste: files copied last open the paste menu (name, path or the
     // files); else text into the job / the prompt.
     paste_ok = if (app.file_clip.items.len > 0) true else paste_ok and c.SDL_HasClipboardText();
-    app.popMenu(Menu.edit(target, .{ x, y }, copy_ok, output, paste_ok, history_ok, folders));
+    app.popMenu(Menu.edit(target, .{ x, y }, copy_ok, output, input, paste_ok, history_ok, folders));
     return true;
 }
 
@@ -1997,6 +2018,9 @@ fn menuRowPick(app: *App, row: usize) void {
                     const text = w.selectedText(app.gpa) orelse return app.say("nothing selected", app.theme.dim);
                     defer app.gpa.free(text);
                     app.toClipboard(w, text);
+                } else if (app.prompt.selectedText()) |text| {
+                    defer app.gpa.free(text);
+                    app.copyText(text);
                 },
                 // What was copied last: files open the paste menu there
                 // (files into the window's folder; the prompt: the
@@ -2011,6 +2035,8 @@ fn menuRowPick(app: *App, row: usize) void {
                 // The title-bar copy: the last command's output (or all), with
                 // its flash.
                 Menu.edit_output => if (job) |w| app.copyJob(w),
+                // The last command line the shell ran.
+                Menu.edit_input => if (job) |w| if (w.lastInput()) |text| app.toClipboard(w, text),
                 // A new shell in the folder of the window clicked (the
                 // prompt: of the current window).
                 Menu.edit_new_shell => app.newShell(job orelse app.currentJob()),
@@ -2160,6 +2186,139 @@ fn menuOwnsKey(app: *App, key: c.SDL_Keycode, mod: c.SDL_Keymod) bool {
     return app.menuRowEnabled(code);
 }
 
+/// A chip shortcut: ⌘1…3 on macOS, Ctrl+Shift+1…3 elsewhere (the number
+/// row's key, whatever Shift makes of it); the chip's number.
+fn chipKey(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?u8 {
+    const cmd = mod & c.SDL_KMOD_GUI != 0;
+    const ctrl = mod & c.SDL_KMOD_CTRL != 0;
+    const shift = mod & c.SDL_KMOD_SHIFT != 0;
+    if (mod & c.SDL_KMOD_ALT != 0) return null;
+    const ok = if (builtin.os.tag == .macos) cmd and !ctrl and !shift else ctrl and shift and !cmd;
+    if (!ok) return null;
+    return switch (c.SDL_GetScancodeFromKey(key, null)) {
+        c.SDL_SCANCODE_1 => 1,
+        c.SDL_SCANCODE_2 => 2,
+        c.SDL_SCANCODE_3 => 3,
+        else => null,
+    };
+}
+
+/// ⌘F on macOS, Ctrl+Shift+F elsewhere (Ctrl+F alone is the job's).
+fn findKeyPressed(key: c.SDL_Keycode, mod: c.SDL_Keymod) bool {
+    if (key != c.SDLK_F or mod & c.SDL_KMOD_ALT != 0) return false;
+    const cmd = mod & c.SDL_KMOD_GUI != 0;
+    const ctrl = mod & c.SDL_KMOD_CTRL != 0;
+    const shift = mod & c.SDL_KMOD_SHIFT != 0;
+    return if (builtin.os.tag == .macos) cmd and !ctrl and !shift else ctrl and shift and !cmd;
+}
+
+/// Find in the focused window, else the current one: its find box opens
+/// in the title bar (open already: its text selected) and takes the
+/// keyboard; the matches on screen are highlighted as the text is typed.
+fn openFind(app: *App) void {
+    const i = app.activeShown() orelse {
+        beep.beep();
+        return app.say("no job window", app.theme.dim);
+    };
+    const w = app.jobs.items[i];
+    if (app.peek != null) app.closePeek();
+    app.dropFindKeys();
+    w.openFind(&app.gfx);
+    w.find_keys = true;
+    app.dirty = true;
+}
+
+/// The window whose find box has the keyboard (open, in the windows
+/// area; an expanded peek has it first).
+fn findTarget(app: *App) ?*JobWindow {
+    if (app.peek) |pk| if (pk.wantsKeys()) return null;
+    for (app.jobs.items) |w| if (w.find_keys) {
+        if (w.find_text != null and w.grid_r == null) return w;
+        w.find_keys = false;
+    };
+    return null;
+}
+
+/// The keyboard leaves the find box (its text and highlights stay).
+fn dropFindKeys(app: *App) void {
+    for (app.jobs.items) |w| w.find_keys = false;
+}
+
+/// A key while the find box has the keyboard: Esc closes find, Enter /
+/// Tab leave the box (the highlights stay), paste and ⌘A / Ctrl+Shift+A
+/// work in the box, editing keys edit it. Other ⌘ keys (and Ctrl+Shift
+/// ones on Linux) are gtty's as usual, Ctrl+Tab moves on; the rest is
+/// dropped (nothing reaches the job). True when handled.
+fn findBoxKey(app: *App, w: *JobWindow, key: c.SDL_Keycode, ctrl: bool, cmd: bool, alt: bool, shift: bool) bool {
+    app.dirty = true;
+    const box_cmd = cmd or (ctrl and shift); // ⌘V, Ctrl+Shift+V, …
+    switch (key) {
+        c.SDLK_ESCAPE => w.closeFind(&app.gfx),
+        c.SDLK_RETURN, c.SDLK_KP_ENTER => w.find_keys = false,
+        c.SDLK_TAB => {
+            w.find_keys = false;
+            return ctrl; // Ctrl+Tab: on to the next window
+        },
+        c.SDLK_V => if (box_cmd) {
+            if (c.SDL_GetClipboardText()) |t| {
+                defer c.SDL_free(t);
+                w.find_text.?.insert(std.mem.span(t));
+            }
+        },
+        c.SDLK_A => if (box_cmd) w.find_text.?.selectAll(),
+        // Copy / cut the box's selection.
+        c.SDLK_C, c.SDLK_X => if (box_cmd) {
+            const e = &w.find_text.?;
+            var buf: [4 * 255]u8 = undefined;
+            const t = e.selectedText(&buf);
+            if (t.len == 0) return true;
+            app.copyText(t);
+            if (key == c.SDLK_X) e.delete(false);
+        },
+        else => if (!w.findKey(key, ctrl, cmd, alt, shift)) return !box_cmd,
+    }
+    return true;
+}
+
+/// Open chip `n` (1 folder, 2 git, 3 recent) of the focused window, else
+/// the current one, expanded (the keyboard goes to its list; Esc gives it
+/// back); its peek already open: closed. A chip not there: beep + why.
+fn chipShortcut(app: *App, n: u8) void {
+    const i = app.focus orelse app.activeShown() orelse {
+        beep.beep();
+        return app.say("no job window", app.theme.dim);
+    };
+    const w = app.jobs.items[i];
+    const kind: Peek.Kind = switch (n) {
+        1 => .folder,
+        2 => .git,
+        else => .recent,
+    };
+    if (app.peek) |pk| if (pk.uid == w.uid and pk.kind == kind) return app.closePeek();
+    const r = switch (kind) {
+        .folder => w.folder_chip_r,
+        .git => w.git_chip_r,
+        .recent => w.recent_chip_r,
+    };
+    if (r.w == 0 or (kind == .git and w.branch() == null)) {
+        beep.beep();
+        return app.say(switch (kind) {
+            .folder => "no folder chip here",
+            .git => "not in a git repository",
+            .recent => "no recent chip here",
+        }, app.theme.dim);
+    }
+    switch (kind) {
+        .folder => app.openFolderPeek(i),
+        .git => app.openGitPeek(i),
+        .recent => app.openRecentPeek(i),
+    }
+    if (app.peek) |*pk| if (pk.uid == w.uid) {
+        pk.expand();
+        app.layoutPeek();
+    };
+}
+
 /// A copy or paste shortcut: ⌘C / ⌘V, Ctrl+Shift+C / V, Shift+Insert.
 fn clipboardKey(key: c.SDL_Keycode, mod: c.SDL_Keymod) bool {
     const cmd = mod & c.SDL_KMOD_GUI != 0;
@@ -2186,6 +2345,12 @@ fn hasSelection(app: *App) bool {
 /// ⌘A (Ctrl+Shift+A on Linux): all the text of the window you're typing into (or
 /// the current one).
 fn selectAll(app: *App) void {
+    // The prompt has the keyboard and some text: all of it.
+    if (app.focusedJob() == null and !app.prompt.isEmpty()) {
+        app.prompt.selectAll();
+        app.dirty = true;
+        return;
+    }
     const w = app.focused() orelse if (app.main) |m| app.jobs.items[m] else return;
     const n = w.out.lines.items.len;
     if (n == 0) return;
@@ -2627,10 +2792,12 @@ fn openRecentPeek(app: *App, i: usize) void {
     app.closePeek();
     app.hideTip();
     app.chip_hover = null;
+    // A quick look first: folders removed since are forgotten (`sync`
+    // takes them out of the file too).
     if (app.recent_file) {
         app.recent.sync();
         app.recent_synced_ms = c.SDL_GetTicks();
-    }
+    } else _ = app.recent.dropMissing();
     const home = if (c.getenv("HOME")) |h| std.mem.span(h) else "";
     var buf: [RecentFolders.shown_max][]const u8 = undefined;
     const list = app.recent.top(home, &buf);
@@ -3350,7 +3517,7 @@ fn execGtty(app: *App, cmd_parsed: commands.Command) void {
             app.onText(text);
             app.onKey(c.SDLK_RETURN, 0);
         },
-        .text => |text| if (app.scriptSettings()) |sw| sw.onText(text) else app.onText(text),
+        .text => |text| if (app.scriptSettings()) |sw| sw.onText(text) else app.scriptTyping(text),
         .key => |spec| if (keySpec(spec)) |k| {
             if (app.scriptSettings()) |sw| sw.onKey(k.key, k.mod) else app.onKey(k.key, k.mod);
         } else app.sayFmt("/key: unknown key {s}", .{spec}, app.theme.stderr_accent),
@@ -3432,6 +3599,19 @@ fn execGtty(app: *App, cmd_parsed: commands.Command) void {
     }
 }
 
+/// Script hook `/text`: as a keyboard types it, each character's key
+/// down (Shift for capitals) before its text.
+fn scriptTyping(app: *App, text: []const u8) void {
+    var it = (std.unicode.Utf8View.init(text) catch return app.onText(text)).iterator();
+    while (it.nextCodepointSlice()) |ch| {
+        if (ch.len == 1 and ch[0] >= 0x20 and ch[0] < 0x7f) {
+            const upper = std.ascii.isUpper(ch[0]);
+            app.onKey(std.ascii.toLower(ch[0]), if (upper) c.SDL_KMOD_LSHIFT else 0);
+        }
+        app.onText(ch);
+    }
+}
+
 /// Script hook `/key`: "ctrl+shift+left" → the key and its modifiers.
 fn keySpec(spec: []const u8) ?struct { key: c.SDL_Keycode, mod: c.SDL_Keymod } {
     const Name = struct { name: []const u8, v: u32 };
@@ -3448,6 +3628,8 @@ fn keySpec(spec: []const u8) ?struct { key: c.SDL_Keycode, mod: c.SDL_Keymod } {
         .{ .name = "n", .v = c.SDLK_N },                 .{ .name = "t", .v = c.SDLK_T },
         .{ .name = "pageup", .v = c.SDLK_PAGEUP },       .{ .name = "pagedown", .v = c.SDLK_PAGEDOWN },
         .{ .name = "x", .v = c.SDLK_X },                 .{ .name = "f2", .v = c.SDLK_F2 },
+        .{ .name = "1", .v = c.SDLK_1 },                 .{ .name = "2", .v = c.SDLK_2 },
+        .{ .name = "3", .v = c.SDLK_3 },                 .{ .name = "f", .v = c.SDLK_F },
     };
     var mod: c.SDL_Keymod = 0;
     var it = std.mem.splitScalar(u8, spec, '+');
@@ -3622,6 +3804,11 @@ fn onText(app: *App, text: []const u8) void {
         app.dirty = true;
         return;
     };
+    if (app.findTarget()) |w| {
+        w.find_text.?.insert(text);
+        app.dirty = true;
+        return;
+    }
     if (app.focusedJob()) |w| {
         // Typing over a selection in the shell's input line replaces it.
         _ = w.deleteSel();
@@ -3679,6 +3866,16 @@ fn onKey(app: *App, key: c.SDL_Keycode, mod: c.SDL_Keymod) void {
         if (key == c.SDLK_ESCAPE) return;
     }
 
+    // Esc closes any open peek (folded or expanded) back to its chip and
+    // goes no further: the keyboard is the focused job's again.
+    if (app.peek != null and key == c.SDLK_ESCAPE) return app.closePeek();
+    // The current window's chips: ⌘1 folder, ⌘2 git, ⌘3 recent
+    // (Ctrl+Shift+1… on Linux), the number shown on each chip.
+    if (chipKey(key, mod)) |n| return app.chipShortcut(n);
+    // Find: ⌘F (Ctrl+Shift+F on Linux) opens the window's find box; while
+    // the box has the keyboard it takes the typing and its editing keys.
+    if (findKeyPressed(key, mod)) return app.openFind();
+    if (app.findTarget()) |w| if (app.findBoxKey(w, key, ctrl, cmd, alt, shift)) return;
     // An expanded peek has the keyboard (its filter box and list).
     if (app.peek) |*pk| if (pk.wantsKeys() and !cmd) return app.peekAction(pk.key(key));
 
@@ -3725,6 +3922,8 @@ fn onKey(app: *App, key: c.SDL_Keycode, mod: c.SDL_Keymod) void {
     // Moving in a job's input: words with Ctrl or ⌥ + arrows, selecting
     // with Shift (see editKey).
     if (app.focusedJob()) |w| if (app.editKey(w, key, ctrl, cmd, alt, shift)) return;
+    // The prompt has the keyboard: its editing keys.
+    if (app.focusedJob() == null and app.promptKey(key, ctrl, cmd, alt, shift)) return;
     if (cmd) {
         switch (key) {
             c.SDLK_W => if (app.focus) |i| app.closeWindow(i),
@@ -3756,26 +3955,18 @@ fn onKey(app: *App, key: c.SDL_Keycode, mod: c.SDL_Keymod) void {
             } else app.prompt.clear(),
             c.SDLK_D => if (app.focused()) |w| w.send("\x04"),
             c.SDLK_Z => if (app.focused()) |w| w.send("\x1a"),
-            c.SDLK_A => app.prompt.home(),
-            c.SDLK_E => app.prompt.end(),
+            c.SDLK_A => app.prompt.move(.home, false),
+            c.SDLK_E => app.prompt.move(.end, false),
             c.SDLK_U => app.prompt.clear(),
             c.SDLK_L => if (app.focused()) |w| {
                 w.out.clear();
             },
-            c.SDLK_LEFT => app.prompt.wordLeft(),
-            c.SDLK_RIGHT => app.prompt.wordRight(),
             else => {},
         }
         return;
     }
     switch (key) {
         c.SDLK_RETURN, c.SDLK_KP_ENTER => app.submit(),
-        c.SDLK_BACKSPACE => app.prompt.backspace(),
-        c.SDLK_DELETE => app.prompt.delete(),
-        c.SDLK_LEFT => if (alt) app.prompt.wordLeft() else app.prompt.left(),
-        c.SDLK_RIGHT => if (alt) app.prompt.wordRight() else app.prompt.right(),
-        c.SDLK_HOME => app.prompt.home(),
-        c.SDLK_END => app.prompt.end(),
         c.SDLK_UP => app.prompt.historyPrev(),
         c.SDLK_DOWN => app.prompt.historyNext(),
         c.SDLK_ESCAPE => {
@@ -3787,6 +3978,34 @@ fn onKey(app: *App, key: c.SDL_Keycode, mod: c.SDL_Keymod) void {
         c.SDLK_PAGEDOWN => if (app.focused()) |w| w.out.scrollBy(-@as(isize, @intCast(w.rows -| 1))),
         else => {},
     }
+}
+
+/// Editing keys of the gtty prompt while it has the keyboard, as in a
+/// text editor: ← / → (by words with ⌥ / Ctrl, to the ends with ⌘), Home
+/// / End; Shift selects. Backspace / Delete (words with ⌥ / Ctrl, ⌘⌫ all
+/// before the cursor) erase the selection first; ⌘X (Ctrl+Shift+X) cuts
+/// it. True when the key was one of them.
+fn promptKey(app: *App, key: c.SDL_Keycode, ctrl: bool, cmd: bool, alt: bool, shift: bool) bool {
+    const p = &app.prompt;
+    const word = ctrl or alt;
+    switch (key) {
+        c.SDLK_LEFT => p.move(if (cmd) .home else if (word) .word_left else .left, shift),
+        c.SDLK_RIGHT => p.move(if (cmd) .end else if (word) .word_right else .right, shift),
+        c.SDLK_HOME => p.move(.home, shift),
+        c.SDLK_END => p.move(.end, shift),
+        c.SDLK_BACKSPACE => p.backspace(word, cmd),
+        c.SDLK_DELETE => p.delete(word),
+        c.SDLK_X => {
+            if (!(cmd or (ctrl and shift))) return false;
+            const t = p.selectedText() orelse return true;
+            defer app.gpa.free(t);
+            app.copyText(t);
+            p.delete(false);
+        },
+        else => return false,
+    }
+    app.dirty = true;
+    return true;
 }
 
 /// Arrows, Home and End with modifiers in a running job. A shell at its
@@ -3809,8 +4028,11 @@ fn editKey(app: *App, w: *JobWindow, key: c.SDL_Keycode, ctrl: bool, cmd: bool, 
                 app.dirty = true;
                 return true;
             }
-            // ⌘ keys (copy, paste) keep it: paste types over it.
-            if (!cmd) w.dropKeySel();
+            // ⌘ keys (copy, paste) keep it: paste types over it. So do
+            // keys that type a character: its text comes next and replaces
+            // the selection (onText → deleteSel).
+            const types = key >= 0x20 and key < 0x7f and !ctrl;
+            if (!cmd and !types) w.dropKeySel();
             return false;
         },
     };
@@ -3889,6 +4111,12 @@ fn onClick(app: *App, x: f32, y: f32, button: u8, clicks: u8) void {
         app.dirty = true;
         return;
     }
+    // A click anywhere but on the find box takes the keyboard from it (the
+    // box and its highlights stay).
+    if (app.findTarget()) |w| if (!w.find_r.contains(x, y)) {
+        w.find_keys = false;
+        app.dirty = true;
+    };
     // The open right-click menu: a left click inside picks an item; a
     // click outside only closes it (a right click opens it again there).
     if (app.sub_menu) |*sm| if (sm.contains(x, y)) {
@@ -3986,7 +4214,16 @@ fn onClick(app: *App, x: f32, y: f32, button: u8, clicks: u8) void {
     }
     // A maximized job window covers everything.
     if (app.maximizedShown()) |m| return app.clickJob(m, x, y, button, clicks);
-    if (app.prompt.rect.contains(x, y)) return app.clearFocus();
+    if (app.prompt.rect.contains(x, y)) {
+        app.clearFocus();
+        // In its text: the cursor goes there (Shift: selects to it), a
+        // double click selects a word, a triple all; dragging selects.
+        if (button == c.SDL_BUTTON_LEFT and app.prompt.input_r.contains(x, y)) {
+            app.prompt.press(x, y, clicks, c.SDL_GetModState() & c.SDL_KMOD_SHIFT != 0);
+            app.text_drag = .prompt;
+        }
+        return;
+    }
     // The job grid's header: the checkbox and the sort button; the rest of
     // it does nothing.
     if (app.grid_head_r.contains(x, y)) {
@@ -4027,6 +4264,16 @@ fn clickJob(app: *App, i: usize, x: f32, y: f32, button: u8, clicks: u8) void {
         // A shell waiting at its prompt closes, like a finished window.
         .close => app.closeOrKillMenu(i),
         .kill => w.kill(),
+        // The find box takes the keyboard; its × closes find.
+        .find_box => {
+            app.dropFindKeys();
+            w.find_keys = true;
+            if (button == c.SDL_BUTTON_LEFT) {
+                w.findPress(x, clicks, c.SDL_GetModState() & c.SDL_KMOD_SHIFT != 0);
+                app.text_drag = .{ .find = w.uid };
+            }
+        },
+        .find_close => w.closeFind(&app.gfx),
         .check => if (button == c.SDL_BUTTON_LEFT) app.toggleCheck(i),
         .copy => app.copyJob(w),
         .zoom_in => app.zoomJob(w, .in),
@@ -4054,6 +4301,7 @@ fn clickJob(app: *App, i: usize, x: f32, y: f32, button: u8, clicks: u8) void {
 }
 
 fn onMouseUp(app: *App) void {
+    app.text_drag = .none;
     // A press on a file name that didn't move: a plain click there, and
     // the name goes on the clipboard.
     if (app.file_press) |p| {
@@ -4080,6 +4328,19 @@ fn onMouseUp(app: *App) void {
 /// an I-beam pointer over its text.
 fn onMotion(app: *App, x: f32, y: f32) void {
     app.last_point_ms = c.SDL_GetTicks();
+    switch (app.text_drag) {
+        .none => {},
+        .prompt => {
+            app.prompt.dragTo(x, y);
+            app.dirty = true;
+            return;
+        },
+        .find => |uid| if (app.jobByUid(uid)) |w| {
+            w.findDrag(x);
+            app.dirty = true;
+            return;
+        },
+    }
     if (app.grid_drag) app.gridBarTo(y);
     // A press on a file name moved: held long enough → drag the file out;
     // else → select text from the press.
@@ -5990,12 +6251,15 @@ fn render(app: *App) void {
     }
     const job = app.focusedJob();
     const peek_keys = if (app.peek) |pk| pk.wantsKeys() else false;
+    const find_w = app.findTarget();
     if (peek_keys) {
         label = if (app.peek.?.kind != .git) "typing goes to the folder filter — Esc closes it" else "typing goes to the branch filter — Esc closes it";
+    } else if (find_w) |w| {
+        label = std.fmt.bufPrint(&label_buf, "typing goes to find in #{d} — Enter: done, Esc closes it", .{w.serial}) catch "›";
     } else if (job) |w| {
         label = std.fmt.bufPrint(&label_buf, "typing goes to #{d} — click here or Ctrl+Tab for the gtty prompt", .{w.serial}) catch "›";
     }
-    if (job != null or peek_keys) {
+    if (job != null or peek_keys or find_w != null) {
         label_col = t.dim;
         hint = null;
     }
@@ -6003,7 +6267,7 @@ fn render(app: *App) void {
         .label = label,
         .label_color = label_col,
         .hint = hint,
-        .cursor_visible = job == null and !peek_keys,
+        .cursor_visible = job == null and !peek_keys and find_w == null,
         .text_color = if (app.reject_until != 0) t.stderr_accent else null,
     });
     var help_buf: [512]u8 = undefined;
