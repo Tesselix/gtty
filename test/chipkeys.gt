@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Chip shortcuts: ⌘1 folder, ⌘2 git, ⌘3 recent (Ctrl+Shift+1… on Linux)
+# open the current window's chip expanded (the number on each chip's
+# key-cap); the same key again or Esc closes it, the keyboard back to the
+# window. Run from a git repo under a scratch home:
+#   S=$(mktemp -d); mkdir -p $S/home/alpha $S/home/beta; echo "PROMPT='%1~ %# '" > $S/home/.zshrc
+#   cd $S/home/alpha && git init -q && git commit -q --allow-empty -m x && git branch feature
+#   printf '4\t%s\t%s\n' $(date +%s) $S/home/beta > $S/recent
+#   HOME=$S/home ZDOTDIR=$S/home GTTY_RECENT=$S/recent gtty --script $REPO/test/chipkeys.gt
+# Expected: keys0 the chips with 1 2 3; keys1 the folders list; keys2 the
+# branches; keys3 the recent list; keys4 none, "alpha % ok" typed.
+/s zsh
+/wait 1500
+/shot keys0-chips.bmp
+/key cmd+1
+/wait 400
+/shot keys1-folder.bmp
+/key escape
+/key cmd+2
+/wait 600
+/shot keys2-git.bmp
+/key cmd+2
+/key cmd+3
+/wait 400
+/shot keys3-recent.bmp
+/key cmd+3
+/wait 300
+/text ok
+/wait 300
+/shot keys4-closed.bmp
+/quit
