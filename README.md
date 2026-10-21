@@ -1,5 +1,7 @@
 # gtty — True Graphic Virtual Terminal
 
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/gttyterm/gtty/badge)](https://scorecard.dev/viewer/?uri=github.com/gttyterm/gtty)
+
 A multi-window terminal: all your shells and commands on one screen, side
 by side or one click away.
 

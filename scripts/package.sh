@@ -122,11 +122,11 @@ if [ -n "${GTTY_SIGN_ID:-}" ]; then
         echo "== notarizing (a few minutes)"
         xcrun notarytool submit "$DMG" --key "$GTTY_NOTARY_KEY" \
             --key-id "$GTTY_NOTARY_KEY_ID" --issuer "$GTTY_NOTARY_ISSUER" --wait
-        xcrun stapler staple "$DMG"
+        retry 5 xcrun stapler staple "$DMG"
     elif [ -n "${GTTY_NOTARY_PROFILE:-}" ]; then
         echo "== notarizing (a few minutes)"
         xcrun notarytool submit "$DMG" --keychain-profile "$GTTY_NOTARY_PROFILE" --wait
-        xcrun stapler staple "$DMG"
+        retry 5 xcrun stapler staple "$DMG"
     fi
 fi
 

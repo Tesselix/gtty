@@ -1040,7 +1040,15 @@ decisions; items marked *open* are undecided.
   (a release already made by hand for the tag: `gh release edit` the
   flags + `upload --clobber`); workflow-level
   `permissions: {}`, the job asks for `contents: write` explicitly; run by
-  hand = the same build as an artifact, no release).
+  hand = the same build as an artifact, no release); `scorecard.yml`
+  (OpenSSF Scorecard on a push to main, weekly, branch protection
+  changes, by hand: SARIF to the Security tab + published to
+  scorecard.dev for the README badge; actions pinned by SHA, the shape
+  publishing demands: `permissions: read-all`, no top-level env);
+  `scorecard-preview.yml` (a push to develop or by hand: the scorecard
+  CLI, checksum-checked, `--commit` on that commit, score + reasons in
+  the run summary, nothing published; repo-wide checks only in the
+  published score).
 - **Releases** (two channels, from the tag's MINOR; tags
   `vMAJOR.MINOR.PATCH`): **odd minor = edge** (features being tested;
   GitHub pre-release, not latest; environment `edge`), **even minor =

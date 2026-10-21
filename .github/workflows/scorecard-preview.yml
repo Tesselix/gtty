@@ -1,0 +1,63 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# OpenSSF Scorecard preview: the score of develop (or any branch, run by
+# hand) before it reaches main and a release. Nothing is published: the
+# score and each check's reason go in the run's summary, the full JSON as
+# an artifact. scorecard.yml publishes the real score from main.
+#
+# The scorecard CLI with --commit runs the checks that work on one commit
+# (pinned actions, token permissions, dangerous workflows, security
+# policy, code review, …); repo-wide ones (Branch-Protection, Maintained,
+# Signed-Releases) only show up in the published score.
+name: Scorecard preview
+
+on:
+  push:
+    branches: [develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scorecard-preview-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    name: Scorecard preview
+    runs-on: ubuntu-24.04
+    env:
+      SCORECARD_VERSION: 5.6.0
+      SCORECARD_SHA256: 19bde07129450cb65a95c6e3b9f34e034341579e6f0e241546ec3ae6efb2dd9a
+    steps:
+      - name: Install scorecard
+        run: |
+          f="scorecard_${SCORECARD_VERSION}_linux_amd64.tar.gz"
+          curl -fsSLo "$f" "https://github.com/ossf/scorecard/releases/download/v${SCORECARD_VERSION}/$f"
+          echo "$SCORECARD_SHA256  $f" | sha256sum -c -
+          tar xzf "$f" scorecard
+      - name: Run scorecard
+        env:
+          GITHUB_AUTH_TOKEN: ${{ github.token }}
+        run: |
+          ./scorecard --repo="github.com/${{ github.repository }}" \
+            --commit="${{ github.sha }}" --format=json --output=results.json
+      - name: Summary
+        run: |
+          {
+            echo "## OpenSSF Scorecard preview: $(jq -r .score results.json) / 10"
+            echo
+            echo "\`${{ github.ref_name }}\` at \`${{ github.sha }}\` (not published)"
+            echo
+            echo "| Check | Score | Reason |"
+            echo "|---|---|---|"
+            jq -r '.checks | sort_by(.score) | .[]
+              | "| \(.name) | \(if .score < 0 then "–" else .score end) | \(.reason) |"' results.json
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: scorecard-preview
+          path: results.json
+          retention-days: 14
