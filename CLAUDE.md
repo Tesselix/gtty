@@ -1036,8 +1036,8 @@ decisions; items marked *open* are undecided.
 - **GitHub Actions** (`.github/workflows/`): `ci.yml` (pull requests
   and by hand only, nothing on a push to main: build + unit tests on
   ubuntu-24.04 with `-Dbundled-sdl` and macos-15 with Homebrew SDL3;
-  `contents: read`); `release.yml` (a pushed tag `v*.*.*`, must match
-  build.zig.zon; job `channel` (ubuntu, fetch-depth 0) checks the tag
+  `contents: read`); `release.yml` (a pushed tag `v*.*.*`, the version: written into
+  build.zig.zon for the build, not committed; job `channel` (ubuntu, fetch-depth 0) checks the tag
   form, picks the channel (see "Releases") and guards a stable x.y.0;
   then macos-15, environment `edge` or `release` with the signing
   secrets, runs `scripts/sign-macos.sh`
@@ -1063,10 +1063,12 @@ decisions; items marked *open* are undecided.
   `vMAJOR.MINOR.PATCH`): **odd minor = edge** (features being tested;
   GitHub pre-release, not latest; environment `edge`), **even minor =
   stable** (normal release, latest; environment `release`). CI checks
-  only that and that the tag equals build.zig.zon's version at the
-  tagged commit (decided 2026-10-10: no branch or edge-tag checks).
-  Branches: `develop` and `main`; releases are tagged on main with
-  main's version, develop may be ahead. **Rulesets** (2026-10-21, for
+  only that (decided 2026-10-10: no branch or edge-tag checks). The
+  tag is the version (2026-10-21): release.yml writes it into
+  build.zig.zon for the build (never committed), so `--version` and
+  the package names follow the tag; build.zig.zon needn't match.
+  Branches: `develop` and `main`; releases are tagged on main,
+  develop may be ahead. **Rulesets** (2026-10-21, for
   the Scorecard): `main` only through a pull request (develop → main)
   with CI green (Linux + macOS jobs), 1 approval, branch up to date; no
   force push / deletion; the admin may bypass, in a PR only (merge with

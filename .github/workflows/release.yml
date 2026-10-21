@@ -1,17 +1,18 @@
 # SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Release: pushing a tag v<version> (the version in build.zig.zon) builds
-# the self-contained binaries, signs + notarizes the macOS dmg
-# (scripts/sign-macos.sh, secrets of the channel's environment), makes the
-# .deb / .rpm / .tar.gz and publishes them as a GitHub release.
+# Release: pushing a tag v<version> builds the self-contained binaries,
+# signs + notarizes the macOS dmg (scripts/sign-macos.sh, secrets of the
+# channel's environment), makes the .deb / .rpm / .tar.gz and publishes
+# them as a GitHub release.
 #
 # Two channels, from the tag's MINOR number:
 #   odd  (v1.9.2)  edge:   environment "edge", a pre-release, not latest;
 #   even (v1.10.0) stable: environment "release", a normal release, latest.
 #
-# Nothing else is checked: the tag must equal build.zig.zon's version at
-# the tagged commit (any branch).
+# Nothing else is checked. The tag is the version: build.zig.zon's
+# version is replaced by it for the build (not committed), so it needn't
+# match.
 #
 # Run by hand (Actions → Release → Run workflow): the same build, signed
 # and notarized, kept as a workflow artifact only; no release, no tag.
@@ -90,17 +91,22 @@ jobs:
       - name: Install packaging tools
         run: brew install nfpm
 
+      # The tag is the version: written into build.zig.zon here (this
+      # checkout only, never committed), so the binary's --version and the
+      # package names follow the tag whatever the file says. Run by hand:
+      # build.zig.zon's version as it is.
       - name: Version
         id: version
         env:
           TAG: ${{ github.event_name == 'push' && github.ref_name || '' }}
         run: |
+          if [ -n "$TAG" ]; then
+            v=${TAG#v}
+            sed -i '' "s/^\( *\.version = \)\".*\",/\1\"$v\",/" build.zig.zon
+          fi
           v=$(sed -n 's/^ *\.version = "\(.*\)",/\1/p' build.zig.zon | head -1)
           echo "version=$v" >> "$GITHUB_OUTPUT"
-          if [ -n "$TAG" ] && [ "$TAG" != "v$v" ]; then
-            echo "::error::tag $TAG doesn't match build.zig.zon's version $v (expected v$v)"
-            exit 1
-          fi
+          echo "version $v"
 
       # build-bin.sh (macOS + Linux binaries), package.sh (dmg, deb, rpm,
       # tar.gz), signing in a temporary keychain, notarization + staple.

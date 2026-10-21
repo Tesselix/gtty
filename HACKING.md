@@ -27,11 +27,12 @@ files stay outside the repo, in `$GTTY_SIGNING_DIR`, default `~/tmp`).
 
 CI (`.github/workflows/ci.yml`) builds and runs the unit tests on Linux
 and macOS for every pull request (a push to main runs nothing). A release
-is a pushed tag `v<version>` (the version in `build.zig.zon`);
+is a pushed tag `v<version>`;
 `.github/workflows/release.yml` builds, signs, notarizes and publishes
 the GitHub release with the packages. Odd minor (v1.9.x) = edge, a
-pre-release; even minor (v1.10.x) = stable. CI checks only that and
-that the tag equals `build.zig.zon`'s version at the tagged commit.
+pre-release; even minor (v1.10.x) = stable. The tag is the version: the
+release build writes it into `build.zig.zon` (not committed), so the
+file needn't match.
 Releases are tagged on `main`; `develop` may be ahead. `main` changes
 only through a pull request from `develop` with CI green. CodeQL
 (`.github/workflows/codeql.yml`) scans the C code and the workflows;
