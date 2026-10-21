@@ -19,6 +19,13 @@ Thanks for helping. A few rules:
   adds for you.
 - **AI.** AI-assisted contributions are welcome; you're responsible for
   understanding and testing what you submit.
+- **Tests.** New features and bug fixes come with tests: a unit test
+  (`zig build test`) for logic, a script test in `test/` (`gtty
+  --script`) for what the user sees. CI runs the build and the unit
+  tests on Linux and macOS for every pull request; `main` takes only
+  pull requests with CI green.
+- **Bugs and ideas** go in [GitHub issues](https://github.com/gttyterm/gtty/issues).
+  Security problems: privately, see [SECURITY.md](SECURITY.md).
 
 Building and testing are covered in [HACKING.md](HACKING.md): build, unit
 tests, and script mode for testing UI changes. The detailed feature notes
