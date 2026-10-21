@@ -8,38 +8,37 @@ Please report security problems privately, not in a public issue:
 tab).
 
 Say what you found, the gtty version (`gtty --version`) and your system,
-and how to reproduce it.
+and how to reproduce it. You'll get an answer within 7 days.
 
-## Disclosure process
-
-1. You'll get an answer within 7 days confirming the report was received.
-2. The problem is confirmed or rejected, and you're told which, as soon
-   as it has been looked into (usually within 14 days).
-3. A fix is prepared in a private fork (GitHub security advisory) and
-   released in each supported channel.
-4. Once the fix is out, the advisory is published (with a CVE when it
-   applies), crediting you unless you prefer not to be named.
-
-Please keep the problem private until the advisory is published, or for
-at most **90 days** from your report, whichever comes first. If a fix
-needs longer, we'll agree on a new date with you.
+Accepted vulnerabilities are fixed within 90 days, usually much sooner for
+serious ones. Please keep the details private until the fix is released
+and the advisory is published (coordinated disclosure); if you need a
+different timeline, say so in the report and we'll agree on one. Once a
+fix is released, the advisory is published with credit to you (unless you
+prefer not to be named).
 
 ## Supported versions
 
-Fixes go into the next release of each channel:
+gtty has two release channels, told apart by the minor version:
 
-| Channel | Versions | Supported |
-|---|---|---|
-| stable | the latest even minor (`v1.8.x`, …) | yes |
-| pre-release | the latest odd minor (`v1.9.x`, …) | yes |
-| older releases | | no: please update |
+| Channel | Minor version | Example | Supported |
+|---|---|---|---|
+| stable | even | `v1.10.x` | the latest stable release: yes |
+| edge | odd | `v1.9.x` | the latest edge release: yes |
+| older releases | | | no: please update |
+
+New work is released on the edge channel first. When an edge release has
+proven stable, the same commit is tagged as the next stable release (for
+example `v1.9.6` becomes `v1.10.2`); the stable release notes say which
+edge release it was promoted from. A security fix is released on both
+channels.
 
 ## What gtty does to stay safe
 
 - Release binaries for macOS are signed with a Developer ID and notarized
-  by Apple; every release lists SHA-256 checksums (`SHA256SUMS`) and
-  carries SLSA build provenance (`gtty.intoto.jsonl`, verify with
-  `slsa-verifier`).
+  by Apple; every release lists SHA-256 checksums (`SHA256SUMS`) and SLSA
+  build provenance (`*.intoto.jsonl`) showing it was built by GitHub
+  Actions from this repository.
 - CodeQL scans the C code and the CI workflows on every change; the
   OpenSSF Scorecard checks the repository's practices.
 - gtty opens no network connections of its own, with two exceptions you
