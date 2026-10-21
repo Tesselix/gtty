@@ -169,15 +169,3 @@ chmod +x "$T/install.sh"
 tar -C "$STAGE" -czf "dist/gtty-$VERSION-linux-x86_64.tar.gz" "gtty-$VERSION-linux-x86_64"
 
 ls -l dist/
-
-# Distribution folder (Google Drive), next to build-bin.sh's GTTY/bin.
-GTTY_DIR="$HOME/Library/CloudStorage/GoogleDrive-feralkeep.studios@gmail.com/My Drive/GTTY"
-PKG_DIST=${GTTY_PKG_DIST:-"$GTTY_DIR/packages"}
-if [ -d "$(dirname "$PKG_DIST")" ]; then
-    mkdir -p "$PKG_DIST"
-    for f in "dist/gtty-$VERSION-macos.dmg" "dist/gtty_${VERSION}_amd64.deb" \
-             "dist/gtty-$VERSION-1.x86_64.rpm" "dist/gtty-$VERSION-linux-x86_64.tar.gz"; do
-        cp "$f" "$PKG_DIST/"
-    done
-    echo "copied to $PKG_DIST"
-fi

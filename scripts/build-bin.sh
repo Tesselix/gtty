@@ -29,10 +29,3 @@ build "$MACOS_TARGET" macos -Dmacos-sdk="$MACOS_SDK"
 build "$LINUX_TARGET" linux
 
 file bin/macos/gtty bin/linux/gtty
-
-# Distribution folder (Google Drive), when it exists on this machine.
-DIST=${GTTY_DIST:-"$HOME/Library/CloudStorage/GoogleDrive-feralkeep.studios@gmail.com/My Drive/GTTY/bin"}
-if [ -d "$DIST" ]; then
-    cp -R bin/ "$DIST/"
-    echo "copied to $DIST"
-fi
