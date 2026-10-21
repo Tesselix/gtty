@@ -1,50 +1,71 @@
 # SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Build + unit tests on Linux and macOS for every pull request (or run by
-# hand). A push to main runs nothing. Read-only: no secrets, no write access.
+# The pull request gate: gtty must build on every platform it ships for
+# (Linux and macOS). Build only: no tests, no artifacts, no secrets.
+# The job build-and-test is the status check main's ruleset requires;
+# keep its id and name.
 name: CI
 
 on:
   pull_request:
-  workflow_dispatch:
+    branches: [main]
+  push:
+    branches: [main]
 
 permissions:
   contents: read
 
+# A new push to a pull request cancels its run still going; runs on main
+# all finish.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  linux:
-    name: Linux (x86_64)
+  build:
+    name: Build (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # SDL3 / SDL3_ttf / freetype from source (-Dbundled-sdl): the
+          # distribution's SDL3 may be missing or too old.
+          - name: Linux x86_64
+            os: ubuntu-24.04
+            flags: -Dbundled-sdl
+          # As on a developer's Mac: Homebrew's SDL3 (build.zig looks in
+          # /opt/homebrew).
+          - name: macOS arm64
+            os: macos-15
+            brew: sdl3 sdl3_ttf
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # No version: setup-zig reads minimum_zig_version from build.zig.zon.
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+      - name: Install SDL3
+        if: matrix.brew
+        env:
+          BREW_PACKAGES: ${{ matrix.brew }}
+        run: brew install $BREW_PACKAGES
+      - name: Build
+        env:
+          FLAGS: ${{ matrix.flags }}
+        run: zig build $FLAGS
+
+  # The required status check: green only when every build is.
+  build-and-test:
+    name: build-and-test
+    needs: [build]
+    if: always()
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: 0.16.0
-      # SDL3 / SDL3_ttf / freetype from source (-Dbundled-sdl): the
-      # distribution's SDL3 may be missing or too old.
-      - name: Build
-        run: zig build -Dbundled-sdl
-      - name: Unit tests
-        run: zig build test -Dbundled-sdl
-
-  macos:
-    name: macOS (arm64)
-    runs-on: macos-15
-    steps:
-      - uses: actions/checkout@v5
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: 0.16.0
-      # As on a developer's Mac: Homebrew's SDL3 (build.zig looks in
-      # /opt/homebrew).
-      - name: Install SDL3
-        run: brew install sdl3 sdl3_ttf
-      - name: Build
-        run: zig build
-      - name: Unit tests
-        run: zig build test
+      - name: All builds passed
+        env:
+          RESULT: ${{ needs.build.result }}
+        run: |
+          echo "build: $RESULT"
+          [ "$RESULT" = success ]
