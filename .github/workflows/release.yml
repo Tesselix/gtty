@@ -1,115 +1,93 @@
 # SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Release: pushing a tag v<version> builds the self-contained binaries,
-# signs + notarizes the macOS dmg (scripts/sign-macos.sh, secrets of the
-# channel's environment), makes the .deb / .rpm / .tar.gz and publishes
-# them as a GitHub release.
+# Release: a release published in the GitHub UI (Releases → Draft a new
+# release, which creates the tag vMAJOR.MINOR.PATCH on main) gets its
+# files here: the self-contained binaries, the signed + notarized macOS
+# dmg (scripts/sign-macos.sh), the .deb / .rpm / .tar.gz, SHA256SUMS and
+# SLSA build provenance (*.intoto.jsonl).
 #
-# Two channels, from the tag's MINOR number:
-#   odd  (v1.9.2)  edge:   environment "edge", a pre-release, not latest;
-#   even (v1.10.0) stable: environment "release", a normal release, latest.
+# The tag is the version (-Dversion, GTTY_VERSION); nothing in the repo
+# holds one. Its MINOR picks the kind of release:
+#   odd  (v1.3.0, v0.5.2)  a pre-release;
+#   even (v1.4.0, v0.6.1)  a stable release, marked latest.
 #
-# Nothing else is checked. The tag is the version: build.zig.zon's
-# version is replaced by it for the build (not committed), so it needn't
-# match.
-#
-# Run by hand (Actions → Release → Run workflow): the same build, signed
-# and notarized, kept as a workflow artifact only; no release, no tag.
-#
-# The secrets (MACOS_CERT_P12, MACOS_CERT_PASSWORD, KEYCHAIN_PASSWORD,
-# APPLE_API_KEY_P8, APPLE_API_KEY_ID, APPLE_API_ISSUER_ID, APPLE_TEAM_ID)
-# are loaded by scripts/set-github-secrets.sh.
+# The signing secrets (environment "release": MACOS_CERT_P12,
+# MACOS_CERT_PASSWORD, KEYCHAIN_PASSWORD, APPLE_API_KEY_P8,
+# APPLE_API_KEY_ID, APPLE_API_ISSUER_ID, APPLE_TEAM_ID) are loaded by
+# scripts/set-github-secrets.sh.
 name: Release
 
 on:
-  push:
-    tags: ['v*.*.*']
-  workflow_dispatch:
+  release:
+    types: [published]
 
-# Nothing by default; the job asks for exactly what it needs.
-permissions: {}
+permissions:
+  contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.event.release.tag_name }}
   cancel-in-progress: false
 
+env:
+  TAG: ${{ github.event.release.tag_name }}
+
 jobs:
-  # Which channel the tag is for: edge (odd minor) or stable (even minor).
+  # The tag's form, and pre-release or stable from its MINOR.
   channel:
-    name: Channel
+    name: Check the tag, set the release kind
     runs-on: ubuntu-24.04
     permissions:
-      contents: read
+      contents: write # gh release edit
     outputs:
-      env: ${{ steps.channel.outputs.env }}
-      prerelease: ${{ steps.channel.outputs.prerelease }}
+      tag: ${{ steps.check.outputs.tag }}
     steps:
-      - name: Channel from the tag
-        id: channel
-        env:
-          TAG: ${{ github.ref_name }}
+      - name: Check the tag
+        id: check
         run: |
-          # Run by hand on a branch: a build only (no release), with the
-          # stable environment's secrets, as before.
-          if [ "$GITHUB_EVENT_NAME" != push ]; then
-            echo "env=release" >> "$GITHUB_OUTPUT"
-            echo "prerelease=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if ! [[ "$TAG" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
-            echo "::error::tag $TAG isn't v<major>.<minor>.<patch> (digits only)"
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::tag $TAG isn't vMAJOR.MINOR.PATCH (digits only)"
             exit 1
           fi
-          minor=${BASH_REMATCH[2]}
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+      - name: Pre-release or stable
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          minor=${TAG#v*.}
+          minor=${minor%%.*}
           if (( 10#$minor % 2 == 1 )); then
-            chan=edge env=edge prerelease=true
+            echo "$TAG: odd minor, a pre-release"
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease
           else
-            chan=stable env=release prerelease=false
+            echo "$TAG: even minor, a stable release (latest)"
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease=false --latest
           fi
-          echo "$TAG: $chan ($env, pre-release: $prerelease)"
-          echo "env=$env" >> "$GITHUB_OUTPUT"
-          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
 
-  release:
-    name: Build, sign, notarize, publish
+  build:
+    name: Build, sign, notarize, upload
     needs: channel
     runs-on: macos-15
-    environment: ${{ needs.channel.outputs.env }}
+    environment: release
     permissions:
-      contents: write # create the release and upload the packages
+      contents: write # gh release upload
     timeout-minutes: 60
+    outputs:
+      hashes: ${{ steps.sums.outputs.hashes }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: 0.16.0
+      # No version: setup-zig reads minimum_zig_version from build.zig.zon.
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
 
       - name: Install packaging tools
         run: brew install nfpm
 
-      # The tag is the version: written into build.zig.zon here (this
-      # checkout only, never committed), so the binary's --version and the
-      # package names follow the tag whatever the file says. Run by hand:
-      # build.zig.zon's version as it is.
-      - name: Version
-        id: version
-        env:
-          TAG: ${{ github.event_name == 'push' && github.ref_name || '' }}
-        run: |
-          if [ -n "$TAG" ]; then
-            v=${TAG#v}
-            sed -i '' "s/^\( *\.version = \)\".*\",/\1\"$v\",/" build.zig.zon
-          fi
-          v=$(sed -n 's/^ *\.version = "\(.*\)",/\1/p' build.zig.zon | head -1)
-          echo "version=$v" >> "$GITHUB_OUTPUT"
-          echo "version $v"
-
-      # build-bin.sh (macOS + Linux binaries), package.sh (dmg, deb, rpm,
-      # tar.gz), signing in a temporary keychain, notarization + staple.
+      # build-bin.sh (macOS + Linux binaries, ReleaseSafe, -Dversion),
+      # package.sh (dmg, deb, rpm, tar.gz), signing in a temporary
+      # keychain, notarization + staple.
       - name: Build, sign and notarize
         env:
           MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
@@ -119,7 +97,9 @@ jobs:
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: scripts/sign-macos.sh
+        run: |
+          export GTTY_VERSION="${TAG#v}"
+          scripts/sign-macos.sh
 
       # stapler and spctl ask Apple's servers, which drop the connection
       # now and then (stapler: "The network connection was lost", error
@@ -134,7 +114,7 @@ jobs:
             done
             return 1
           }
-          dmg="dist/gtty-${{ steps.version.outputs.version }}-macos.dmg"
+          dmg="dist/gtty-${TAG#v}-macos.dmg"
           codesign --verify --strict --verbose=2 "$dmg"
           retry 5 xcrun stapler validate "$dmg"
           retry 5 spctl --assess --type open --context context:primary-signature --verbose "$dmg"
@@ -143,45 +123,44 @@ jobs:
           retry 5 spctl --assess --type execute --verbose "$mnt/gtty.app"
           hdiutil detach -quiet "$mnt"
 
+      # SHA256SUMS for users; the same lines, base64, are the provenance's
+      # subjects.
       - name: Checksums
+        id: sums
         run: |
+          v=${TAG#v}
           cd dist
-          v=${{ steps.version.outputs.version }}
-          shasum -a 256 "gtty-$v-macos.dmg" "gtty_${v}_amd64.deb" "gtty-$v-1.x86_64.rpm" "gtty-$v-linux-x86_64.tar.gz" > "gtty-$v-SHA256SUMS.txt"
-          cat "gtty-$v-SHA256SUMS.txt"
+          shasum -a 256 "gtty-$v-macos.dmg" "gtty_${v}_amd64.deb" \
+            "gtty-$v-1.x86_64.rpm" "gtty-$v-linux-x86_64.tar.gz" > SHA256SUMS
+          cat SHA256SUMS
+          echo "hashes=$(base64 < SHA256SUMS | tr -d '\n')" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: gtty-${{ steps.version.outputs.version }}
-          path: |
-            dist/gtty-${{ steps.version.outputs.version }}-*
-            dist/gtty_${{ steps.version.outputs.version }}_*
-          if-no-files-found: error
-
-      # Edge: a pre-release, never latest. Stable: a normal release, latest.
-      # A release made by hand for this tag already: its notes stay, the
-      # channel's flags are set and the files uploaded (replacing any).
-      - name: Publish the release
-        if: github.event_name == 'push'
+      - name: Upload to the release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
-          PRERELEASE: ${{ needs.channel.outputs.prerelease }}
         run: |
-          v=${{ steps.version.outputs.version }}
-          files=("dist/gtty-$v-macos.dmg" "dist/gtty_${v}_amd64.deb"
-            "dist/gtty-$v-1.x86_64.rpm" "dist/gtty-$v-linux-x86_64.tar.gz"
-            "dist/gtty-$v-SHA256SUMS.txt")
-          if [ "$PRERELEASE" = true ]; then
-            flags=(--prerelease --latest=false)
-          else
-            flags=(--prerelease=false --latest)
-          fi
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
-            # Deleting a tag turns its release into a draft: publish it.
-            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false "${flags[@]}"
-            gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber "${files[@]}"
-          else
-            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
-              --title "$TAG" --generate-notes "${flags[@]}" "${files[@]}"
-          fi
+          v=${TAG#v}
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+            "dist/gtty-$v-macos.dmg" "dist/gtty_${v}_amd64.deb" \
+            "dist/gtty-$v-1.x86_64.rpm" "dist/gtty-$v-linux-x86_64.tar.gz" \
+            dist/SHA256SUMS
+
+  # SLSA build provenance for the Signed-Releases check, uploaded to the
+  # release as gtty.intoto.jsonl. The generator must be referenced by tag,
+  # not SHA (its documented requirement; Scorecard accepts it).
+  provenance:
+    name: SLSA provenance
+    needs: [channel, build]
+    permissions:
+      actions: read # read the workflow run
+      id-token: write # sign the provenance
+      contents: write # upload it to the release
+    # By tag, not SHA: the generator verifies its own ref and fails when
+    # pinned to a commit (see its README). CodeQL's unpinned-tag alert
+    # for this line is dismissed as "won't fix"; Scorecard exempts it.
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects: ${{ needs.build.outputs.hashes }}
+      provenance-name: gtty.intoto.jsonl
+      upload-assets: true
+      upload-tag-name: ${{ needs.channel.outputs.tag }}

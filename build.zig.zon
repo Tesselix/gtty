@@ -3,7 +3,9 @@
 
 .{
     .name = .gtty,
-    .version = "1.8.3",
+    // Placeholder, read by nothing: the version lives only in git tags
+    // (vMAJOR.MINOR.PATCH) and reaches the build as -Dversion.
+    .version = "0.0.0",
     .fingerprint = 0xb6c7a54069045c3b,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{

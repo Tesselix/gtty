@@ -25,18 +25,18 @@ files stay outside the repo, in `$GTTY_SIGNING_DIR`, default `~/tmp`).
 `scripts/set-github-secrets.sh` loads them into the GitHub environment
 `release` for CI. Details in CLAUDE.md ("Signed releases").
 
-CI (`.github/workflows/ci.yml`) builds and runs the unit tests on Linux
-and macOS for every pull request (a push to main runs nothing). A release
-is a pushed tag `v<version>`;
-`.github/workflows/release.yml` builds, signs, notarizes and publishes
-the GitHub release with the packages. Odd minor (v1.9.x) = edge, a
-pre-release; even minor (v1.10.x) = stable. The tag is the version: the
-release build writes it into `build.zig.zon` (not committed), so the
-file needn't match.
-Releases are tagged on `main`; `develop` may be ahead. `main` changes
-only through a pull request from `develop` with CI green. CodeQL
-(`.github/workflows/codeql.yml`) scans the C code and the workflows;
-security reports: [SECURITY.md](SECURITY.md).
+CI (`.github/workflows/ci.yml`) builds gtty on Linux and macOS for every
+pull request to `main` and every push to it; its `build-and-test` check
+must pass before a PR can merge. `main` is the only long-lived branch
+and changes only through squash-merged pull requests.
+A release is drafted in the GitHub UI (Releases → Draft a new release),
+which creates the tag `vMAJOR.MINOR.PATCH` on main; publishing it runs
+`.github/workflows/release.yml`: build, sign, notarize, upload the
+packages, `SHA256SUMS` and SLSA provenance. Odd minor (v1.9.x) = a
+pre-release; even minor (v1.10.x) = stable. The tag is the version
+(`zig build -Dversion=…`, default `dev`); nothing in the repo holds one.
+CodeQL (`.github/workflows/codeql.yml`) scans the C code and the
+workflows; security reports: [SECURITY.md](SECURITY.md).
 Details in CLAUDE.md ("Releases").
 
 Not yet: full-screen programs (vim, htop, less), bold/italic, and scrolling back past the memory window. New commands from the

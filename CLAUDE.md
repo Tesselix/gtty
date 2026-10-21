@@ -825,8 +825,10 @@ decisions; items marked *open* are undecided.
   `dmg-background.swift`),
   `.deb` + `.rpm` (`packaging/linux/nfpm.yaml`: `/usr/bin/gtty`,
   `gtty.desktop`, hicolor icons resized from `src/assets/gtty-icon.png`)
-  and a `.tar.gz` with `install.sh`. Version = build.zig.zon (also
-  `build_options.version`). Every package carries `LICENSE` and
+  and a `.tar.gz` with `install.sh`. Version = `GTTY_VERSION` (releases:
+  the tag; build-bin.sh passes `-Dversion`, default `dev`, into
+  `build_options.version`; package.sh defaults to `0.0.0-dev`, nfpm wants
+  semver); build.zig.zon's `.version` is a placeholder nothing reads. Every package carries `LICENSE` and
   `THIRD_PARTY.md` (gtty.app: `Contents/Resources`; Linux:
   `share/doc/gtty`). Signing: `GTTY_SIGN_ID`, notarizing:
   `GTTY_NOTARY_PROFILE` (keychain profile) or `GTTY_NOTARY_KEY` /
@@ -852,7 +854,7 @@ decisions; items marked *open* are undecided.
   certificate goes into a temporary keychain (removed on exit), the API
   key into a temp file, `GTTY_NOTARY_KEY*` for package.sh.
 - **`scripts/set-github-secrets.sh`** (bash, re-run after the yearly
-  certificate renewal): `gh secret set --env release` on gttyterm/gitty
+  certificate renewal): `gh secret set --env release` on gttyterm/gtty
   (`GTTY_GITHUB_REPO`; creates the environment if needed): needs `gh`
   logged in and the three files (names each missing one); asks the .p12
   password hidden and tries it on a throwaway keychain; sets
@@ -863,8 +865,7 @@ decisions; items marked *open* are undecided.
   needs `-legacy`, or `security import` can't read it. The binary also embeds
   `gtty-icon.png` as its window / Dock icon (`App.setIcon`) and sets the
   SDL app id `gtty` (matches the .desktop file on Wayland / X11).
-  `dist/` is not in git (`packaging/` is: CI needs it); the packages are also copied to
-  the Google Drive `GTTY/packages` folder (`GTTY_PKG_DIST`).
+  `dist/` is not in git (`packaging/` is: CI needs it).
 - **Script mode** (`gtty --script file`) is how to test UI changes: each line
   is typed into the prompt; hooks run directly: `/wait ms`, `/shot x.bmp`
   (screenshot; convert with `sips -s format png`), `/type text` (text + Enter
@@ -1031,51 +1032,43 @@ decisions; items marked *open* are undecided.
   done through a dialog / window (the dialog is the indication).
 
 - Repo: git.foodineat.com, org GTTY, repo gtty (Forgejo); public:
-  GitHub `git@github.com:gttyterm/gitty.git` (repo name **gitty**). Local:
-  ~/src/gtty/gtty.
-- **GitHub Actions** (`.github/workflows/`): `ci.yml` (pull requests
-  and by hand only, nothing on a push to main: build + unit tests on
-  ubuntu-24.04 with `-Dbundled-sdl` and macos-15 with Homebrew SDL3;
-  `contents: read`); `release.yml` (a pushed tag `v*.*.*`, the version: written into
-  build.zig.zon for the build, not committed; job `channel` (ubuntu, fetch-depth 0) checks the tag
-  form, picks the channel (see "Releases") and guards a stable x.y.0;
-  then macos-15, environment `edge` or `release` with the signing
-  secrets, runs `scripts/sign-macos.sh`
-  (CI path: temporary keychain, API-key notarization) → build-bin.sh +
-  package.sh, checks the dmg (codesign, stapler, spctl), SHA256SUMS,
-  `gh release create --generate-notes` with the dmg, .deb, .rpm, .tar.gz
-  (a release already made by hand for the tag: `gh release edit` the
-  flags + `upload --clobber`); workflow-level
-  `permissions: {}`, the job asks for `contents: write` explicitly; run by
-  hand = the same build as an artifact, no release); `scorecard.yml`
-  (OpenSSF Scorecard on a push to main, weekly, branch protection
-  changes, by hand: SARIF to the Security tab + published to
-  scorecard.dev for the README badge; actions pinned by SHA, the shape
-  publishing demands: `permissions: read-all`, no top-level env);
-  `scorecard-preview.yml` (a push to develop or by hand: the scorecard
-  CLI, checksum-checked, `--commit` on that commit, score + reasons in
-  the run summary, nothing published; repo-wide checks only in the
-  published score); `codeql.yml` (CodeQL, `security-extended`: C in
-  `src/sys/` with build-mode none, no Zig support, and the workflows;
-  pushes to main / develop, PRs, weekly; alerts in the Security tab).
-  Vulnerability reports: `SECURITY.md` (GitHub private reporting).
-- **Releases** (two channels, from the tag's MINOR; tags
-  `vMAJOR.MINOR.PATCH`): **odd minor = edge** (features being tested;
-  GitHub pre-release, not latest; environment `edge`), **even minor =
-  stable** (normal release, latest; environment `release`). CI checks
-  only that (decided 2026-10-10: no branch or edge-tag checks). The
-  tag is the version (2026-10-21): release.yml writes it into
-  build.zig.zon for the build (never committed), so `--version` and
-  the package names follow the tag; build.zig.zon needn't match.
-  Branches: `develop` and `main`; releases are tagged on main,
-  develop may be ahead. **Rulesets** (2026-10-21, for
-  the Scorecard): `main` only through a pull request (develop → main)
-  with CI green (Linux + macOS jobs), 1 approval, branch up to date; no
-  force push / deletion; the admin may bypass, in a PR only (merge with
-  "bypass rules"). `develop`: no force push / deletion, direct pushes
-  fine. Version bumps go on develop, then the PR. The Finder layout
-  of the dmg needs Automation access on the runner; if it fails the dmg
-  is unarranged (warning only).
+  GitHub `git@github.com:gttyterm/gtty.git`. Local:
+  ~/src/gttyterm/gtty.
+- **GitHub Actions** (`.github/workflows/`; every action pinned by SHA
+  with a `# vX.Y.Z` comment, Dependabot moves them weekly,
+  `.github/dependabot.yml`; top-level `permissions: contents: read`,
+  writes per job; `${{ github.event.* }}` only through `env:`; no
+  `pull_request_target` / `workflow_run`): `ci.yml` (PRs to main and
+  pushes to main: `zig build` only, matrix ubuntu-24.04 with
+  `-Dbundled-sdl` / macos-15 with Homebrew SDL3, Zig from
+  `minimum_zig_version`; the job **`build-and-test`** (`needs` + `if:
+  always()`) is the ruleset's required check: keep its id and name);
+  `release.yml` (`release: published`: `TAG` from the release, checked
+  against `^v[0-9]+\.[0-9]+\.[0-9]+$`; odd MINOR → `gh release edit
+  --prerelease`, even → `--prerelease=false --latest`; macos-15,
+  environment `release` with the signing secrets: `sign-macos.sh` with
+  `GTTY_VERSION=${TAG#v}` (CI path: temporary keychain, API-key
+  notarization) → build-bin.sh (ReleaseSafe, `-Dversion`) + package.sh,
+  dmg checks (codesign, stapler, spctl), `SHA256SUMS`, `gh release
+  upload --clobber`; then slsa-github-generator's generic generator
+  (referenced by tag, as it requires) uploads `gtty.intoto.jsonl`);
+  `codeql.yml` (actions + c-cpp with build-mode none, no Zig support,
+  `security-extended`; PRs to main, pushes to main, weekly);
+  `scorecard.yml` (the ossf/scorecard-action template: push to main,
+  weekly, `branch_protection_rule`; SARIF to the Security tab + published
+  to scorecard.dev for the README badge; no top-level env, only the
+  template's steps). Vulnerability reports: `SECURITY.md` (GitHub private
+  reporting, 90-day disclosure).
+- **Releases** (trunk-based, 2026-10-21): `main` is the only long-lived
+  branch, changed only by squash-merged PRs (ruleset: linear history,
+  branch up to date, required check `build-and-test`, no force push /
+  deletion, no bypass). Tags `v*` can't be moved or deleted. A release
+  is drafted in the GitHub UI (Releases → Draft a new release), which
+  creates the tag `vMAJOR.MINOR.PATCH` on main; publishing it runs
+  release.yml. **Odd MINOR = pre-release, even MINOR = stable** (latest).
+  The version lives **only in the tag**: no version bumps in the repo.
+  The Finder layout of the dmg needs Automation access on the runner;
+  if it fails the dmg is unarranged (warning only).
 - Keep platform-specific C in `src/sys/`; keep `@cImport` only in `src/c.zig`.
 - Every window gets a unique id (`ids.Id`, u32, shown as 8 hex digits);
   job windows also get a serial number (#1, #2, …): the label the user sees

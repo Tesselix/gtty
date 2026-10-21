@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Loads the macOS release secrets into the GitHub environment "release" of
-# gttyterm/gitty (GTTY_GITHUB_REPO to use another), for CI's
+# gttyterm/gtty (GTTY_GITHUB_REPO to use another), for CI's
 # scripts/sign-macos.sh. Run it again after the yearly certificate
 # renewal: every secret is replaced.
 #
@@ -13,7 +13,7 @@
 # Needs gh (https://cli.github.com), logged in: gh auth login.
 set -euo pipefail
 
-REPO=${GTTY_GITHUB_REPO:-gttyterm/gitty}
+REPO=${GTTY_GITHUB_REPO:-gttyterm/gtty}
 ENV_NAME=release
 TEAM_ID=N25UN9L94Q
 DIR=${GTTY_SIGNING_DIR:-$HOME/tmp}

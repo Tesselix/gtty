@@ -7,7 +7,9 @@
 # - gtty_<v>_amd64.deb        Ubuntu / Debian      } /usr/bin/gtty, a launcher and
 # - gtty-<v>-1.x86_64.rpm     Fedora               } icons (src/assets/gtty-icon.png)
 # - gtty-<v>-linux-x86_64.tar.gz  the same files, for any other distro
-# The version is the one in build.zig.zon. Needs nfpm (brew install nfpm).
+# The version is GTTY_VERSION (default 0.0.0-dev: nfpm wants semver;
+# releases set it from the tag), also passed to build-bin.sh.
+# Needs nfpm (brew install nfpm).
 #
 # Signing (macOS), optional:
 #   GTTY_SIGN_ID="Developer ID Application: Name (TEAMID)"  sign the app + dmg
@@ -22,8 +24,9 @@
 set -eu
 cd "$(dirname "$0")/.."
 
-VERSION=$(sed -n 's/^ *\.version = "\(.*\)",/\1/p' build.zig.zon | head -1)
-[ -n "$VERSION" ] || { echo "no version in build.zig.zon" >&2; exit 1; }
+GTTY_VERSION=${GTTY_VERSION:-0.0.0-dev}
+export GTTY_VERSION
+VERSION=$GTTY_VERSION
 command -v nfpm >/dev/null || { echo "nfpm not found: brew install nfpm" >&2; exit 1; }
 
 [ "${SKIP_BUILD:-}" = 1 ] || scripts/build-bin.sh
@@ -169,15 +172,3 @@ chmod +x "$T/install.sh"
 tar -C "$STAGE" -czf "dist/gtty-$VERSION-linux-x86_64.tar.gz" "gtty-$VERSION-linux-x86_64"
 
 ls -l dist/
-
-# Distribution folder (Google Drive), next to build-bin.sh's GTTY/bin.
-GTTY_DIR="$HOME/Library/CloudStorage/GoogleDrive-feralkeep.studios@gmail.com/My Drive/GTTY"
-PKG_DIST=${GTTY_PKG_DIST:-"$GTTY_DIR/packages"}
-if [ -d "$(dirname "$PKG_DIST")" ]; then
-    mkdir -p "$PKG_DIST"
-    for f in "dist/gtty-$VERSION-macos.dmg" "dist/gtty_${VERSION}_amd64.deb" \
-             "dist/gtty-$VERSION-1.x86_64.rpm" "dist/gtty-$VERSION-linux-x86_64.tar.gz"; do
-        cp "$f" "$PKG_DIST/"
-    done
-    echo "copied to $PKG_DIST"
-fi
