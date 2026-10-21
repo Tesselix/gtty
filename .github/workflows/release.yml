@@ -9,10 +9,11 @@
 #
 # The tag is the version (-Dversion, GTTY_VERSION); nothing in the repo
 # holds one. Its MINOR picks the kind of release:
-#   odd  (v1.3.0, v0.5.2)  a pre-release;
-#   even (v1.4.0, v0.6.1)  a stable release, marked latest.
+#   odd  (v1.3.0, v0.5.2)  a pre-release, built in the environment "edge";
+#   even (v1.4.0, v0.6.1)  a stable release, marked latest, built in the
+#                          environment "release".
 #
-# The signing secrets (environment "release": MACOS_CERT_P12,
+# The signing secrets (in both environments: MACOS_CERT_P12,
 # MACOS_CERT_PASSWORD, KEYCHAIN_PASSWORD, APPLE_API_KEY_P8,
 # APPLE_API_KEY_ID, APPLE_API_ISSUER_ID, APPLE_TEAM_ID) are loaded by
 # scripts/set-github-secrets.sh.
@@ -41,6 +42,7 @@ jobs:
       contents: write # gh release edit
     outputs:
       tag: ${{ steps.check.outputs.tag }}
+      environment: ${{ steps.kind.outputs.environment }}
     steps:
       - name: Check the tag
         id: check
@@ -51,6 +53,7 @@ jobs:
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
       - name: Pre-release or stable
+        id: kind
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -59,16 +62,18 @@ jobs:
           if (( 10#$minor % 2 == 1 )); then
             echo "$TAG: odd minor, a pre-release"
             gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease
+            echo "environment=edge" >> "$GITHUB_OUTPUT"
           else
             echo "$TAG: even minor, a stable release (latest)"
             gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease=false --latest
+            echo "environment=release" >> "$GITHUB_OUTPUT"
           fi
 
   build:
     name: Build, sign, notarize, upload
     needs: channel
     runs-on: macos-15
-    environment: release
+    environment: ${{ needs.channel.outputs.environment }}
     permissions:
       contents: write # gh release upload
     timeout-minutes: 60
