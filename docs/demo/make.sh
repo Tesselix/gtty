@@ -8,7 +8,7 @@
 #
 # Each docs/demo/<name>.gt is a gtty script (`gtty --script`) that records
 # its frames with `/record start @FRAMES@` … `/record stop`; @FRAMES@ and
-# @ROOT@ (the demo world, see setup.sh) are filled in here. Frames are
+# @HOME@ (the demo world's home, see setup.sh) are filled in here. Frames are
 # PPM files plus frames.txt (each frame's time); identical frames are
 # merged, the last one is held 1.5 s, and img2webp (libwebp:
 # `brew install webp`, `apt install webp`) makes the looping WebP.
@@ -55,10 +55,12 @@ for name in $names; do
     GTTY_DEMO_ROOT=$ROOT docs/demo/setup.sh
     rm -rf "$WORK/$name"
     mkdir -p "$WORK/$name"
-    sed -e "s#@FRAMES@#$WORK/$name#g" -e "s#@ROOT@#$ROOT#g" "$script" > "$WORK/$name.gt"
-    # A neutral world: the demo's own home and zsh config, the
-    # project as gtty's folder; open / drag only say what they'd do.
-    (cd "$ROOT/shop" && env HOME="$ROOT/home" ZDOTDIR="$ROOT/home" SHELL=/bin/zsh \
+    sed -e "s#@FRAMES@#$WORK/$name#g" -e "s#@HOME@#$ROOT/home#g" "$script" > "$WORK/$name.gt"
+    # A neutral world: the demo's own home, zsh config and recent
+    # folders, the project as gtty's folder; open / drag only say what
+    # they'd do.
+    (cd "$ROOT/home/shop" && env HOME="$ROOT/home" ZDOTDIR="$ROOT/home" SHELL=/bin/zsh \
+        GTTY_RECENT="$ROOT/recent" \
         GIT_PAGER=cat PAGER=cat GTTY_FONT_SIZE=16 GTTY_ANIM_MS=260 GTTY_SHOW_DRY=1 GTTY_DRAG_DRY=1 \
         "$GTTY" --script "$WORK/$name.gt")
     encode "$WORK/$name" "$OUT/$name.webp"

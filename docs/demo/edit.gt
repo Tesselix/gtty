@@ -1,35 +1,39 @@
 # SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Editing the shell's line like a text field: ⌥←/→ jump words, Shift
-# selects, typing replaces the selection, ⌘V pastes over it (a name
-# copied from the output with a mouse drag).
+# Editing a long command (wrapped over two rows) with the mouse, as in a
+# text field: double-click a word and type over it, drag over a word and
+# delete it, click where the cursor should go; then run it.
 /resize 1200 760
 /s
 /wait 1800
-/type ls src/*.py
-/move 600 300
+/type clear
+/wait 500
+/text git log --since='2 weeks ago' --author=demo --pretty=format:'%h  %ad  %s' --date=short -- src/ docs/ CHANGES | grep -v docs | head -5
+/move 600 400
 /wait 600
 /pace 300
 /record start @FRAMES@ 20
-/wait 300
-/slow grep -n total src/catalog.py
-/wait 200
-/key alt+left
-/key left
-/key shift+alt+left
-/wait 200
-/slow price
-/wait 300
-/glide 24 75 400
-/drag 24 75 133 75
-/key cmd+c
-/wait 300
-/key cmd+right
-/key shift+alt+left
-/wait 350
-/key cmd+v
+/wait 500
+# double-click "weeks", type "days" over it
+/glide 305 53 500
+/dclick 305 53
+/wait 400
+/slow days
+/wait 400
+# drag over "docs/ ", delete it
+/glide 1035 53 500
+/drag 1035 53 1093 53
+/wait 400
+/key backspace
+/wait 400
+# a click past the line's end puts the cursor there: -5 → -3
+/glide 600 75 500
+/click 600 75
+/wait 400
+/key backspace
+/slow 3
 /wait 400
 /key enter
-/wait 900
+/wait 1200
 /record stop
 /quit

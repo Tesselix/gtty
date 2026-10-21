@@ -889,17 +889,24 @@ decisions; items marked *open* are undecided.
   forever): `docs/demo/make.sh [name…]` re-records them (all, or the
   named `docs/demo/<name>.gt`). It rebuilds the demo world with
   `docs/demo/setup.sh` (`$GTTY_DEMO_ROOT`, default /tmp/gtty-demo: a home
-  with a neutral zsh prompt, the `shop` git project with branches,
-  `Downloads/` for drops), runs gtty from `shop` with `HOME` / `ZDOTDIR`
-  there, `GTTY_FONT_SIZE=16`, `GIT_PAGER=cat`, `GTTY_SHOW_DRY=1`,
-  `GTTY_DRAG_DRY=1`, fills `@FRAMES@` / `@ROOT@` in the script, merges
+  with a neutral zsh prompt holding the `shop` git project with branches,
+  `api` / `blog` / `dotfiles`, `Downloads/` for drops, and
+  `$ROOT/recent`, a seeded recent-folders file: the recent chip lists
+  only folders under `$HOME`), runs gtty from `home/shop` with `HOME` /
+  `ZDOTDIR` there, `GTTY_RECENT`, `GTTY_FONT_SIZE=16`, `GIT_PAGER=cat`,
+  `GTTY_SHOW_DRY=1`, `GTTY_DRAG_DRY=1`, fills `@FRAMES@` / `@HOME@` in
+  the script, merges
   identical frames, holds the last 1.5 s, encodes with img2webp (lossy,
   q 80; `GTTY_DEMO_QUALITY`). Sizes: hero 1200×520, the rest 1200×760.
+  README order (2026-10-21, the user's): everyday shell work first (edit,
+  copy, files), then the chips (recent first), windows, sync.
   Needs a display (the window shows while it records; keep the mouse off
   it) and overwrites the clipboard. After UI changes, check the
-  coordinates in the scripts (title-bar copy ~25,24; chips y ~646: the
-  folder chip ~45, its peek's expand ~52,638 at 1200×760; the git chip
-  moves right when the folder name is longer). The README shows no AI (not ready).
+  coordinates in the scripts (1200×760: text rows y 53 + 22 n, columns
+  x 23 + 10 k; title-bar copy ~25,24; chips y ~644: the folder chip ~45
+  (hovering it expands its peek), the git chip ~150 with its peek's
+  expand ~148,638 in `src`, the recent chip ~275 in `shop`; the chips
+  move right when the folder name is longer). The README shows no AI (not ready).
 - Color test lines: use `\033`, not `\e` — macOS `/bin/bash` is 3.2 and its
   `echo -e` doesn't know `\e`. E.g. `/s bash` then
   `/type echo -e "\033[31mred \033[1;31mbold\033[0m"`; `/click` on the color
@@ -1040,7 +1047,15 @@ decisions; items marked *open* are undecided.
   (a release already made by hand for the tag: `gh release edit` the
   flags + `upload --clobber`); workflow-level
   `permissions: {}`, the job asks for `contents: write` explicitly; run by
-  hand = the same build as an artifact, no release).
+  hand = the same build as an artifact, no release); `scorecard.yml`
+  (OpenSSF Scorecard on a push to main, weekly, branch protection
+  changes, by hand: SARIF to the Security tab + published to
+  scorecard.dev for the README badge; actions pinned by SHA, the shape
+  publishing demands: `permissions: read-all`, no top-level env);
+  `scorecard-preview.yml` (a push to develop or by hand: the scorecard
+  CLI, checksum-checked, `--commit` on that commit, score + reasons in
+  the run summary, nothing published; repo-wide checks only in the
+  published score).
 - **Releases** (two channels, from the tag's MINOR; tags
   `vMAJOR.MINOR.PATCH`): **odd minor = edge** (features being tested;
   GitHub pre-release, not latest; environment `edge`), **even minor =

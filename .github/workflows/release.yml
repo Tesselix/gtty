@@ -115,15 +115,26 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: scripts/sign-macos.sh
 
+      # stapler and spctl ask Apple's servers, which drop the connection
+      # now and then (stapler: "The network connection was lost", error
+      # 68): those are tried up to 5 times, as package.sh's staple.
       - name: Check the dmg
         run: |
+          retry() {
+            n=$1; shift
+            for i in $(seq "$n"); do
+              "$@" && return 0
+              [ "$i" -lt "$n" ] && { echo "retrying in 15 s ($i/$n failed): $*"; sleep 15; }
+            done
+            return 1
+          }
           dmg="dist/gtty-${{ steps.version.outputs.version }}-macos.dmg"
           codesign --verify --strict --verbose=2 "$dmg"
-          xcrun stapler validate "$dmg"
-          spctl --assess --type open --context context:primary-signature --verbose "$dmg"
+          retry 5 xcrun stapler validate "$dmg"
+          retry 5 spctl --assess --type open --context context:primary-signature --verbose "$dmg"
           mnt=$(hdiutil attach -nobrowse -readonly "$dmg" | sed -n 's|^/dev/[^[:space:]]*[[:space:]]*Apple_HFS[[:space:]]*||p')
           codesign --verify --deep --strict --verbose=2 "$mnt/gtty.app"
-          spctl --assess --type execute --verbose "$mnt/gtty.app"
+          retry 5 spctl --assess --type execute --verbose "$mnt/gtty.app"
           hdiutil detach -quiet "$mnt"
 
       - name: Checksums
