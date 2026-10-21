@@ -666,7 +666,13 @@ the shell. Users expect it to behave like a shell in a terminal.
     window focused). Released without moving → a plain click
     (`mouseDown` + `mouseUp` at the press) that also copies the name
     (`copyNames`: text on the clipboard + paste history, the name
-    flashes, "copied X"; 2026-10-08, `test/copyname.gt`). Held `FileOpener.hold_ms`
+    flashes, "copied X"; 2026-10-08, `test/copyname.gt`). A command
+    being typed in that shell (`JobWindow.typingCommand`: at its prompt,
+    `Screen.inputPending`): the name (quoted when needed, `insertName`),
+    or a selection of earlier output clicked inside (`press_sel`,
+    `mouseUp` → `insertSel`), is typed at the shell's cursor instead,
+    at once, as a paste (`clickInsert`; 2026-10-21,
+    `test/clickinsert.gt`). Held `FileOpener.hold_ms`
     (300) → `opener.held` (`tickFilePress`; outline drawn solid). Moved
     ≥ 4 px: held → `App.dragFile` (`gtty_drag_file`,
     `src/sys/gtty_drag.m`: NSDraggingSession from the SDL window's

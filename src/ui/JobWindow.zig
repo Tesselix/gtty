@@ -199,6 +199,10 @@ follow: ?u32 = null,
 /// The selection was made with Shift + arrows in a shell's input line: its
 /// head follows the shell's cursor (see `editMove`).
 key_sel: bool = false,
+/// A plain press inside a selection of earlier output (`mouseDown`): let
+/// go without moving while a command is being typed, that text goes into
+/// the typed line (`mouseUp`).
+press_sel: ?Screen.Selection = null,
 /// Sync typing (App.updateSync): the window whose typing goes to the
 /// others (`source`), a read-only window that gets it (`follower`), or
 /// not in it.
@@ -2223,6 +2227,11 @@ pub fn hover(w: *JobWindow, pt: ?[2]f32) bool {
 pub fn mouseDown(w: *JobWindow, x: f32, y: f32, clicks: u8) void {
     w.key_sel = false;
     const p = w.posAt(x, y);
+    w.press_sel = null;
+    if (clicks <= 1) if (w.out.sel) |old| if (!old.empty()) {
+        const a, const b = old.ordered();
+        if (!p.before(a) and p.before(b)) w.press_sel = old;
+    };
     w.out.sel = switch (clicks) {
         0, 1 => .{ .anchor = p, .head = p },
         2 => w.out.wordAt(p.row, @min(@as(u16, @intFromFloat(@max(@floor((x - w.out_r.x) / w.cell_w), 0))), w.out.cols)),
@@ -2264,14 +2273,71 @@ pub fn mouseDrag(w: *JobWindow, x: f32, y: f32) void {
     if (w.out.sel) |*sel| sel.head = w.posAt(x, y);
 }
 
-pub fn mouseUp(w: *JobWindow) void {
+/// The button went up. A click (no drag) inside a selection of earlier
+/// output while a command is being typed: that text goes into the typed
+/// line (true); any other click on the typed line moves the cursor there.
+pub fn mouseUp(w: *JobWindow) bool {
     const was = w.drag;
+    const press_sel = w.press_sel;
     w.drag = .none;
-    if (was != .select) return;
-    if (w.out.sel) |sel| if (sel.empty()) {
-        w.out.sel = null;
-        w.clickMove(sel.anchor);
-    };
+    w.press_sel = null;
+    if (was != .select) return false;
+    const sel = w.out.sel orelse return false;
+    if (!sel.empty()) return false;
+    w.out.sel = null;
+    if (press_sel) |ps| if (w.insertSel(ps)) return true;
+    w.clickMove(sel.anchor);
+    return false;
+}
+
+/// A command is being typed at the shell's prompt (text on its input
+/// line): a click on a name or a selection in earlier output types it
+/// there, at the cursor.
+pub fn typingCommand(w: *const JobWindow) bool {
+    return w.atPrompt() and w.sync != .follower and w.out.inputPending();
+}
+
+/// `b` (the end of some text) is before the line being typed: the text
+/// is earlier output.
+fn beforeInput(w: *const JobWindow, b: Screen.Pos) bool {
+    const s, _ = w.inputSpan() orelse return false;
+    return !s.before(b);
+}
+
+/// The selection `sel` of earlier output into the typed line (`clickInsert`).
+fn insertSel(w: *JobWindow, sel: Screen.Selection) bool {
+    if (!w.typingCommand()) return false;
+    const a, const b = sel.ordered();
+    if (!w.beforeInput(b) or !a.before(b)) return false;
+    const text = w.out.selectedText(w.gpa, sel) catch return false;
+    defer w.gpa.free(text);
+    return w.clickInsert(std.mem.trimEnd(u8, text, "\r\n"));
+}
+
+/// The outlined name `m` (earlier output) into the typed line, quoted for
+/// the shell when it needs it.
+pub fn insertName(w: *JobWindow, m: *const FileOpener.Mark) bool {
+    if (!w.typingCommand() or m.remote) return false;
+    const a = w.out.physPos(m.range.start) orelse return false;
+    const b = w.out.physPos(m.range.end) orelse return false;
+    if (!w.beforeInput(b) or !a.before(b)) return false;
+    const name = w.out.selectedText(w.gpa, .{ .anchor = a, .head = b }) catch return false;
+    defer w.gpa.free(name);
+    var buf: [8400]u8 = undefined;
+    var out: std.Io.Writer = .fixed(&buf);
+    const plain = for (name) |ch| {
+        if (!std.ascii.isAlphanumeric(ch) and std.mem.indexOfScalar(u8, "._-/+:@,%=~", ch) == null and ch < 0x80) break false;
+    } else true;
+    if (plain) out.writeAll(name) catch return false else quoted(&out, name) catch return false;
+    return w.clickInsert(out.buffered());
+}
+
+/// Type `text` at the shell's cursor at once, as a paste. False when there
+/// is nothing to type.
+fn clickInsert(w: *JobWindow, text: []const u8) bool {
+    if (text.len == 0) return false;
+    w.paste(w.gpa, text);
+    return true;
 }
 
 /// The selected text, or null when nothing is selected.

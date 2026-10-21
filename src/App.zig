@@ -4302,15 +4302,17 @@ fn clickJob(app: *App, i: usize, x: f32, y: f32, button: u8, clicks: u8) void {
 
 fn onMouseUp(app: *App) void {
     app.text_drag = .none;
-    // A press on a file name that didn't move: a plain click there, and
-    // the name goes on the clipboard.
+    // A press on a file name that didn't move: a plain click there. A
+    // command being typed in that shell: the name (or the selection
+    // clicked) goes into it at the cursor; else on the clipboard.
     if (app.file_press) |p| {
         app.file_press = null;
         if (app.jobByUid(p.window)) |w| {
             w.opener.held = false;
             w.mouseDown(p.x, p.y, 1);
-            w.mouseUp();
-            if (w.fileMarkAt(p.x, p.y)) |m| app.copyNames(@as([]const []const u8, &.{m.file()}), w, m.range);
+            if (!w.mouseUp()) if (w.fileMarkAt(p.x, p.y)) |m| {
+                if (!w.insertName(m)) app.copyNames(@as([]const []const u8, &.{m.file()}), w, m.range);
+            };
             app.dirty = true;
         }
     }
@@ -4319,7 +4321,7 @@ fn onMouseUp(app: *App) void {
         app.dirty = true;
     }
     for (app.jobs.items) |w| if (w.drag != .none) {
-        w.mouseUp();
+        _ = w.mouseUp();
         app.dirty = true;
     };
 }
