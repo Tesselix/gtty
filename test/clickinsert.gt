@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# A command being typed at the shell's prompt: a click on a file name in
+# earlier output types the name (quoted when needed) at the cursor; a click
+# inside a selection of earlier output types that text, at once. Run in a scratch folder, with a
+# prompt of two characters (`%# `):
+#   mkdir -p w/sub && cd w && touch 'My File.txt' keep.txt notes.txt
+#   GTTY_SHOW_DRY=1 ZDOTDIR=<dir whose .zshrc sets PROMPT='%# '> gtty --script $REPO/test/clickinsert.gt
+# Rows y 47 + 18 n, cell width 8: column k starts at x = 23 + 8k.
+/s zsh
+/wait 1500
+/type clear
+/wait 500
+/type LC_ALL=C ls -1
+/wait 800
+/text wc -c
+/wait 300
+# a click on "My File.txt": typed as 'My File.txt'
+/move 50 66
+/wait 300
+/click 50 66
+/wait 400
+/shot ../i1-name.bmp
+# select "keep" (keep.txt's row), click inside it: "keep" typed
+/drag 23 84 55 84
+/wait 300
+/click 35 84
+/wait 400
+/shot ../i2-selection.bmp
+# a folder name: typed too
+/move 30 120
+/wait 300
+/click 30 120
+/wait 400
+/shot ../i3-folder.bmp
+/key ctrl+c
+/wait 300
+# empty input line: a click copies the name, as before
+/move 50 84
+/wait 300
+/click 50 84
+/wait 600
+/shot ../i4-copy.bmp
+/quit

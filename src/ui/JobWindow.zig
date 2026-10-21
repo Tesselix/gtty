@@ -39,6 +39,8 @@ const RemoteLink = @import("../core/RemoteLink.zig");
 const FileOpener = @import("FileOpener.zig");
 const FileFx = @import("FileFx.zig");
 const RecentFolders = @import("../core/RecentFolders.zig");
+const LineEdit = @import("LineEdit.zig");
+const find = @import("find.zig");
 const Rect = Gfx.Rect;
 
 const JobWindow = @This();
@@ -47,7 +49,7 @@ pub const Kind = enum { command, shell };
 
 /// `close` is the red × : close once finished; while running it opens the
 /// kill menu, and only `kill` (the skull in that menu) kills the job.
-pub const Hit = enum { none, title, close, kill, check, copy, zoom_in, zoom_out, colors, sync, files, minimize, maximize, scroller, git_chip, folder_chip, recent_chip, footer, out };
+pub const Hit = enum { none, title, find_box, find_close, close, kill, check, copy, zoom_in, zoom_out, colors, sync, files, minimize, maximize, scroller, git_chip, folder_chip, recent_chip, footer, out };
 
 /// The selection checkbox at the far left of the title (several windows
 /// in the windows area): hidden (one window shown), off (in the job grid),
@@ -164,6 +166,10 @@ scroll_seen: u32 = 0,
 seen_version: u64 = 0,
 /// ⌘-click on file and folder names (outline, help line, remote checks).
 opener: FileOpener = .{},
+/// Find (⌘F / Ctrl+Shift+F): the text in the title bar's find box; its
+/// matches on screen are highlighted (`find.min_len` characters on).
+/// Null: closed. App says when the box has the keyboard (`find_keys`).
+find_text: ?LineEdit = null,
 /// The title-bar copy just took rows [first, end): a white flash over
 /// them, then a "Copied" bubble in their middle (`drawCopyFlash`).
 copy_flash: ?struct { first: usize, end: usize, ms: u64 } = null,
@@ -193,6 +199,10 @@ follow: ?u32 = null,
 /// The selection was made with Shift + arrows in a shell's input line: its
 /// head follows the shell's cursor (see `editMove`).
 key_sel: bool = false,
+/// A plain press inside a selection of earlier output (`mouseDown`): let
+/// go without moving while a command is being typed, that text goes into
+/// the typed line (`mouseUp`).
+press_sel: ?Screen.Selection = null,
 /// Sync typing (App.updateSync): the window whose typing goes to the
 /// others (`source`), a read-only window that gets it (`follower`), or
 /// not in it.
@@ -217,8 +227,18 @@ zoom_in_r: Rect = .{},
 colors_r: Rect = .{}, // colors on / off (windows area only)
 sync_r: Rect = .{}, // sync typing on / off (windows area only)
 files_r: Rect = .{}, // the folder in the file manager (windows area only)
+find_r: Rect = .{}, // the find box (windows area, while find is open)
+find_close_r: Rect = .{}, // its × (inside it, on the right)
 /// Where the content actions end (the serial badge follows).
 actions_end: f32 = 0,
+/// The find box has the keyboard (App gives it to one window at most).
+find_keys: bool = false,
+/// The first character the find box shows (it scrolls to keep the
+/// cursor in; set by `drawFind`, for the mouse).
+find_first: usize = 0,
+find_cell_w: f32 = 1,
+/// A double click selected a word in the box: dragging extends by words.
+find_drag_from: ?[2]usize = null,
 min_r: Rect = .{},
 max_r: Rect = .{},
 skull_r: Rect = .{}, // the kill menu, under the ×
@@ -706,6 +726,15 @@ pub fn atPrompt(w: *const JobWindow) bool {
     return w.kind == .shell and w.proc.running() and w.out.at_prompt;
 }
 
+/// The last command line the shell ran (saved when Enter ran it: the
+/// hooks' C mark, `Screen.lastCommand`), while it waits at its prompt;
+/// null when it is busy or ran none yet.
+pub fn lastInput(w: *const JobWindow) ?[]const u8 {
+    if (!w.atPrompt() or w.out.cmd_seq == 0) return null;
+    const cmd = w.out.lastCommand();
+    return if (cmd.len > 0) cmd else null;
+}
+
 pub const Move = enum { left, right, word_left, word_right, home, end };
 
 fn cursorPos(w: *const JobWindow) Screen.Pos {
@@ -751,61 +780,125 @@ pub fn deleteSel(w: *JobWindow) bool {
         const sel = w.out.sel orelse return false;
         w.dropKeySel();
         const a, const b = sel.ordered();
-        const n = cellsBetween(w.out.cols, a, b);
+        const n = w.charsBetween(a, b);
         if (n <= 0 or n > 100_000) return false;
         if (sel.head.before(sel.anchor)) w.repeat("\x1b[C", @intCast(n));
         w.repeat("\x7f", @intCast(n));
         return true;
     }
-    const a, const b = w.inputSel() orelse return false;
+    const sa, const sb = w.inputSel() orelse return false;
+    const s, const end = w.inputSpan() orelse return false;
+    const a = w.clampInput(sa, s, end);
+    const b = w.clampInput(sb, s, end);
     w.out.sel = null;
-    const n = cellsBetween(w.out.cols, a, b);
+    const n = w.charsBetween(a, b);
     if (n <= 0 or n > 100_000) return false;
     // From wherever the cursor is to the selection's right end.
-    const d = cellsBetween(w.out.cols, w.cursorPos(), b);
+    const d = w.charsBetween(w.cursorPos(), b);
     if (d > 0) w.repeat("\x1b[C", @intCast(d)) else if (d < 0) w.repeat("\x1b[D", @intCast(-d));
     w.repeat("\x7f", @intCast(n));
     return true;
 }
 
-/// Cells from `a` to `b` (negative when `b` comes first); the input line
-/// may wrap over rows.
-fn cellsBetween(cols: u16, a: Screen.Pos, b: Screen.Pos) isize {
-    const rows = @as(isize, @intCast(b.row)) - @as(isize, @intCast(a.row));
-    return rows * @as(isize, cols) + @as(isize, b.col) - @as(isize, a.col);
-}
-
-/// A mouse selection inside the line the user is typing at a shell's
-/// prompt: its ends, cut at the end of the typed text. Null when there is
-/// none, or the selection reaches into the prompt or earlier output. The
-/// typed text is the cells marked as input (after the hooks' prompt-end
-/// mark) on the cursor's row and the rows it wraps over.
-pub fn inputSel(w: *const JobWindow) ?[2]Screen.Pos {
+/// The line the user is typing at a shell's prompt: from its first typed
+/// cell to just after its last. The typed text is the cells marked as
+/// input (after the hooks' prompt-end mark) from the prompt's row down: a
+/// command over several lines (line breaks in it, or wrapped at the edge)
+/// is one input. Null when nothing is typed there.
+fn inputSpan(w: *const JobWindow) ?[2]Screen.Pos {
     if (!w.atPrompt()) return null;
-    const sel = w.out.sel orelse return null;
-    if (sel.empty()) return null;
     const lines = w.out.lines.items;
     const wrapped = w.out.wrapped.items;
     const cur = w.cursorPos();
     if (cur.row >= lines.len or wrapped.len != lines.len) return null;
     var first = cur.row;
     while (first > 0 and wrapped[first - 1]) first -= 1;
-    var last = cur.row;
-    while (last + 1 < lines.len and wrapped[last]) last += 1;
+    if (w.out.prompt_row) |p| first = @min(first, p);
     var start: ?Screen.Pos = null;
     var end: Screen.Pos = undefined;
-    for (first..last + 1) |r| for (lines[r].items, 0..) |cell, i| if (cell.attrs.zone == .input) {
+    for (first..lines.len) |r| for (lines[r].items, 0..) |cell, i| if (cell.attrs.zone == .input) {
         const p: Screen.Pos = .{ .row = r, .col = @intCast(i) };
         if (start == null) start = p;
         end = .{ .row = r, .col = @intCast(i + 1) };
     };
-    const s = start orelse return null;
+    return .{ start orelse return null, end };
+}
+
+/// A mouse selection inside the line the user is typing at a shell's
+/// prompt (`inputSpan`): its ends, cut to the typed text (one starting on
+/// the prompt: from the typed text's start). Null when there is none, or
+/// the selection reaches into earlier output.
+pub fn inputSel(w: *const JobWindow) ?[2]Screen.Pos {
+    const sel = w.out.sel orelse return null;
+    if (sel.empty()) return null;
+    const s, const end = w.inputSpan() orelse return null;
     var a, var b = sel.ordered();
-    if (a.before(s)) return null;
+    if (a.before(s)) {
+        if (a.row < (w.out.prompt_row orelse s.row)) return null;
+        a = s;
+    }
     if (end.before(b)) b = end;
     if (end.before(a)) a = end;
     if (!a.before(b)) return null;
     return .{ a, b };
+}
+
+/// A plain click on the line being typed at a shell's prompt: the shell's
+/// cursor goes there (← / → from where it is). A click left of the typed
+/// text (on the prompt) goes to its start, right of it (or of one of its
+/// lines) to its end; a click on another row does nothing.
+fn clickMove(w: *JobWindow, p: Screen.Pos) void {
+    if (w.sync == .follower) return;
+    const s, const end = w.inputSpan() orelse return;
+    if (p.row < s.row or p.row > end.row) return;
+    w.moveTo(w.clampInput(p, s, end));
+}
+
+/// The shell's cursor to `to` in its input line (← / → from where it is).
+fn moveTo(w: *JobWindow, to: Screen.Pos) void {
+    const d = w.charsBetween(w.cursorPos(), to);
+    if (d > 0) w.repeat("\x1b[C", @intCast(d)) else if (d < 0) w.repeat("\x1b[D", @intCast(-d));
+}
+
+/// `p` moved into the typed text [s, end): before it → its start, after
+/// it → its end, past the end of one of its lines → that line's end.
+fn clampInput(w: *const JobWindow, p: Screen.Pos, s: Screen.Pos, end: Screen.Pos) Screen.Pos {
+    if (p.before(s)) return s;
+    if (end.before(p)) return end;
+    if (w.out.isWrapped(p.row)) return p;
+    return .{ .row = p.row, .col = @intCast(@min(p.col, w.inputRowEnd(p.row))) };
+}
+
+/// Where the typed text on row `r` ends: after its last input cell (a row
+/// that wraps on: its whole width).
+fn inputRowEnd(w: *const JobWindow, r: usize) usize {
+    if (w.out.isWrapped(r)) return w.out.cols;
+    const cells = w.out.lines.items[r].items;
+    var i = cells.len;
+    while (i > 0 and cells[i - 1].attrs.zone != .input) i -= 1;
+    return i;
+}
+
+/// Characters from `a` to `b` in the input line (negative when `b` comes
+/// first), as the shell's ← / → count them: cells, less the spacers after
+/// wide characters and the pads before a wrapped one; a line break is one.
+fn charsBetween(w: *const JobWindow, a: Screen.Pos, b: Screen.Pos) isize {
+    if (b.before(a)) return -w.charsBetween(b, a);
+    const lines = w.out.lines.items;
+    var n: isize = 0;
+    var r = a.row;
+    while (r <= b.row and r < lines.len) : (r += 1) {
+        const from: usize = if (r == a.row) a.col else 0;
+        const to: usize = if (r == b.row) b.col else w.inputRowEnd(r);
+        const cells = lines[r].items;
+        for (from..@max(from, to)) |i| {
+            if (i < cells.len and cells[i].cp == 0) continue;
+            n += 1;
+        }
+        // The line break at the end of a row that doesn't wrap on.
+        if (r != b.row and !w.out.isWrapped(r)) n += 1;
+    }
+    return n;
 }
 
 fn repeat(w: *JobWindow, bytes: []const u8, n: usize) void {
@@ -1072,7 +1165,13 @@ fn layoutChips(w: *JobWindow, gfx: *Gfx) void {
 
 fn chipWidth(f: *const Gfx.Face, ui: f32, label: []const u8) f32 {
     const label_w = Gfx.textWidth(f, label[0..chipCut(label)]) + (if (chipCut(label) < label.len) f.cell_w else 0);
-    return @round(7 * ui) * 2 + chipIconW(f, ui) + label_w;
+    return @round(7 * ui) * 2 + chipIconW(f, ui) + label_w + chipCapW(f, ui);
+}
+
+/// The key-cap at a chip's right end (its shortcut's number, ⌘1…3 /
+/// Ctrl+Shift+1…3), with the gap before it.
+fn chipCapW(f: *const Gfx.Face, ui: f32) f32 {
+    return @round(6 * ui) + f.cell_w + @round(4 * ui) * 2;
 }
 
 /// The name of the folder the job is in (the folder chip), or null when
@@ -1529,10 +1628,168 @@ fn layoutTitle(w: *JobWindow, chrome: *const Gfx.Face, inner: Rect, title_h: f32
         w.min_r = .{ .x = w.max_r.x - gap - icon, .y = iy, .w = icon, .h = icon };
     }
 
+    // The find box (while find is open, windows area only): right of the
+    // title, before the window actions; narrower when the room is short.
+    w.find_r = .{};
+    w.find_close_r = .{};
+    if (w.grid_r == null and w.find_text != null) {
+        const room = w.min_r.x - w.actions_end - chrome.cell_w * 14;
+        const fw = @round(std.math.clamp(room, chrome.cell_w * 10, chrome.cell_w * 26));
+        const fh = @round(@min(title_h - 4 * ui, chrome.cell_h * 1.3));
+        w.find_r = .{ .x = w.min_r.x - @round(12 * ui) - fw, .y = inner.y + @round((title_h - fh) / 2), .w = fw, .h = fh };
+        const xs = fh - @round(4 * ui);
+        w.find_close_r = .{ .x = w.find_r.x + fw - xs - @round(2 * ui), .y = w.find_r.y + @round(2 * ui), .w = xs, .h = xs };
+    }
+
     // Kill menu: a small drop-down under the ×, over the content.
     const menu_h = @round(chrome.cell_h * 1.9);
     const menu_w = menu_h + chrome.cell_w * 5 + @round(8 * ui);
     w.skull_r = .{ .x = w.close_r.x + w.close_r.w - menu_w, .y = inner.y + title_h + @round(2 * ui), .w = menu_w, .h = menu_h };
+}
+
+// ------------------------------------------------------------ find
+
+/// Find (⌘F): open the box in the title bar, empty; already open: select
+/// its text (typing replaces it). The title bar makes room for it.
+pub fn openFind(w: *JobWindow, gfx: *Gfx) void {
+    if (w.find_text) |*e| {
+        e.selectAll();
+        return;
+    }
+    w.find_text = .{};
+    w.setRect(gfx, w.rect);
+}
+
+/// Close the box: the highlights go.
+pub fn closeFind(w: *JobWindow, gfx: *Gfx) void {
+    if (w.find_text == null) return;
+    w.find_text = null;
+    w.find_keys = false;
+    w.setRect(gfx, w.rect);
+}
+
+/// The find box's text (empty while closed).
+pub fn findQuery(w: *const JobWindow) []const u21 {
+    return if (w.find_text) |*e| e.chars() else &.{};
+}
+
+/// Matches on screen (those that start on a row in view).
+fn findCount(w: *const JobWindow) usize {
+    const q = w.findQuery();
+    if (q.len < find.min_len) return 0;
+    var hits: [find_cols_max]bool = undefined;
+    const top = w.viewTop();
+    var n: usize = 0;
+    var row = top;
+    while (row < top + w.out.rows and row < w.out.lines.items.len) : (row += 1) n += find.rowHits(&w.out, row, q, &hits);
+    return n;
+}
+
+/// A key for the find box (it has the keyboard): editing keys change its
+/// text; false for the keys it doesn't take (App handles those).
+pub fn findKey(w: *JobWindow, key: c.SDL_Keycode, ctrl: bool, cmd: bool, alt: bool, shift: bool) bool {
+    const e = if (w.find_text) |*e| e else return false;
+    const word = ctrl or alt;
+    switch (key) {
+        c.SDLK_LEFT => e.move(if (cmd) .home else if (word) .word_left else .left, shift),
+        c.SDLK_RIGHT => e.move(if (cmd) .end else if (word) .word_right else .right, shift),
+        c.SDLK_HOME => e.move(.home, shift),
+        c.SDLK_END => e.move(.end, shift),
+        c.SDLK_BACKSPACE => if (cmd) {
+            e.move(.home, true);
+            e.backspace(false);
+        } else e.backspace(word),
+        c.SDLK_DELETE => e.delete(word),
+        else => return false,
+    }
+    return true;
+}
+
+/// The character position in the find box at x.
+fn findPos(w: *const JobWindow, x: f32) usize {
+    const e = if (w.find_text) |*e| e else return 0;
+    const f = @max(w.find_cell_w, 1);
+    const col: usize = @intFromFloat(@max(@round((x - w.find_r.x - @round(5 * w.scale.ui)) / f), 0));
+    return @min(w.find_first + col, e.len);
+}
+
+/// A press in the find box: the cursor goes there (Shift: the selection
+/// extends to it); a double click selects the word, a triple the text.
+pub fn findPress(w: *JobWindow, x: f32, clicks: u8, shift: bool) void {
+    const e = if (w.find_text) |*e| e else return;
+    const i = w.findPos(x);
+    w.find_drag_from = null;
+    switch (clicks) {
+        0, 1 => {
+            e.cursor = i;
+            if (!shift) e.anchor = i;
+        },
+        2 => {
+            const wd = e.wordAt(i);
+            e.select(wd[0], wd[1]);
+            w.find_drag_from = wd;
+        },
+        else => e.selectAll(),
+    }
+}
+
+/// The mouse dragged in the box since `findPress`: the selection follows.
+pub fn findDrag(w: *JobWindow, x: f32) void {
+    const e = if (w.find_text) |*e| e else return;
+    const i = w.findPos(x);
+    if (w.find_drag_from) |from| {
+        const wd = e.wordAt(i);
+        if (i < from[0]) e.select(from[1], wd[0]) else e.select(from[0], @max(wd[1], from[1]));
+    } else e.cursor = i;
+}
+
+/// The find box: a dark field in the title bar, its text (or a dim
+/// "find" while empty) with the cursor while it has the keyboard, the
+/// number of matches on screen, and its ×.
+fn drawFind(w: *JobWindow, gfx: *Gfx, theme: *const Theme, f: *Gfx.Face) void {
+    const ui = w.scale.ui;
+    const r = w.find_r;
+    const e = if (w.find_text) |*e| e else return;
+    gfx.fill(r, theme.bg);
+    gfx.outline(r, if (w.find_keys) theme.focus else theme.divider, @max(@round(ui), 1));
+    const pad = @round(5 * ui);
+    const ty = r.y + @round((r.h - f.cell_h) / 2);
+
+    // The number of matches, right of the text (red 0: none on screen).
+    var nbuf: [16]u8 = undefined;
+    const q = e.chars();
+    const count = if (q.len >= find.min_len) std.fmt.bufPrint(&nbuf, "{d}", .{w.findCount()}) catch "" else "";
+    const count_w = Gfx.textWidth(f, count);
+    const count_x = w.find_close_r.x - @round(4 * ui) - count_w;
+    if (count.len > 0) _ = gfx.text(f, count_x, ty, count, if (std.mem.eql(u8, count, "0")) theme.stderr_accent else theme.dim);
+
+    // The text: as many characters as fit, scrolled to keep the cursor in.
+    const tx = r.x + pad;
+    const fit: usize = @intFromFloat(@max(@floor((count_x - @round(4 * ui) - tx) / f.cell_w), 1));
+    // Scrolled only as far as the cursor needs (clicks keep their place).
+    var first = @min(w.find_first, e.cursor);
+    if (e.cursor > first + fit) first = e.cursor - fit;
+    w.find_first = first;
+    w.find_cell_w = f.cell_w;
+    const shown = q[first..@min(q.len, first + fit)];
+    if (q.len == 0) _ = gfx.text(f, tx, ty, "find", theme.dim);
+    const sel = e.selection();
+    for (shown, first..) |cp, i| {
+        const x = tx + @as(f32, @floatFromInt(i - first)) * f.cell_w;
+        if (w.find_keys and i >= sel[0] and i < sel[1]) gfx.fill(.{ .x = x, .y = ty, .w = f.cell_w, .h = f.cell_h }, theme.selection);
+        gfx.glyphAt(f, x, ty, cp, theme.fg);
+    }
+    if (w.find_keys) {
+        const cx = tx + @as(f32, @floatFromInt(e.cursor - first)) * f.cell_w;
+        gfx.fill(.{ .x = cx, .y = ty, .w = @max(@round(1.5 * ui), 1), .h = f.cell_h }, theme.cursor);
+    }
+
+    // The ×: closes find.
+    const xr = w.find_close_r;
+    const m = @round(xr.w * 0.28);
+    const t = @max(@round(1.2 * ui), 1);
+    gfx.line(xr.x + m, xr.y + m, xr.x + xr.w - m, xr.y + xr.h - m, theme.title_fg, t);
+    gfx.line(xr.x + xr.w - m, xr.y + m, xr.x + m, xr.y + xr.h - m, theme.title_fg, t);
 }
 
 // ------------------------------------------------------------ interaction
@@ -1540,6 +1797,8 @@ fn layoutTitle(w: *JobWindow, chrome: *const Gfx.Face, inner: Rect, title_h: f32
 pub fn hit(w: *const JobWindow, x: f32, y: f32) Hit {
     if (w.kill_menu and w.skull_r.contains(x, y)) return .kill;
     if (!(w.grid_r orelse w.rect).contains(x, y)) return .none;
+    if (w.find_close_r.contains(x, y)) return .find_close;
+    if (w.find_r.contains(x, y)) return .find_box;
     if (w.close_r.contains(x, y)) return .close;
     if (w.check_r.contains(x, y)) return .check;
     if (w.copy_r.contains(x, y)) return .copy;
@@ -1968,6 +2227,11 @@ pub fn hover(w: *JobWindow, pt: ?[2]f32) bool {
 pub fn mouseDown(w: *JobWindow, x: f32, y: f32, clicks: u8) void {
     w.key_sel = false;
     const p = w.posAt(x, y);
+    w.press_sel = null;
+    if (clicks <= 1) if (w.out.sel) |old| if (!old.empty()) {
+        const a, const b = old.ordered();
+        if (!p.before(a) and p.before(b)) w.press_sel = old;
+    };
     w.out.sel = switch (clicks) {
         0, 1 => .{ .anchor = p, .head = p },
         2 => w.out.wordAt(p.row, @min(@as(u16, @intFromFloat(@max(@floor((x - w.out_r.x) / w.cell_w), 0))), w.out.cols)),
@@ -2009,13 +2273,71 @@ pub fn mouseDrag(w: *JobWindow, x: f32, y: f32) void {
     if (w.out.sel) |*sel| sel.head = w.posAt(x, y);
 }
 
-pub fn mouseUp(w: *JobWindow) void {
+/// The button went up. A click (no drag) inside a selection of earlier
+/// output while a command is being typed: that text goes into the typed
+/// line (true); any other click on the typed line moves the cursor there.
+pub fn mouseUp(w: *JobWindow) bool {
     const was = w.drag;
+    const press_sel = w.press_sel;
     w.drag = .none;
-    if (was != .select) return;
-    if (w.out.sel) |sel| if (sel.empty()) {
-        w.out.sel = null;
-    };
+    w.press_sel = null;
+    if (was != .select) return false;
+    const sel = w.out.sel orelse return false;
+    if (!sel.empty()) return false;
+    w.out.sel = null;
+    if (press_sel) |ps| if (w.insertSel(ps)) return true;
+    w.clickMove(sel.anchor);
+    return false;
+}
+
+/// A command is being typed at the shell's prompt (text on its input
+/// line): a click on a name or a selection in earlier output types it
+/// there, at the cursor.
+pub fn typingCommand(w: *const JobWindow) bool {
+    return w.atPrompt() and w.sync != .follower and w.out.inputPending();
+}
+
+/// `b` (the end of some text) is before the line being typed: the text
+/// is earlier output.
+fn beforeInput(w: *const JobWindow, b: Screen.Pos) bool {
+    const s, _ = w.inputSpan() orelse return false;
+    return !s.before(b);
+}
+
+/// The selection `sel` of earlier output into the typed line (`clickInsert`).
+fn insertSel(w: *JobWindow, sel: Screen.Selection) bool {
+    if (!w.typingCommand()) return false;
+    const a, const b = sel.ordered();
+    if (!w.beforeInput(b) or !a.before(b)) return false;
+    const text = w.out.selectedText(w.gpa, sel) catch return false;
+    defer w.gpa.free(text);
+    return w.clickInsert(std.mem.trimEnd(u8, text, "\r\n"));
+}
+
+/// The outlined name `m` (earlier output) into the typed line, quoted for
+/// the shell when it needs it.
+pub fn insertName(w: *JobWindow, m: *const FileOpener.Mark) bool {
+    if (!w.typingCommand() or m.remote) return false;
+    const a = w.out.physPos(m.range.start) orelse return false;
+    const b = w.out.physPos(m.range.end) orelse return false;
+    if (!w.beforeInput(b) or !a.before(b)) return false;
+    const name = w.out.selectedText(w.gpa, .{ .anchor = a, .head = b }) catch return false;
+    defer w.gpa.free(name);
+    var buf: [8400]u8 = undefined;
+    var out: std.Io.Writer = .fixed(&buf);
+    const plain = for (name) |ch| {
+        if (!std.ascii.isAlphanumeric(ch) and std.mem.indexOfScalar(u8, "._-/+:@,%=~", ch) == null and ch < 0x80) break false;
+    } else true;
+    if (plain) out.writeAll(name) catch return false else quoted(&out, name) catch return false;
+    return w.clickInsert(out.buffered());
+}
+
+/// Type `text` at the shell's cursor at once, as a paste. False when there
+/// is nothing to type.
+fn clickInsert(w: *JobWindow, text: []const u8) bool {
+    if (text.len == 0) return false;
+    w.paste(w.gpa, text);
+    return true;
 }
 
 /// The selected text, or null when nothing is selected.
@@ -2094,7 +2416,7 @@ pub fn draw(w: *JobWindow, gfx: *Gfx, theme: *const Theme) void {
         const top = w.title_r.y + w.title_r.h;
         w.drawFileFx(gfx, theme, .{ .x = g.x, .y = top, .w = g.w, .h = @max(g.y + g.h - top, 1) });
     } else {
-        drawPane(gfx, theme, f, &w.out, w.out_r, theme.bg, w.colors, w.showCursor(), true, w.scroll_ms != 0);
+        drawPane(gfx, theme, f, &w.out, w.out_r, theme.bg, w.colors, w.showCursor(), true, w.scroll_ms != 0, w.findQuery());
         w.drawMarks(gfx, theme);
         w.drawScroller(gfx, theme);
         w.drawFooter(gfx, theme);
@@ -2132,12 +2454,12 @@ fn drawFooter(w: *const JobWindow, gfx: *Gfx, theme: *const Theme) void {
     const f = chipFace(gfx, w.scale) catch return;
     if (w.git_chip_r.w > 0) {
         const b = w.branch();
-        drawChip(gfx, theme, f, ui, w.git_chip_r, b orelse no_git_label, b != null and (w.over_git_chip or w.git_peek_open), .git, b != null);
+        drawChip(gfx, theme, f, ui, w.git_chip_r, b orelse no_git_label, b != null and (w.over_git_chip or w.git_peek_open), .git, b != null, 2);
     }
     if (w.folderName()) |name| if (w.folder_chip_r.w > 0)
-        drawChip(gfx, theme, f, ui, w.folder_chip_r, name, w.over_folder_chip or w.folder_peek_open, .folder, true);
+        drawChip(gfx, theme, f, ui, w.folder_chip_r, name, w.over_folder_chip or w.folder_peek_open, .folder, true, 1);
     if (w.recent_chip_r.w > 0)
-        drawChip(gfx, theme, f, ui, w.recent_chip_r, recent_label, w.over_recent_chip or w.recent_peek_open, .recent, true);
+        drawChip(gfx, theme, f, ui, w.recent_chip_r, recent_label, w.over_recent_chip or w.recent_peek_open, .recent, true, 3);
     if (w.chip_flash_ms != 0) {
         const t = c.SDL_GetTicks() -| w.chip_flash_ms;
         if (t < name_flash_ms) {
@@ -2147,9 +2469,10 @@ fn drawFooter(w: *const JobWindow, gfx: *Gfx, theme: *const Theme) void {
     }
 }
 
-/// A chip: its icon and label (cut with … when long); lighter while the
-/// mouse is on it or its peek is open; dimmed when disabled.
-fn drawChip(gfx: *Gfx, theme: *const Theme, f: *Gfx.Face, ui: f32, cr: Rect, label: []const u8, lit: bool, icon: enum { git, folder, recent }, enabled: bool) void {
+/// A chip: its icon and label (cut with … when long), then its
+/// shortcut's number `num` in a key-cap; lighter while the mouse is on it
+/// or its peek is open; dimmed when disabled.
+fn drawChip(gfx: *Gfx, theme: *const Theme, f: *Gfx.Face, ui: f32, cr: Rect, label: []const u8, lit: bool, icon: enum { git, folder, recent }, enabled: bool, num: u8) void {
     const bg = theme.title_bg.mix(theme.fg, if (lit) 0.16 else if (enabled) 0.06 else 0.02);
     gfx.fill(cr, bg);
     const icon_col = if (enabled) theme.focus else theme.dim;
@@ -2166,6 +2489,12 @@ fn drawChip(gfx: *Gfx, theme: *const Theme, f: *Gfx.Face, ui: f32, cr: Rect, lab
     const cut = chipCut(label);
     const end = gfx.text(f, tx, ty, label[0..cut], if (enabled) theme.title_fg else theme.dim);
     if (cut < label.len) _ = gfx.text(f, end, ty, "…", theme.dim);
+    const cap_pad = @round(4 * ui);
+    const cap_h = @round(f.cell_h * 0.95);
+    const cap: Rect = .{ .x = cr.x + cr.w - pad - f.cell_w - cap_pad * 2, .y = cr.y + @round((cr.h - cap_h) / 2), .w = f.cell_w + cap_pad * 2, .h = cap_h };
+    gfx.outline(cap, theme.dim, @max(@round(ui), 1));
+    const digit = [1]u8{'0' + num};
+    _ = gfx.text(f, cap.x + cap_pad, ty, &digit, theme.dim);
 }
 
 /// A folder outline with its tab, filling a `w` × `h` box.
@@ -2228,7 +2557,7 @@ fn drawScaledContent(w: *JobWindow, gfx: *Gfx, theme: *const Theme, f: *Gfx.Face
     const prev = c.SDL_GetRenderTarget(gfx.renderer);
     _ = c.SDL_SetRenderTarget(gfx.renderer, tex);
     gfx.fill(.{ .x = 0, .y = 0, .w = w.out_r.w, .h = w.out_r.h }, theme.bg);
-    drawPane(gfx, theme, f, &w.out, .{ .x = 0, .y = 0, .w = w.out_r.w, .h = w.out_r.h }, theme.bg, w.colors, false, false, false);
+    drawPane(gfx, theme, f, &w.out, .{ .x = 0, .y = 0, .w = w.out_r.w, .h = w.out_r.h }, theme.bg, w.colors, false, false, false, &.{});
     _ = c.SDL_SetRenderTarget(gfx.renderer, prev);
 
     const pad = @round(3 * w.scale.ui);
@@ -2331,13 +2660,15 @@ fn drawTitle(w: *JobWindow, gfx: *Gfx, theme: *const Theme, chrome: *Gfx.Face) v
     var sbuf: [48]u8 = undefined;
     const status = w.statusText(&sbuf);
     const status_w = Gfx.textWidth(chrome, status);
-    const room = w.min_r.x - chrome.cell_w - x;
+    const end = if (w.find_r.w > 0) w.find_r.x else w.min_r.x;
+    const room = end - chrome.cell_w - x;
     const show_status = room >= status_w + chrome.cell_w * 8;
     const title_max = room - (if (show_status) status_w + chrome.cell_w else 0);
     gfx.clip(.{ .x = x, .y = w.title_r.y, .w = @max(title_max, 0), .h = w.title_r.h });
     _ = gfx.text(chrome, x, ty, w.title, theme.title_fg);
     gfx.clip(null);
-    if (show_status) _ = gfx.text(chrome, w.min_r.x - status_w - chrome.cell_w, ty, status, theme.dim);
+    if (show_status) _ = gfx.text(chrome, end - status_w - chrome.cell_w, ty, status, theme.dim);
+    if (w.find_r.w > 0) w.drawFind(gfx, theme, chrome);
 
     closeIcon(gfx, w.close_r, theme, ui);
     if (w.check_r.w > 0) checkIcon(gfx, w.check_r, theme, ui, switch (w.check) {
@@ -2358,7 +2689,7 @@ fn drawTitle(w: *JobWindow, gfx: *Gfx, theme: *const Theme, chrome: *Gfx.Face) v
 }
 
 fn showCursor(w: *const JobWindow) bool {
-    return w.focused and w.proc.running() and (w.out.scroll == 0 or w.following()) and
+    return w.focused and !w.find_keys and w.proc.running() and (w.out.scroll == 0 or w.following()) and
         !w.out.cursor_hidden and w.busy_ms == 0;
 }
 
@@ -2534,7 +2865,12 @@ fn maximizeIcon(gfx: *Gfx, r: Rect, theme: *const Theme, ui: f32, maximized: boo
     gfx.fill(.{ .x = box.x, .y = box.y, .w = box.w, .h = 2 * t }, theme.title_fg);
 }
 
-fn drawPane(gfx: *Gfx, theme: *const Theme, f: *Gfx.Face, s: *Screen, r: Rect, pane_bg: Rgb, colors: bool, cursor: bool, show_sel: bool, scroll_label: bool) void {
+/// Columns of a row the find highlight reaches.
+const find_cols_max = 1024;
+
+/// `query`: the find box's text; the cells of its matches get the find
+/// highlight (from `find.min_len` characters on).
+fn drawPane(gfx: *Gfx, theme: *const Theme, f: *Gfx.Face, s: *Screen, r: Rect, pane_bg: Rgb, colors: bool, cursor: bool, show_sel: bool, scroll_label: bool, query: []const u21) void {
     if (r.w <= 0 or r.h <= 0) return;
     gfx.clip(r);
     defer gfx.clip(null);
@@ -2550,6 +2886,9 @@ fn drawPane(gfx: *Gfx, theme: *const Theme, f: *Gfx.Face, s: *Screen, r: Rect, p
         // Selected columns of this line: highlighted out to the right edge
         // when the selection continues onto the next line.
         const sel: ?[2]usize = if (!show_sel) null else if (s.sel) |sl| sl.colsOn(row) else null;
+        var hits: [find_cols_max]bool = undefined;
+        const found = query.len >= find.min_len;
+        if (found) _ = find.rowHits(s, row, query, &hits);
         if (sel) |sc| {
             const sx = r.x + @as(f32, @floatFromInt(sc[0])) * f.cell_w;
             const ex = if (sc[1] > s.cols) r.x + r.w else r.x + @as(f32, @floatFromInt(sc[1])) * f.cell_w;
@@ -2564,6 +2903,11 @@ fn drawPane(gfx: *Gfx, theme: *const Theme, f: *Gfx.Face, s: *Screen, r: Rect, p
             var bg = if (!colors or cell.bg.tag == .default) pane_bg else theme.resolve(cell.bg, false);
             if (cell.attrs.inverse) std.mem.swap(Rgb, &fg, &bg);
             const selected = if (sel) |sc| col >= sc[0] and col < sc[1] else false;
+            if (found and col < hits.len and hits[col] and !selected) {
+                // A find match: dark text on the find color.
+                bg = theme.find;
+                fg = theme.bg;
+            }
             if (selected) bg = theme.selection else if (!bg.eql(pane_bg)) gfx.fill(.{ .x = x, .y = y, .w = f.cell_w + 0.5, .h = f.cell_h }, bg);
             if (cell.attrs.dim) fg = fg.mix(bg, 0.4);
             fg = theme.readable(fg, bg);

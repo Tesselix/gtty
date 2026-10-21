@@ -109,6 +109,9 @@ pub const edit_output = 3;
 /// New Shell: in the folder of the window clicked (the prompt: of the
 /// current window).
 pub const edit_new_shell = 4;
+/// Copy last input (a shell at its prompt that ran a command): the last
+/// command line, as it was when Enter ran it.
+pub const edit_input = 5;
 
 /// New Shell's key (a new tab in other terminals): ⌘T on macOS,
 /// Ctrl+Shift+T elsewhere (as GNOME Terminal; Ctrl+T alone is the job's:
@@ -156,14 +159,16 @@ codes: [max_rows]i32 = undefined,
 /// The right-click menu: Copy / Paste, each enabled or dimmed; Paste's ▸
 /// opens the paste history (`history_ok`: there is some, and the target
 /// takes a paste). `output`: a row under Copy with this label (job
-/// windows: "Copy last output" / "Copy all output"). `folders`: a History ▸
+/// windows: "Copy last output" / "Copy all output"). `input`: a "Copy last
+/// input" row under it (left out when false). `folders`: a History ▸
 /// row (job windows), enabled when the window has a folder history. Each
 /// row's `codes[i]` says which it is (`edit_copy`, …). Paste pastes what
 /// was copied last: text, or files on gtty's file clipboard (App decides).
-pub fn edit(target: Target, at: [2]f32, copy_ok: bool, output: ?[]const u8, paste_ok: bool, history_ok: bool, folders: ?bool) Menu {
+pub fn edit(target: Target, at: [2]f32, copy_ok: bool, output: ?[]const u8, input: bool, paste_ok: bool, history_ok: bool, folders: ?bool) Menu {
     var m: Menu = .{ .purpose = .{ .edit = target }, .at = at };
     m.addCode(.{ .label = "Copy", .key = edit_keys[0], .enabled = copy_ok }, edit_copy);
     if (output) |label| m.addCode(.{ .label = label }, edit_output);
+    if (input) m.addCode(.{ .label = "Copy last input" }, edit_input);
     m.addCode(.{ .label = "Paste", .key = edit_keys[1], .enabled = paste_ok, .sub = true, .sub_on = history_ok }, edit_paste);
     if (folders) |on| m.addCode(.{ .label = "History", .enabled = on, .sub = true, .sub_on = on }, edit_folders);
     m.addCode(.{ .label = "New Shell", .key = new_shell_key }, edit_new_shell);
@@ -456,7 +461,7 @@ test "layout keeps the menu on screen" {
     var f: Gfx.Face = undefined;
     f.cell_w = 8;
     f.cell_h = 16;
-    var m = Menu.edit(.prompt, .{ 790, 590 }, false, null, true, true, null);
+    var m = Menu.edit(.prompt, .{ 790, 590 }, false, null, false, true, true, null);
     const screen: Rect = .{ .x = 0, .y = 0, .w = 800, .h = 600 };
     m.layout(&f, 1, screen);
     try std.testing.expect(m.r.x + m.r.w <= 800 and m.r.y + m.r.h <= 600);
@@ -484,7 +489,7 @@ test "Paste's ▸ box opens the submenu, the rest of the row pastes" {
     var f: Gfx.Face = undefined;
     f.cell_w = 8;
     f.cell_h = 16;
-    var m = Menu.edit(.prompt, .{ 10, 10 }, true, null, true, true, null);
+    var m = Menu.edit(.prompt, .{ 10, 10 }, true, null, false, true, true, null);
     m.layout(&f, 1, .{ .x = 0, .y = 0, .w = 800, .h = 600 });
     const a = m.arrow_r[edit_paste];
     try std.testing.expectEqual(@as(usize, edit_paste), m.arrowAt(a.x + 1, a.y + 1).?);
@@ -496,7 +501,7 @@ test "Paste's ▸ box opens the submenu, the rest of the row pastes" {
 }
 
 test "the right-click menu of a job window: Copy last output under Copy" {
-    const m = Menu.edit(.{ .job = 7 }, .{ 10, 10 }, false, "Copy last output", true, false, false);
+    const m = Menu.edit(.{ .job = 7 }, .{ 10, 10 }, false, "Copy last output", false, true, false, false);
     try std.testing.expectEqual(@as(usize, 5), m.n);
     try std.testing.expectEqualStrings("Copy last output", m.rows[1].label);
     try std.testing.expectEqual(@as(i32, edit_output), m.codes[1]);
@@ -532,4 +537,12 @@ test "separators take no clicks; a whole-row submenu takes its ▸" {
     right.layout(&f, 1, .{ .x = 0, .y = 0, .w = 800, .h = 600 });
     sub.layoutBeside(&f, 1, .{ .x = 0, .y = 0, .w = 800, .h = 600 }, &right, 1);
     try std.testing.expect(sub.r.x + sub.r.w <= right.r.x);
+}
+
+test "Copy last input sits under Copy last output, only when asked for" {
+    const m = Menu.edit(.{ .job = 7 }, .{ 10, 10 }, false, "Copy last output", true, true, false, false);
+    try std.testing.expectEqual(@as(usize, 6), m.n);
+    try std.testing.expectEqualStrings("Copy last input", m.rows[2].label);
+    try std.testing.expectEqual(@as(i32, edit_input), m.codes[2]);
+    try std.testing.expectEqual(@as(i32, edit_paste), m.codes[3]);
 }

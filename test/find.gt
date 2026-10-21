@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Find (⌘F; Ctrl+Shift+F on Linux): the box in the title bar, the matches
+# on screen highlighted from the second letter on, any case.
+# Run with a neutral prompt:
+#   S=$(mktemp -d); echo "PROMPT='%1~ %# '" > $S/.zshrc
+#   ZDOTDIR=$S gtty --script test/find.gt
+# Expected: find0 the empty box ("find"), find1 one letter (no highlights),
+# find2 "ap" highlighted 10 times, the command line too (count 10), find3 keys back to the shell
+# ("echo done" typed there, the highlights stay), find4 find closed.
+/s zsh
+/wait 1500
+/type echo apple Apricot grape; echo "snap APP"
+/wait 600
+/key cmd+f
+/wait 300
+/shot find0.bmp
+/text a
+/wait 300
+/shot find1.bmp
+/text p
+/wait 300
+/shot find2.bmp
+/key enter
+/text echo done
+/wait 400
+/shot find3.bmp
+/key cmd+f
+/key escape
+/wait 300
+/shot find4.bmp
+/quit
