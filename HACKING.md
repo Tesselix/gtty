@@ -32,7 +32,10 @@ is a pushed tag `v<version>` (the version in `build.zig.zon`);
 the GitHub release with the packages. Odd minor (v1.9.x) = edge, a
 pre-release; even minor (v1.10.x) = stable. CI checks only that and
 that the tag equals `build.zig.zon`'s version at the tagged commit.
-Releases are tagged on `main`; `develop` may be ahead.
+Releases are tagged on `main`; `develop` may be ahead. `main` changes
+only through a pull request from `develop` with CI green. CodeQL
+(`.github/workflows/codeql.yml`) scans the C code and the workflows;
+security reports: [SECURITY.md](SECURITY.md).
 Details in CLAUDE.md ("Releases").
 
 Not yet: full-screen programs (vim, htop, less), bold/italic, and scrolling back past the memory window. New commands from the

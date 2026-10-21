@@ -1055,7 +1055,10 @@ decisions; items marked *open* are undecided.
   `scorecard-preview.yml` (a push to develop or by hand: the scorecard
   CLI, checksum-checked, `--commit` on that commit, score + reasons in
   the run summary, nothing published; repo-wide checks only in the
-  published score).
+  published score); `codeql.yml` (CodeQL, `security-extended`: C in
+  `src/sys/` with build-mode none, no Zig support, and the workflows;
+  pushes to main / develop, PRs, weekly; alerts in the Security tab).
+  Vulnerability reports: `SECURITY.md` (GitHub private reporting).
 - **Releases** (two channels, from the tag's MINOR; tags
   `vMAJOR.MINOR.PATCH`): **odd minor = edge** (features being tested;
   GitHub pre-release, not latest; environment `edge`), **even minor =
@@ -1063,7 +1066,12 @@ decisions; items marked *open* are undecided.
   only that and that the tag equals build.zig.zon's version at the
   tagged commit (decided 2026-10-10: no branch or edge-tag checks).
   Branches: `develop` and `main`; releases are tagged on main with
-  main's version, develop may be ahead. The Finder layout
+  main's version, develop may be ahead. **Rulesets** (2026-10-21, for
+  the Scorecard): `main` only through a pull request (develop → main)
+  with CI green (Linux + macOS jobs), 1 approval, branch up to date; no
+  force push / deletion; the admin may bypass, in a PR only (merge with
+  "bypass rules"). `develop`: no force push / deletion, direct pushes
+  fine. Version bumps go on develop, then the PR. The Finder layout
   of the dmg needs Automation access on the runner; if it fails the dmg
   is unarranged (warning only).
 - Keep platform-specific C in `src/sys/`; keep `@cImport` only in `src/c.zig`.
