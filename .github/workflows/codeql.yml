@@ -1,27 +1,27 @@
 # SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# CodeQL static analysis (SAST): the C in src/sys/ and the GitHub Actions
-# workflows. CodeQL has no Zig support; the Zig code is covered by the
+# CodeQL static analysis (SAST): the GitHub Actions workflows and the C
+# in src/sys/. CodeQL has no Zig support; the Zig code is covered by the
 # compiler's safety checks and the unit tests. C runs with build-mode none
 # (no build: zig cc isn't a compiler CodeQL can trace). Alerts go to the
 # Security tab.
 name: CodeQL
 
 on:
-  push:
-    branches: [main, develop]
   pull_request:
+    branches: [main]
+  push:
+    branches: [main]
   schedule:
     - cron: "41 5 * * 3"
-  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: codeql-${{ github.ref }}
-  cancel-in-progress: true
+  group: codeql-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   analyze:
@@ -32,7 +32,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: [c-cpp, actions]
+        language: [actions, c-cpp]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
