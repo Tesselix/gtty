@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Typing over a selection in a shell's input line replaces it, whether it
+# was made with the keyboard (Shift + arrows) or the mouse (also one that
+# starts on the prompt: only the typed part goes). `/text` sends each
+# key's key down before its text, as a keyboard does.
+# Run from a folder with a 2-letter name, with a neutral prompt:
+#   S=$(mktemp -d); echo "PROMPT='%1~ %# '" > $S/.zshrc
+#   ZDOTDIR=$S gtty --script test/typeover.gt
+# Expected: t1 "echo alpha beta NEW" (⌥⇧← took "gamma"); t2 "ecQpha beta
+# NEW" (the drag took "ho al"); t3 "lsQpha beta NEW" (a drag from the
+# prompt's edge took "ec").
+/s zsh
+/wait 1500
+/text echo alpha beta gamma
+/wait 300
+/key shift+alt+left
+/text NEW
+/wait 400
+/shot t1.bmp
+/drag 79 48 119 48
+/text Q
+/wait 400
+/shot t2.bmp
+/drag 20 48 79 48
+/text ls
+/wait 400
+/shot t3.bmp
+/quit

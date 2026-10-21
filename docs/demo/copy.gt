@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# The title bar's copy takes the last command's output (no prompt, no
+# command line); Paste ▸ in the right-click menu lists what was copied
+# and pastes it (into the shell's line, as one block).
+/resize 1200 760
+/s
+/wait 1800
+/type clear
+/wait 500
+/move 600 400
+/wait 300
+/pace 250
+/record start @FRAMES@ 20
+/wait 300
+/slow git log --oneline -4
+/key enter
+/wait 700
+/glide 25 24 600
+/click 25 24
+/wait 1000
+/glide 300 230 500
+/rclick 300 230
+/wait 500
+/glide 548 357 400
+/click 548 357
+/wait 300
+/glide 680 357 300
+/wait 500
+/click 680 357
+/wait 1300
+/record stop
+/quit

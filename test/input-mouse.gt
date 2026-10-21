@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# A mouse selection in a command typed over several lines: the cursor
+# stays where it was; typing (or a paste, Backspace, Delete) deletes the
+# selected text and goes in at its place.
+# Run with a neutral prompt and a 3-line command on the clipboard:
+#   printf 'echo "one\ntwo two\nthree"' | pbcopy
+#   S=$(mktemp -d); echo "PROMPT='%1~ %# '" > $S/.zshrc
+#   ZDOTDIR=$S gtty --script test/input-mouse.gt
+# Expected (run from a folder with a 3-letter name, so the drag on the
+# first row starts at "echo"): m1 "o two / three" selected, the cursor
+# still at the end; m2 'echo "one' / 'twX"', the cursor after X; m3
+# 'echo "one / tw' selected, the cursor still after X; m4 'YX"'.
+/s zsh
+/wait 1500
+/key cmd+v
+/wait 600
+/shot m0.bmp
+/drag 39 66 63 84
+/wait 500
+/shot m1.bmp
+/text X
+/wait 500
+/shot m2.bmp
+/drag 71 48 39 66
+/wait 500
+/shot m3.bmp
+/text Y
+/wait 500
+/shot m4.bmp
+/quit

@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Editing in the gtty prompt and the find box, as in a text editor.
+# Run with a neutral prompt:
+#   S=$(mktemp -d); echo "PROMPT='%1~ %# '" > $S/.zshrc
+#   ZDOTDIR=$S gtty --script test/prompt-edit.gt
+# Expected: p1 "alphXa" (the click put the cursor there), p2 "alphXa"
+# selected (⌥⇧←), p3 "replaced" (⌘⇧← then typing over it), p4 "replaced"
+# selected (double click), p5 the find box "hello wZorld" (a click in it),
+# p6 "hello" selected (double click in the box).
+/s zsh
+/wait 1500
+/click 500 690
+/text echo alpha beta gamma delta
+/wait 300
+/shot p0.bmp
+/click 140 657
+/text X
+/wait 300
+/shot p1.bmp
+/key shift+alt+left
+/wait 300
+/shot p2.bmp
+/key cmd+right
+/key shift+cmd+left
+/text replaced
+/wait 300
+/shot p3.bmp
+/dclick 110 657
+/wait 300
+/shot p4.bmp
+/key cmd+f
+/text hello world
+/click 860 22
+/text Z
+/wait 300
+/shot p5.bmp
+/dclick 820 22
+/wait 300
+/shot p6.bmp
+/quit

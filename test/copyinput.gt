@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copy last input (right-click menu of a shell window): the last command
+# line the shell ran, while it waits at its prompt; no row before any
+# command ran.
+# Run with a neutral prompt:
+#   S=$(mktemp -d); echo "PROMPT='%1~ %# '" > $S/.zshrc
+#   ZDOTDIR=$S gtty --script test/copyinput.gt
+# Expected: in0 the menu without the row, in1 with it (under Copy last
+# output), in2 the command pasted back at the prompt.
+/s zsh
+/wait 1500
+/rclick 300 300
+/wait 300
+/shot in0.bmp
+/key escape
+/type echo one two | tr a-z A-Z
+/wait 600
+/rclick 300 300
+/wait 300
+/shot in1.bmp
+/click 340 377
+/wait 300
+/key cmd+v
+/wait 400
+/shot in2.bmp
+/quit
