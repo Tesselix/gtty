@@ -155,6 +155,9 @@ jobs:
       actions: read # read the workflow run
       id-token: write # sign the provenance
       contents: write # upload it to the release
+    # By tag, not SHA: the generator verifies its own ref and fails when
+    # pinned to a commit (see its README). CodeQL's unpinned-tag alert
+    # for this line is dismissed as "won't fix"; Scorecard exempts it.
     uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
     with:
       base64-subjects: ${{ needs.build.outputs.hashes }}
