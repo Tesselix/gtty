@@ -1,40 +1,46 @@
 # SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Files with the mouse: hover outlines a name, double-click opens it (a
-# folder: cd), hold and drag drags it out, files dropped in are copied.
+# Files and folders in ls output: hover outlines a name, double-click
+# opens a file in its app, right-click shows the file menu, double-click
+# on a folder cds there (and lists it), History ▸ cds back.
 /resize 1200 760
 /s
 /wait 1800
+/type clear
+/wait 400
 /type ls
-/move 600 300
+/move 600 400
 /wait 600
 /pace 250
 /record start @FRAMES@ 20
-/wait 200
-/glide 560 75 500
+/wait 300
+# double-click a file: opens it in its app (the status bar says which)
+/glide 560 75 600
 /wait 500
 /dclick 560 75
-/wait 650
-/glide 640 75 300
-/wait 350
-/dclick 640 75
-/wait 350
-/slow ls
-/key enter
-/wait 350
-/glide 50 141 400
-/down 50 141
+/wait 1000
+# right-click a file: the file menu
+/glide 265 75 400
+/wait 300
+/rclick 265 75
+/wait 1300
+/key escape
+/wait 300
+# double-click a folder: cd there, listed
+/glide 637 75 400
 /wait 400
+/dclick 637 75
+/wait 1300
+# right-click → History ▸ → back to shop
 /glide 400 300 400
-/up 400 300
+/rclick 400 300
+/wait 400
+/glide 648 462 400
+/click 648 462
 /wait 500
-/dropover 700 250
-/glide 700 250 250
+/glide 760 462 300
 /wait 400
-/drop 700 250 @ROOT@/Downloads/invoice.pdf
-/wait 400
-/slow ls
-/key enter
-/wait 700
+/click 760 462
+/wait 1500
 /record stop
 /quit

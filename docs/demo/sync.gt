@@ -3,8 +3,8 @@
 # Sync typing: what is typed into one window goes to every other window
 # in the windows area (read-only followers, purple-red frame).
 /resize 1200 760
-/s --cwd @ROOT@/shop/docs
-/s --cwd @ROOT@/shop/src
+/s --cwd @HOME@/shop/docs
+/s --cwd @HOME@/shop/src
 /s
 /wait 2000
 /move 600 300

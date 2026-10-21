@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# The recent chip: folders where the user ran commands lately, most used
+# first (setup.sh seeds them). Only looking around (cd, ls) doesn't
+# count: ~/Downloads doesn't show up. Typing filters; Enter cds there.
+/resize 1200 760
+/s
+/wait 1800
+/type clear
+/wait 500
+/move 600 400
+/wait 300
+/pace 250
+/record start @FRAMES@ 20
+/wait 300
+/slow cd ~/Downloads
+/key enter
+/wait 300
+/slow ls
+/key enter
+/wait 700
+/glide 310 644 600
+/click 310 644
+/wait 1500
+/slow han
+/wait 800
+/key enter
+/wait 1600
+/record stop
+/quit
