@@ -27,10 +27,12 @@ pub fn build(b: *std.Build) void {
         .strip = strip,
     });
     configure(b, mod, target, optimize, sdl);
-    // The version (build.zig.zon) for --version, SDL's app metadata and
-    // the packages (scripts/package.sh reads the same line).
+    // The version for --version and SDL's app metadata. Releases pass the
+    // tag's (-Dversion=1.4.0, scripts/build-bin.sh); build.zig.zon's
+    // .version is a placeholder.
+    const version = b.option([]const u8, "version", "Version string reported by gtty (default: dev)") orelse "dev";
     const options = b.addOptions();
-    options.addOption([]const u8, "version", @import("build.zig.zon").version);
+    options.addOption([]const u8, "version", version);
     mod.addOptions("build_options", options);
 
     const exe = b.addExecutable(.{ .name = "gtty", .root_module = mod });

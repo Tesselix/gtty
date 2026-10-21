@@ -7,7 +7,9 @@
 # - gtty_<v>_amd64.deb        Ubuntu / Debian      } /usr/bin/gtty, a launcher and
 # - gtty-<v>-1.x86_64.rpm     Fedora               } icons (src/assets/gtty-icon.png)
 # - gtty-<v>-linux-x86_64.tar.gz  the same files, for any other distro
-# The version is the one in build.zig.zon. Needs nfpm (brew install nfpm).
+# The version is GTTY_VERSION (default 0.0.0-dev: nfpm wants semver;
+# releases set it from the tag), also passed to build-bin.sh.
+# Needs nfpm (brew install nfpm).
 #
 # Signing (macOS), optional:
 #   GTTY_SIGN_ID="Developer ID Application: Name (TEAMID)"  sign the app + dmg
@@ -22,8 +24,9 @@
 set -eu
 cd "$(dirname "$0")/.."
 
-VERSION=$(sed -n 's/^ *\.version = "\(.*\)",/\1/p' build.zig.zon | head -1)
-[ -n "$VERSION" ] || { echo "no version in build.zig.zon" >&2; exit 1; }
+GTTY_VERSION=${GTTY_VERSION:-0.0.0-dev}
+export GTTY_VERSION
+VERSION=$GTTY_VERSION
 command -v nfpm >/dev/null || { echo "nfpm not found: brew install nfpm" >&2; exit 1; }
 
 [ "${SKIP_BUILD:-}" = 1 ] || scripts/build-bin.sh

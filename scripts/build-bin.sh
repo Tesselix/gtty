@@ -9,19 +9,22 @@
 # - macOS: Apple system frameworks only (arm64; MACOS_TARGET to change).
 # - Linux: glibc 2.31+ only (x86_64; LINUX_TARGET to change). SDL picks up
 #   X11 / Wayland, GL / Vulkan and audio from the desktop at run time.
+# GTTY_VERSION (default dev) is the version gtty reports (-Dversion);
+# releases set it from the tag.
 set -eu
 cd "$(dirname "$0")/.."
 
 MACOS_TARGET=${MACOS_TARGET:-aarch64-macos.13.0}
 MACOS_SDK=${MACOS_SDK:-$(xcrun --show-sdk-path 2>/dev/null || true)}
 LINUX_TARGET=${LINUX_TARGET:-x86_64-linux-gnu.2.31}
+GTTY_VERSION=${GTTY_VERSION:-dev}
 WORK=.zig-cache/bin
 mkdir -p bin/macos bin/linux
 
 build() { # build <target> <out folder> [zig build options]
     echo "== $1"
     t=$1 out=$2; shift 2
-    zig build -Dbundled-sdl -Dstrip -Doptimize=ReleaseSafe -Dtarget="$t" --prefix "$WORK/$out" "$@"
+    zig build -Dbundled-sdl -Dstrip -Doptimize=ReleaseSafe -Dtarget="$t" -Dversion="$GTTY_VERSION" --prefix "$WORK/$out" "$@"
     cp "$WORK/$out/bin/gtty" "bin/$out/gtty"
 }
 [ -n "$MACOS_SDK" ] || { echo "macOS SDK not found: install Xcode command line tools or set MACOS_SDK" >&2; exit 1; }
