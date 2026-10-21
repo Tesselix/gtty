@@ -854,8 +854,9 @@ decisions; items marked *open* are undecided.
   certificate goes into a temporary keychain (removed on exit), the API
   key into a temp file, `GTTY_NOTARY_KEY*` for package.sh.
 - **`scripts/set-github-secrets.sh`** (bash, re-run after the yearly
-  certificate renewal): `gh secret set --env release` on gttyterm/gtty
-  (`GTTY_GITHUB_REPO`; creates the environment if needed): needs `gh`
+  certificate renewal): `gh secret set --env` on gttyterm/gtty
+  (`GTTY_GITHUB_REPO`), for both environments `release` and `edge`
+  (created if needed): needs `gh`
   logged in and the three files (names each missing one); asks the .p12
   password hidden and tries it on a throwaway keychain; sets
   MACOS_CERT_P12 (base64), MACOS_CERT_PASSWORD, APPLE_API_KEY_P8,
@@ -1045,8 +1046,9 @@ decisions; items marked *open* are undecided.
   always()`) is the ruleset's required check: keep its id and name);
   `release.yml` (`release: published`: `TAG` from the release, checked
   against `^v[0-9]+\.[0-9]+\.[0-9]+$`; odd MINOR → `gh release edit
-  --prerelease`, even → `--prerelease=false --latest`; macos-15,
-  environment `release` with the signing secrets: `sign-macos.sh` with
+  --prerelease` + environment `edge`, even → `--prerelease=false
+  --latest` + environment `release` (the `channel` job's output); macos-15,
+  each environment holds the signing secrets: `sign-macos.sh` with
   `GTTY_VERSION=${TAG#v}` (CI path: temporary keychain, API-key
   notarization) → build-bin.sh (ReleaseSafe, `-Dversion`) + package.sh,
   dmg checks (codesign, stapler, spctl), `SHA256SUMS`, `gh release

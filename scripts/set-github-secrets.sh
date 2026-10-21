@@ -1,8 +1,8 @@
 #!/bin/bash
 # SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Loads the macOS release secrets into the GitHub environment "release" of
-# gttyterm/gtty (GTTY_GITHUB_REPO to use another), for CI's
+# Loads the macOS release secrets into the GitHub environments "release"
+# (stable releases) and "edge" (pre-releases) of gttyterm/gtty (GTTY_GITHUB_REPO to use another), for CI's
 # scripts/sign-macos.sh. Run it again after the yearly certificate
 # renewal: every secret is replaced.
 #
@@ -14,7 +14,7 @@
 set -euo pipefail
 
 REPO=${GTTY_GITHUB_REPO:-gttyterm/gtty}
-ENV_NAME=release
+ENV_NAMES="release edge"
 TEAM_ID=N25UN9L94Q
 DIR=${GTTY_SIGNING_DIR:-$HOME/tmp}
 
@@ -113,21 +113,22 @@ if command -v security >/dev/null; then
         fail "the password doesn't open gtty.p12"
 fi
 
-# The environment (no-op when it exists).
-gh api --silent -X PUT "repos/$REPO/environments/$ENV_NAME" >/dev/null ||
-    fail "can't create or reach the environment $ENV_NAME of $REPO"
-
-# Values go through stdin, never the command line.
-set_secret() {
-    gh secret set "$1" --repo "$REPO" --env "$ENV_NAME" >/dev/null || fail "setting $1 failed"
-    echo "set $1"
-}
-base64 < "$DIR/gtty.p12" | tr -d '\n' | set_secret MACOS_CERT_P12
-printf '%s' "$CERT_PASSWORD" | set_secret MACOS_CERT_PASSWORD
-set_secret APPLE_API_KEY_P8 < "$P8"
-printf '%s' "$KEY_ID" | set_secret APPLE_API_KEY_ID
-printf '%s' "$ISSUER" | set_secret APPLE_API_ISSUER_ID
-printf '%s' "$TEAM_ID" | set_secret APPLE_TEAM_ID
-openssl rand -base64 32 | tr -d '\n' | set_secret KEYCHAIN_PASSWORD
+# Each environment (created when missing) gets every secret; values go
+# through stdin, never the command line.
+for ENV_NAME in $ENV_NAMES; do
+    gh api --silent -X PUT "repos/$REPO/environments/$ENV_NAME" >/dev/null ||
+        fail "can't create or reach the environment $ENV_NAME of $REPO"
+    set_secret() {
+        gh secret set "$1" --repo "$REPO" --env "$ENV_NAME" >/dev/null || fail "setting $1 failed"
+        echo "set $1 ($ENV_NAME)"
+    }
+    base64 < "$DIR/gtty.p12" | tr -d '\n' | set_secret MACOS_CERT_P12
+    printf '%s' "$CERT_PASSWORD" | set_secret MACOS_CERT_PASSWORD
+    set_secret APPLE_API_KEY_P8 < "$P8"
+    printf '%s' "$KEY_ID" | set_secret APPLE_API_KEY_ID
+    printf '%s' "$ISSUER" | set_secret APPLE_API_ISSUER_ID
+    printf '%s' "$TEAM_ID" | set_secret APPLE_TEAM_ID
+    openssl rand -base64 32 | tr -d '\n' | set_secret KEYCHAIN_PASSWORD
+done
 unset CERT_PASSWORD
-echo "secrets of environment $ENV_NAME in $REPO are up to date"
+echo "secrets of environments $ENV_NAMES in $REPO are up to date"
