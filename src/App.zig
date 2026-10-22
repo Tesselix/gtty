@@ -62,6 +62,12 @@ renderer: *c.SDL_Renderer,
 gfx: Gfx,
 theme: Theme = .{},
 prompt: Prompt,
+/// The prompt's border button under the mouse (drawn brighter).
+prompt_hover: ?Prompt.Button = null,
+/// Last frame: the prompt had the keyboard / the AI was working (an
+/// unpinned prompt hides when either ends, `tickPrompt`).
+prompt_keys_was: bool = true,
+ai_busy_was: bool = false,
 jobs: std.ArrayList(*JobWindow) = .empty,
 /// The current job window, shown in the windows area (or maximized over
 /// the whole screen). Every other job is minimized into the job grid.
@@ -154,7 +160,6 @@ grid_labels: [2]?f32 = .{ null, null },
 
 running: bool = true,
 dirty: bool = true,
-help_visible: bool = false,
 /// The About box (gtty menu ▸ About gtty); any click or key closes it.
 about_visible: bool = false,
 /// Mouse pointer shapes: an I-beam over job text, the arrow elsewhere.
@@ -238,7 +243,7 @@ settings: ?*SettingsWindow = null,
 menu_event: u32 = 0,
 /// gtty's menus are in the OS's menu bar (macOS). Otherwise gtty draws a
 /// menu bar at the top of its window (`menubar_r`) with a button per menu
-/// (`menubar_btns`: gtty, Edit).
+/// (`menubar_btns`: gtty, Help).
 native_menu: bool = false,
 menubar_r: Rect = .{},
 menubar_btns: [Menu.bar_titles.len]Rect = [_]Rect{.{}} ** Menu.bar_titles.len,
@@ -434,6 +439,7 @@ pub fn create(gpa: std.mem.Allocator, opts: Options) !*App {
     };
     if (app.memory_file) app.memory.load();
     if (app.recent_file) app.recent.sync();
+    app.prompt.pinned = opts.cfg.prompt_pinned;
     menu_app = app;
     JobWindow.sync_hook = .{ .ctx = app, .f = syncMirror };
     FileOpener.enabled = opts.cfg.file_opener;
@@ -530,7 +536,13 @@ pub fn run(app: *App) void {
         var n_exited: usize = 0;
         for (app.jobs.items, 0..) |w, i| {
             const was_running = w.running();
-            if (w.pump(&app.gfx)) app.dirty = true;
+            if (w.pump(&app.gfx)) {
+                app.dirty = true;
+            } else if (w.show_top and !w.running()) {
+                w.show_top = false;
+                w.out.scrollTo(w.out.maxScroll());
+                app.dirty = true;
+            }
             // The text changed (output, scrolling, resize): the file
             // opener's outline went; look again under the mouse.
             if (w.textChanged()) {
@@ -593,6 +605,7 @@ pub fn run(app: *App) void {
         app.tickSettings();
         app.tickRemote();
         app.tickAi();
+        app.tickPrompt();
         app.tickRecent();
         app.ensureShell();
         if (app.rec) |r| if (c.SDL_GetTicks() >= r.next) {
@@ -643,8 +656,8 @@ fn promptFaces(app: *App) struct { *Gfx.Face, *Gfx.Face } {
 
 fn relayout(app: *App) void {
     const f, _ = app.promptFaces();
-    const ph = Prompt.height(f, app.statusFace(), app.scale.ui);
-    app.prompt.layout(.{ .x = 0, .y = app.height_px - ph, .w = app.width_px, .h = ph }, f, app.scale.ui);
+    const ph = app.prompt.height(f, app.statusFace(), app.scale.ui);
+    app.prompt.layout(.{ .x = 0, .y = app.height_px - ph, .w = app.width_px, .h = ph }, f, app.statusFace(), app.scale.ui);
     // The drawn menu bar (no system menu bar): a thin strip on top.
     const bar_h: f32 = if (app.native_menu) 0 else @round(app.statusFace().cell_h * 1.7);
     app.menubar_r = .{ .x = 0, .y = 0, .w = app.width_px, .h = bar_h };
@@ -1249,6 +1262,72 @@ fn runCommand(app: *App, cmd: []const u8) void {
     app.openJob(.{ .kind = .command, .title = cmd, .argv = argv });
 }
 
+/// Hide (`on`) or open the prompt; the windows area takes / gives back
+/// its room, the windows moving there.
+fn setPromptCollapsed(app: *App, on: bool) void {
+    if (app.prompt.collapsed == on) return;
+    app.prompt.collapsed = on;
+    app.prompt_hover = null;
+    app.relayoutAnimated();
+    app.dirty = true;
+}
+
+/// The prompt's border buttons. ▾ hides it, unpinning it (pinned means
+/// always open), and the keyboard goes to the current window; the pin
+/// toggles (pinned: open now); "▴ prompt" opens it with the keyboard.
+fn promptButton(app: *App, b: Prompt.Button) void {
+    switch (b) {
+        .hide => {
+            app.setPromptPinned(false);
+            app.setPromptCollapsed(true);
+            if (app.main) |m| if (app.jobs.items[m].running() and app.jobs.items[m].sync != .follower) app.setFocus(m);
+        },
+        .pin => {
+            app.setPromptPinned(!app.prompt.pinned);
+            if (app.prompt.pinned) app.setPromptCollapsed(false) else if (app.focus != null) app.setPromptCollapsed(true);
+        },
+        .open => {
+            app.setPromptCollapsed(false);
+            app.clearFocus();
+        },
+    }
+    app.dirty = true;
+}
+
+fn setPromptPinned(app: *App, on: bool) void {
+    if (app.prompt.pinned == on) return;
+    app.prompt.pinned = on;
+    app.cfg.prompt_pinned = on;
+    app.saveConfig();
+    app.say(if (on) "prompt pinned: always open" else "prompt unpinned: it hides when you leave it", app.theme.dim);
+}
+
+/// Each frame: an unpinned prompt hides when the keyboard leaves it, or
+/// when the AI is done with a request; it opens when the keyboard comes
+/// back (a click on it, Ctrl+Tab, a job that ended), or on typing.
+fn tickPrompt(app: *App) void {
+    const keys = app.focus == null;
+    const busy = app.aiBusy();
+    defer {
+        app.prompt_keys_was = keys;
+        app.ai_busy_was = busy;
+    }
+    if (app.prompt.pinned) return;
+    if (keys and !app.prompt_keys_was) {
+        app.setPromptCollapsed(false);
+    } else if ((!keys and app.prompt_keys_was) or (!busy and app.ai_busy_was)) {
+        app.setPromptCollapsed(true);
+    }
+}
+
+/// `help` / Help ▸ gtty Help: the prompt's commands, printed into a new
+/// job window (finished at once; copy, scroll and close as any other).
+fn openHelp(app: *App) void {
+    app.closeMenu();
+    const argv = [_][]const u8{ "/bin/sh", "-c", "printf '%s' \"$1\"", "gtty-help", commands.help_text };
+    app.openJob(.{ .kind = .command, .title = "help", .argv = &argv, .show_top = true });
+}
+
 /// Close from the user (× or `close`): a running shell window ends like
 /// After a window was closed: no shell window running any more (one being
 /// ended doesn't count) → open a new one, as `s` would.
@@ -1745,6 +1824,7 @@ fn openMenu(app: *App, x: f32, y: f32) bool {
     var folders: ?bool = null;
     var output: ?[]const u8 = null;
     var input = false;
+    var folder: ?Menu.FolderRows = null;
     var job: ?*JobWindow = null;
     if (app.maximizedShown() == null and app.prompt.rect.contains(x, y)) {
         target = .prompt;
@@ -1764,13 +1844,16 @@ fn openMenu(app: *App, x: f32, y: f32) bool {
         folders = w.folders_left.items.len > 0;
         output = if (w.copiesLast()) "Copy last output" else "Copy all output";
         input = w.lastInput() != null;
+        var fbuf: [4096]u8 = undefined;
+        const local = pasteFolder(w, &fbuf) != null;
+        folder = .{ .open = local, .info = local and c.gtty_info_supported() };
         job = w;
     }
     const history_ok = paste_ok and app.paste_history.items.len > 0;
     // Paste: files copied last open the paste menu (name, path or the
     // files); else text into the job / the prompt.
     paste_ok = if (app.file_clip.items.len > 0) true else paste_ok and c.SDL_HasClipboardText();
-    app.popMenu(Menu.edit(target, .{ x, y }, copy_ok, output, input, paste_ok, history_ok, folders));
+    app.popMenu(Menu.edit(target, .{ x, y }, copy_ok, output, input, paste_ok, history_ok, folders, folder));
     return true;
 }
 
@@ -1782,7 +1865,8 @@ fn openChipMenu(app: *App, x: f32, y: f32) bool {
     const w = app.jobs.items[i];
     if (w.hit(x, y) != .folder_chip or w.cwd().len == 0) return false;
     app.chip_hover = null;
-    app.popMenu(Menu.folderChip(w.uid, .{ x, y }));
+    var fbuf: [4096]u8 = undefined;
+    app.popMenu(Menu.folderChip(w.uid, .{ x, y }, pasteFolder(w, &fbuf) != null and c.gtty_info_supported()));
     return true;
 }
 
@@ -2040,6 +2124,10 @@ fn menuRowPick(app: *App, row: usize) void {
                 // A new shell in the folder of the window clicked (the
                 // prompt: of the current window).
                 Menu.edit_new_shell => app.newShell(job orelse app.currentJob()),
+                // The folder the window's program is in: the file
+                // manager, or its info window.
+                Menu.edit_folder_open => if (job) |w| app.openFolder(w),
+                Menu.edit_folder_info => if (job) |w| app.folderInfo(w),
                 Menu.edit_folders => {
                     // The row itself opens its submenu too (it does nothing else).
                     app.menu = m;
@@ -2066,6 +2154,7 @@ fn menuRowPick(app: *App, row: usize) void {
             switch (m.codes[row]) {
                 Menu.chip_copy_name, Menu.chip_copy_path => app.copyFolder(w, m.codes[row] == Menu.chip_copy_name),
                 Menu.chip_open => app.openFolder(w),
+                Menu.chip_info => app.folderInfo(w),
                 else => {},
             }
         },
@@ -2147,6 +2236,7 @@ fn menuPick(app: *App, code: i32) void {
             app.about_visible = true;
             app.dirty = true;
         },
+        c.GTTY_MENU_HELP => app.openHelp(),
         else => {},
     }
 }
@@ -2379,6 +2469,7 @@ fn barRows(app: *App, which: Menu.Bar, rows: *[Menu.max_rows]Menu.Row, codes: *[
             Add(rows, codes, &n, .{ .label = "Run command" }, c.GTTY_MENU_RUN);
             Add(rows, codes, &n, .{ .label = "Sync typing", .key = if (app.sync_src != null) "✓" else "", .enabled = app.menuRowEnabled(c.GTTY_MENU_SYNC_TYPING) }, c.GTTY_MENU_SYNC_TYPING);
         },
+        .help => Add(rows, codes, &n, .{ .label = "gtty Help" }, c.GTTY_MENU_HELP),
     }
     return n;
 }
@@ -2559,6 +2650,69 @@ fn openFolder(app: *App, w: *JobWindow) void {
         return app.sayFmt("could not open {s} in {s}", .{ std.fs.path.basename(dz), manager }, app.theme.stderr_accent);
     }
     app.sayFmt("opened {s} in {s}", .{ std.fs.path.basename(dz), manager }, app.theme.dim);
+}
+
+/// Get Folder Info: the info window of the folder window `w`'s program is
+/// in (local only, as `openFolder`).
+fn folderInfo(app: *App, w: *JobWindow) void {
+    var buf: [4096]u8 = undefined;
+    const dir = pasteFolder(w, &buf) orelse {
+        beep.beep();
+        return app.sayFmt("#{d}: no local folder", .{w.serial}, app.theme.stderr_accent);
+    };
+    var zbuf: [4097]u8 = undefined;
+    const dz = std.fmt.bufPrintZ(&zbuf, "{s}", .{dir}) catch return;
+    app.showInfo(&.{dz});
+}
+
+const file_manager = if (builtin.os.tag == .macos) "Finder" else "the file manager";
+
+/// The C side's list of paths (at most 32).
+fn cPaths(paths: []const [:0]const u8, out: *[32][*c]const u8) [][*c]const u8 {
+    const n = @min(paths.len, out.len);
+    for (paths[0..n], 0..) |p, i| out[i] = p.ptr;
+    return out[0..n];
+}
+
+/// "x" or "3 items", for the status line.
+fn whatItems(paths: []const [:0]const u8, buf: []u8) []const u8 {
+    if (paths.len == 1) return std.fs.path.basename(paths[0]);
+    return std.fmt.bufPrint(buf, "{d} items", .{paths.len}) catch "items";
+}
+
+/// Show in Finder: the items selected in the file manager's window of
+/// their folder. `GTTY_SHOW_DRY=1`: only says so.
+fn revealPaths(app: *App, paths: []const [:0]const u8) void {
+    var wbuf: [32]u8 = undefined;
+    const what = whatItems(paths, &wbuf);
+    if (c.getenv("GTTY_SHOW_DRY") != null) return app.sayFmt("would show {s} in {s}", .{ what, file_manager }, app.theme.dim);
+    var arr: [32][*c]const u8 = undefined;
+    const ps = cPaths(paths, &arr);
+    if (c.gtty_reveal(ps.ptr, @intCast(ps.len)) != 0) {
+        beep.beep();
+        return app.sayFmt("could not show {s} in {s}", .{ what, file_manager }, app.theme.stderr_accent);
+    }
+    app.sayFmt("showing {s} in {s}", .{ what, file_manager }, app.theme.dim);
+}
+
+/// Get Info / Properties: the file manager's info window for each item
+/// (macOS: the first time, macOS asks whether gtty may control Finder).
+/// `GTTY_SHOW_DRY=1`: only says so.
+fn showInfo(app: *App, paths: []const [:0]const u8) void {
+    var wbuf: [32]u8 = undefined;
+    const what = whatItems(paths, &wbuf);
+    if (!c.gtty_info_supported()) {
+        beep.beep();
+        return app.say("no file manager here to show properties", app.theme.stderr_accent);
+    }
+    if (c.getenv("GTTY_SHOW_DRY") != null) return app.sayFmt("would show the info of {s}", .{what}, app.theme.dim);
+    var arr: [32][*c]const u8 = undefined;
+    const ps = cPaths(paths, &arr);
+    if (c.gtty_show_info(ps.ptr, @intCast(ps.len)) != 0) {
+        beep.beep();
+        return app.sayFmt("could not show the info of {s}", .{what}, app.theme.stderr_accent);
+    }
+    app.sayFmt("{s}: info of {s}", .{ file_manager, what }, app.theme.dim);
 }
 
 // ------------------------------------------------------------ show
@@ -2947,8 +3101,8 @@ fn aiSetup(app: *App) Ai.Setup {
     return s;
 }
 
-/// The AI is set up: lines typed at the prompt go to it (gtty's own
-/// commands and `!line` excepted). `GTTY_AI_REPLY=<file>` (tests): the
+/// The AI is set up: lines typed at the prompt go to it (`/name` and
+/// `!line` excepted). `GTTY_AI_REPLY=<file>` (tests): the
 /// file's text is the answer, nothing is sent.
 fn aiReady(app: *App) bool {
     return c.getenv("GTTY_AI_REPLY") != null or app.aiSetup().ready();
@@ -2958,21 +3112,14 @@ fn aiBusy(app: *App) bool {
     return app.ai_req != null or app.ai_plan != null;
 }
 
-/// A line typed at the prompt with the AI on: gtty's own commands (exact,
-/// see `commands.parseExact`), `/name` and `!line` (as without the AI) run
-/// at once; anything else is a request.
+/// A line typed at the prompt with the AI on: a request, even one that
+/// looks like a gtty or shell command (the AI hands those back as they
+/// are). Only `/name` (gtty's command) and `!line` (as without the AI)
+/// skip it.
 fn askAi(app: *App, line: []const u8) void {
     const t = std.mem.trim(u8, line, " \t");
     if (t.len == 0 or t[0] == '/') return app.exec(t);
     if (t[0] == '!') return app.exec(std.mem.trim(u8, t[1..], " \t"));
-    if (commands.parseExact(t)) |cmd| exact: {
-        if (cmd == .show) {
-            var buf: [4096]u8 = undefined;
-            const p = expandHome(&buf, cmd.show.path) orelse break :exact;
-            if (c.access(p.ptr, c.F_OK) != 0) break :exact;
-        }
-        return app.execGtty(cmd);
-    }
     if (app.aiBusy()) {
         beep.beep();
         app.prompt.insertUtf8(line);
@@ -3009,12 +3156,17 @@ fn askAi(app: *App, line: []const u8) void {
     };
 }
 
-/// The shell the AI's `"current"` means: the window in front if it is a
-/// shell at its prompt, else another shown one, else the most recently
-/// used one at its prompt; null: a new shell will be opened.
+/// The shell the AI's `"current"` means: the current window if it is a
+/// shell at its prompt; a shell there that is busy: null, a new shell
+/// will be opened (the busy one is left alone). The current window isn't
+/// a shell: another shown one at its prompt, else the most recently used
+/// one at its prompt, else null.
 fn aiTarget(app: *App) ?*JobWindow {
     // Not a read-only window (sync typing).
-    if (app.main) |m| if (app.jobs.items[m].atPrompt() and app.jobs.items[m].sync != .follower) return app.jobs.items[m];
+    if (app.main) |m| {
+        const w = app.jobs.items[m];
+        if (w.kind == .shell and w.running() and !w.ending() and w.sync != .follower) return if (w.atPrompt()) w else null;
+    }
     for (app.extras.items) |w| if (w.atPrompt() and w.sync != .follower) return w;
     var best: ?*JobWindow = null;
     for (app.jobs.items) |w| if (w.atPrompt() and w.sync != .follower) {
@@ -3032,7 +3184,7 @@ fn aiSystemPrompt(app: *App, target: ?*JobWindow) ![]u8 {
     var cwd_buf: [4096]u8 = undefined;
     const gtty_cwd: []const u8 = if (c.getcwd(&cwd_buf, cwd_buf.len)) |p| std.mem.span(@as([*:0]u8, @ptrCast(p))) else home;
 
-    var target_s: []const u8 = "new (no shell is waiting at its prompt; gtty opens one)";
+    var target_s: []const u8 = "new (the current shell is busy, or there is none; gtty opens one)";
     var shell: []const u8 = std.fs.path.basename(userShell());
     var cwd: []const u8 = gtty_cwd;
     if (target) |w| {
@@ -3262,7 +3414,7 @@ fn aiGt(app: *App, cmd: []const u8, args: []const []const u8) void {
         _ = app.aiOpenShell(full);
         return;
     }
-    if (!(eq(u8, cmd, "close") or eq(u8, cmd, "focus") or eq(u8, cmd, "show") or eq(u8, cmd, "list")))
+    if (!(eq(u8, cmd, "close") or eq(u8, cmd, "focus") or eq(u8, cmd, "show") or eq(u8, cmd, "list") or eq(u8, cmd, "help")))
         return app.sayFmt("AI: gtty has no command {s}", .{cmd}, app.theme.stderr_accent);
     var line: [1024]u8 = undefined;
     var w: std.Io.Writer = .fixed(&line);
@@ -3432,13 +3584,9 @@ fn reject(app: *App, line: []const u8) void {
 
 fn execGtty(app: *App, cmd_parsed: commands.Command) void {
     switch (cmd_parsed) {
-        .wait, .shot, .help => {},
-        else => app.help_visible = false,
-    }
-    switch (cmd_parsed) {
         .empty, .line, .unknown => {},
         .bad => |msg| app.say(msg, app.theme.stderr_accent),
-        .help => app.help_visible = true,
+        .help => app.openHelp(),
         .shell => |sh| {
             app.auto_shell = true; // the user's own: new shells open again
             if (sh.cwd) |dir| {
@@ -3482,6 +3630,7 @@ fn execGtty(app: *App, cmd_parsed: commands.Command) void {
             .new_window => c.GTTY_MENU_NEW_WINDOW,
             .sync_typing => c.GTTY_MENU_SYNC_TYPING,
             .about => c.GTTY_MENU_ABOUT,
+            .help => c.GTTY_MENU_HELP,
         }),
         .mods => |spec| {
             var mod: c.SDL_Keymod = 0;
@@ -3813,7 +3962,10 @@ fn onText(app: *App, text: []const u8) void {
         // Typing over a selection in the shell's input line replaces it.
         _ = w.deleteSel();
         w.typeBytes(text);
-    } else app.prompt.insertUtf8(text);
+    } else {
+        app.setPromptCollapsed(false);
+        app.prompt.insertUtf8(text);
+    }
     app.dirty = true;
 }
 
@@ -3922,7 +4074,12 @@ fn onKey(app: *App, key: c.SDL_Keycode, mod: c.SDL_Keymod) void {
     // Moving in a job's input: words with Ctrl or ⌥ + arrows, selecting
     // with Shift (see editKey).
     if (app.focusedJob()) |w| if (app.editKey(w, key, ctrl, cmd, alt, shift)) return;
-    // The prompt has the keyboard: its editing keys.
+    // The prompt has the keyboard: its editing keys (a hidden prompt opens
+    // for them).
+    if (app.focusedJob() == null and app.prompt.collapsed) switch (key) {
+        c.SDLK_RETURN, c.SDLK_KP_ENTER, c.SDLK_UP, c.SDLK_DOWN, c.SDLK_LEFT, c.SDLK_RIGHT, c.SDLK_HOME, c.SDLK_END, c.SDLK_BACKSPACE, c.SDLK_DELETE => app.setPromptCollapsed(false),
+        else => {},
+    };
     if (app.focusedJob() == null and app.promptKey(key, ctrl, cmd, alt, shift)) return;
     if (cmd) {
         switch (key) {
@@ -3972,7 +4129,6 @@ fn onKey(app: *App, key: c.SDL_Keycode, mod: c.SDL_Keymod) void {
         c.SDLK_ESCAPE => {
             if (app.aiBusy()) return app.cancelAi();
             app.prompt.clear();
-            app.help_visible = false;
         },
         c.SDLK_PAGEUP => if (app.focused()) |w| w.out.scrollBy(@intCast(w.rows -| 1)),
         c.SDLK_PAGEDOWN => if (app.focused()) |w| w.out.scrollBy(-@as(isize, @intCast(w.rows -| 1))),
@@ -4145,7 +4301,9 @@ fn onClick(app: *App, x: f32, y: f32, button: u8, clicks: u8) void {
             if (button == c.SDL_BUTTON_RIGHT and pk.kind == .folder) {
                 const uid = pk.uid;
                 app.closePeek();
-                app.popMenu(Menu.folderChip(uid, .{ x, y }));
+                var fbuf: [4096]u8 = undefined;
+                const local = if (app.jobByUid(uid)) |w| pasteFolder(w, &fbuf) != null else false;
+                app.popMenu(Menu.folderChip(uid, .{ x, y }, local and c.gtty_info_supported()));
             }
             return;
         }
@@ -4215,6 +4373,7 @@ fn onClick(app: *App, x: f32, y: f32, button: u8, clicks: u8) void {
     // A maximized job window covers everything.
     if (app.maximizedShown()) |m| return app.clickJob(m, x, y, button, clicks);
     if (app.prompt.rect.contains(x, y)) {
+        if (button == c.SDL_BUTTON_LEFT) if (app.prompt.buttonAt(x, y)) |b| return app.promptButton(b);
         app.clearFocus();
         // In its text: the cursor goes there (Shift: selects to it), a
         // double click selects a word, a triple all; dragging selects.
@@ -4401,6 +4560,11 @@ fn onMotion(app: *App, x: f32, y: f32) void {
     }
     if (in_peek) app.hideTip() else app.updateTip(x, y);
     app.over_text = over_text;
+    const ph: ?Prompt.Button = if (app.maximizedShown() == null) app.prompt.buttonAt(x, y) else null;
+    if (ph != app.prompt_hover) {
+        app.prompt_hover = ph;
+        app.dirty = true;
+    }
     app.mouse = .{ x, y };
     app.sendHover(); // sets the pointer shape too
 }
@@ -5085,6 +5249,8 @@ const file_cut = 6;
 const file_paste = 7;
 const file_trash = 8;
 const file_delete = 9;
+const file_show = 10;
+const file_info = 11;
 
 const sel_mod_name = if (builtin.os.tag == .macos) "⌘" else "Ctrl";
 const file_keys = if (builtin.os.tag == .macos) struct {
@@ -5519,8 +5685,13 @@ fn openFileMenu(app: *App, x: f32, y: f32) bool {
         const name = Menu.oneLine(&nbuf, std.fs.path.basename(paths[0]), cd_label_max);
         const label = std.fmt.bufPrint(&app.menu_cd_label, "cd {s}", .{name}) catch "cd";
         menu.addCode(.{ .label = label, .enabled = w.atPrompt() and w.sync != .follower }, file_cd);
-        menu.addCode(.{ .label = if (builtin.os.tag == .macos) "Open in Finder" else "Open in Files" }, file_reveal);
+        menu.addCode(.{ .label = Menu.open_folder_label }, file_reveal);
+    } else {
+        // Files (or several names): selected in their folder's window.
+        menu.addCode(.{ .label = Menu.reveal_label }, file_show);
     }
+    menu.addCode(.{ .label = Menu.info_label, .enabled = c.gtty_info_supported() }, file_info);
+    menu.addCode(Menu.separator, -1);
     menu.addCode(.{ .label = "Rename…", .key = "F2", .enabled = one }, file_rename);
     menu.addCode(.{ .label = "Copy", .key = file_keys.copy }, file_copy);
     menu.addCode(.{ .label = "Cut", .key = file_keys.cut }, file_cut);
@@ -5570,6 +5741,14 @@ fn fileMenuPick(app: *App, uid: ids_mod.Id, code: i32, at: [2]f32) void {
                 beep.beep();
                 app.say("could not open the folder", app.theme.stderr_accent);
             }
+        },
+        file_show => {
+            defer app.freePaths(paths);
+            app.revealPaths(paths);
+        },
+        file_info => {
+            defer app.freePaths(paths);
+            app.showInfo(paths);
         },
         file_rename => {
             defer app.freePaths(paths);
@@ -6198,10 +6377,10 @@ fn render(app: *App) void {
     const t = &app.theme;
     app.gfx.fill(.{ .x = 0, .y = 0, .w = app.width_px, .h = app.height_px }, t.desktop);
 
-    const f, const hf = app.promptFaces();
+    const f, _ = app.promptFaces();
     if (app.jobs.items.len == 0) {
         const plain = [_][]const u8{ "gtty", "", "type a command and press Enter — it opens in its own window", "s      open your shell", "help   gtty's commands" };
-        const with_ai = [_][]const u8{ "gtty", "", "say what to do, or type a command, and press Enter", "s      open your shell", "help   gtty's commands" };
+        const with_ai = [_][]const u8{ "gtty", "", "say what to do and press Enter", "/s      open your shell", "/help   gtty's commands" };
         const lines = if (app.aiReady()) with_ai else plain;
         var y = app.desktop_r.y + app.desktop_r.h / 2 - f.cell_h * 3;
         for (lines, 0..) |l, i| {
@@ -6225,7 +6404,6 @@ fn render(app: *App) void {
     }
     for (app.jobs.items, 0..) |w, i| if (app.isShown(i) and !w.maximized and w.anim_from == null) w.draw(&app.gfx, t);
 
-    if (app.help_visible) app.drawHelp(hf);
     app.drawMenuBar();
 
     // Prompt
@@ -6246,10 +6424,10 @@ fn render(app: *App) void {
     } else if (ai_on) {
         label = "✦ ›";
         label_col = t.mark_ai;
-        hint = "say what to do, or type a command   (!cmd runs it as typed)";
+        hint = "say what to do   (/cmd: a gtty command, !cmd: run it as typed, /help)";
     } else {
         // Not in recorded demo frames: the README leaves the AI out for now.
-        if (app.rec == null) hint = "type a command — or turn on AI in Settings → AI to ask in plain words";
+        if (app.rec == null) hint = "type a command (help lists gtty's) — or turn on AI in Settings → AI to ask in plain words";
     }
     const job = app.focusedJob();
     const peek_keys = if (app.peek) |pk| pk.wantsKeys() else false;
@@ -6271,9 +6449,11 @@ fn render(app: *App) void {
         .hint = hint,
         .cursor_visible = job == null and !peek_keys and find_w == null,
         .text_color = if (app.reject_until != 0) t.stderr_accent else null,
+        .hover = app.prompt_hover,
+        .status_face = app.statusFace(),
     });
     var help_buf: [512]u8 = undefined;
-    const help = app.helpLine(&help_buf);
+    const help = if (app.prompt.collapsed) "" else app.helpLine(&help_buf);
     StatusBar.draw(&app.gfx, app.statusFace(), app.prompt.status_r, help, t.dim, app.msg_buf[0..app.msg_len], app.msg_color);
     if (app.maximizedShown()) |m| if (app.jobs.items[m].anim_from == null) app.jobs.items[m].draw(&app.gfx, t);
     app.drawFileSel();
@@ -6327,30 +6507,6 @@ fn render(app: *App) void {
         app.pending_shot = null;
     }
     _ = c.SDL_RenderPresent(app.renderer);
-}
-
-fn drawHelp(app: *App, f: *Gfx.Face) void {
-    const t = &app.theme;
-    const ui = app.scale.ui;
-    var it = std.mem.splitScalar(u8, commands.help_text, '\n');
-    var n: f32 = 0;
-    var maxw: f32 = 0;
-    while (it.next()) |l| {
-        n += 1;
-        maxw = @max(maxw, Gfx.textWidth(f, l));
-    }
-    const pad = @round(14 * ui);
-    const w = maxw + pad * 2;
-    const h = n * f.cell_h * 1.25 + pad * 2;
-    const r: Rect = .{ .x = app.desktop_r.x + (app.desktop_r.w - w) / 2, .y = app.desktop_r.y + app.desktop_r.h - h - @round(12 * ui), .w = w, .h = h };
-    app.gfx.fill(r, t.title_bg);
-    app.gfx.outline(r, t.focus, @max(ui, 1));
-    it = std.mem.splitScalar(u8, commands.help_text, '\n');
-    var y = r.y + pad;
-    while (it.next()) |l| {
-        _ = app.gfx.text(f, r.x + pad, y, l, t.prompt_fg);
-        y += f.cell_h * 1.25;
-    }
 }
 
 /// What the About box and `gtty --version` say.

@@ -98,6 +98,13 @@ keyboard goes back to the prompt.
 press **Ctrl+Tab**). Type the next command: it takes the middle, and the one
 that was there moves to the job grid on the right.
 
+**More room for the windows:** the **▾** on the prompt's top right hides
+the prompt down to a thin **▴ prompt** strip (click it to bring the prompt
+back). Next to it, the **pin** (blue while pinned, the default) keeps the
+prompt always open; unpinned, it hides by itself when you start typing in
+a window or the AI has finished a request, and comes back when you click
+it, press Ctrl+Tab to it, or start typing at it.
+
 **Window buttons** — on the left of a window's title: **copy** its output
 (see below), text size **A−** / **A+**, and **color** (the word
 *color* in colored letters; struck through when off) to turn the program's colors off and on again. On the right:
@@ -154,6 +161,9 @@ open selects its text.
   into, or into the prompt. Plain Ctrl+C and Ctrl+V go to the program, as
   in any terminal. One press always pastes once.
 - **Right click** a window's text or the prompt: **Copy** and **Paste**.
+  In a window, also **Open Folder in Finder** and **Get Folder Info** (on
+  Linux **Open Folder in Files** and **Folder Properties**) for the
+  folder its program is in.
 - **Copy last input** (right-click menu of a zsh or bash window waiting
   for your input, once it has run a command): copies the last command
   line you ran.
@@ -178,7 +188,7 @@ open selects its text.
 | `show -a notes.pdf` | choose the app to open it with |
 | `settings` | open the settings window (also in the gtty menu) |
 | `quit` | exit gtty |
-| `help` | show this list |
+| `help` | open a window listing the prompt's commands (also Help ▸ gtty Help) |
 
 Anything else your shell knows — a program, a script, `cd`, `for …`, and
 your own aliases and functions (`ll`) — runs in a window, just as in your
@@ -297,7 +307,10 @@ Settings… → General → "File names: mark on hover, double-click opens".
 
 **Right-click** an outlined file or folder name for what you can do with
 it: **Open with <app>** / **Open With…** (a folder: **cd <its name>**,
-**Open in Finder**, on Linux **Open in Files**), **Rename…**, **Copy**,
+**Open in Finder**, on Linux **Open in Files**), **Show in Finder** (a
+file, selected in its folder; Linux **Show in Files**), **Get Info**
+(Linux **Properties**; the first time, macOS asks whether gtty may control
+Finder), **Rename…**, **Copy**,
 **Cut**, **Paste**, **Move to Trash** (where the system has
 a trash) and **Delete…**.
 

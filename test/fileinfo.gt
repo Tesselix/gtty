@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Show in Finder / Get Info rows (dry: nothing opens).
+# Run in a folder with a file notes.txt and a folder docs, neutral prompt:
+#   GTTY_SHOW_DRY=1 zig-out/bin/gtty --script test/fileinfo.gt
+# Expect: i1 the window's menu with Open Folder in Finder / Get Folder
+# Info between separators; i2 "would show the info of <folder>"; i3 the
+# file menu on notes.txt: Open with …, Show in Finder, Get Info; i4
+# "would show notes.txt in Finder"; i5 the folder menu on docs: cd docs,
+# Open in Finder, Get Info.
+/s
+/wait 1800
+/type ls
+/wait 800
+/rclick 500 300
+/wait 400
+/shot i1.bmp
+/click 574 502
+/wait 200
+/shot i2.bmp
+/move 180 66
+/wait 400
+/rclick 180 66
+/wait 500
+/shot i3.bmp
+/click 260 114
+/wait 200
+/shot i4.bmp
+/move 38 66
+/wait 400
+/rclick 38 66
+/wait 500
+/shot i5.bmp
+/quit

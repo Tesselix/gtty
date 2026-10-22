@@ -68,6 +68,8 @@ pub const Spec = struct {
     log_dir: ?[]const u8 = null,
     /// Extra environment for the child, "NAME=value" (shell hooks).
     env: []const [:0]const u8 = &.{},
+    /// Show the output from its top once the job has ended (`help`).
+    show_top: bool = false,
 };
 
 /// Scale shared by all windows: base font size in pixels and the UI scale
@@ -83,6 +85,9 @@ uid: ids.Id,
 /// Serial number of the job window: the #N label the user sees.
 serial: u32,
 kind: Kind,
+/// Scroll to the top once the job ended and all its output is read
+/// (App, after `pump`; then false).
+show_top: bool = false,
 title: []u8,
 proc: Process,
 out: Screen,
@@ -330,6 +335,7 @@ pub fn create(gpa: std.mem.Allocator, gfx: *Gfx, uid: ids.Id, serial: u32, spec:
         .uid = uid,
         .serial = serial,
         .kind = spec.kind,
+        .show_top = spec.show_top,
         .title = try gpa.dupe(u8, spec.title),
         .proc = .{},
         .out = Screen.init(gpa),

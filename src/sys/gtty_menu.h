@@ -4,7 +4,7 @@
 // gtty's menus in the OS's own menu bar (macOS): the app menu "gtty"
 // (Settings…, Run Command, Sync Typing, next to About / Hide / Quit); it
 // also has New Window (⌘N, another gtty) and New Shell (⌘T, like a new
-// tab). The Dock icon's menu has New Window too. No Edit menu (removed 2026-10-07: with several job windows its
+// tab), and a Help menu (gtty Help). The Dock icon's menu has New Window too. No Edit menu (removed 2026-10-07: with several job windows its
 // Copy / Paste read as "which window?"; ⌘C / ⌘V / ⌘A are plain keys in
 // gtty, acting on the window the mouse or keyboard is in).
 // Elsewhere there is no global menu bar: gtty_menu_install returns false
@@ -25,6 +25,7 @@ enum {
     GTTY_MENU_NEW_WINDOW = 7, // gtty ▸ New Window (⌘N): another gtty
     GTTY_MENU_SYNC_TYPING = 8, // gtty ▸ Sync Typing (checked while on)
     GTTY_MENU_ABOUT = 9,      // gtty ▸ About gtty (gtty's own About box)
+    GTTY_MENU_HELP = 10,      // Help ▸ gtty Help (⌘?): the prompt's commands in a job window
 };
 
 typedef bool (*gtty_menu_enabled_fn)(int code);

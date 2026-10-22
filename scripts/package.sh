@@ -49,9 +49,9 @@ printf 'APPL????' > "$APP/Contents/PkgInfo"
 plutil -lint -s "$APP/Contents/Info.plist"
 
 if [ -n "${GTTY_SIGN_ID:-}" ]; then
-    codesign --force --options runtime --timestamp --sign "$GTTY_SIGN_ID" "$APP"
+    codesign --force --options runtime --timestamp --entitlements packaging/macos/gtty.entitlements --sign "$GTTY_SIGN_ID" "$APP"
 else
-    codesign --force --sign - "$APP"
+    codesign --force --entitlements packaging/macos/gtty.entitlements --sign - "$APP"
 fi
 codesign --verify --strict "$APP"
 

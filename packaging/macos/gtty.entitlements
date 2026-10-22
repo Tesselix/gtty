@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+SPDX-License-Identifier: GPL-3.0-or-later
+
+Hardened runtime exceptions for gtty.app. apple-events: Get Info asks
+Finder for its information window (osascript, src/sys/gtty_finder.m);
+macOS still asks the user once (NSAppleEventsUsageDescription).
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
+</dict>
+</plist>
