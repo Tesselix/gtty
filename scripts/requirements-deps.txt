@@ -1,0 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# scripts/check-deps.py's one package (CVSS scores; LGPL-3.0-or-later,
+# CI only, not shipped). Pinned by hash: pip install --require-hashes.
+cvss==3.6 \
+    --hash=sha256:e342c6ad9c7eb69d2aebbbc2768a03cabd57eb947c806e145de5b936219833ea
