@@ -13,6 +13,7 @@
 //!      Script hooks (/wait, /type, …) need the slash.
 //!   4. Nothing — rejected (beep, the text flashes red).
 
+const builtin = @import("builtin");
 const std = @import("std");
 
 pub const Target = union(enum) {
@@ -28,7 +29,7 @@ pub const Zoom = union(enum) {
     set: f32,
 };
 
-pub const MenuPick = enum { run, settings, new_shell, new_window, sync_typing, about };
+pub const MenuPick = enum { run, settings, new_shell, new_window, sync_typing, about, help };
 
 pub const Command = union(enum) {
     /// No leading `/`: the OS gets the first chance (see above).
@@ -81,7 +82,7 @@ pub const Command = union(enum) {
     drag: [4]f32,
     /// /resize <w> <h> — resize gtty's OS window (window coordinates).
     resize: [2]f32,
-    /// /menu run | settings | new-shell | new-window | sync-typing | about — pick a
+    /// /menu run | settings | new-shell | new-window | sync-typing | about | help — pick a
     /// menu entry, as the
     /// menu bar would (for scripts: macOS menus can't be clicked).
     menu: MenuPick,
@@ -112,20 +113,66 @@ pub const Command = union(enum) {
     unknown: []const u8,
 };
 
-pub const help_text =
-    \\s                     open your shell in a job window
-    \\list                  list job windows
-    \\focus N               bring window #N up  (also: click, Ctrl+Tab)
-    \\close [N | all]       close job windows
-    \\zoom in | out | 150%  zoom the current window  (also: Cmd/Ctrl +/-)
-    \\colors [on | off]     show or hide the current window's colors
-    \\show [-a] FILE        open a file in its default app (-a: choose the app)
-    \\settings              open the settings window  (also in the gtty menu)
-    \\/clear                clear the current window  (plain clear is the OS's)
-    \\quit                  exit gtty
-    \\anything else the OS knows runs in a job window: bash, ls -l, make
-    \\/name: gtty's command even if the OS has the same name (/clear)
-;
+/// The prompt's commands, printed into a job window by `help` (and the
+/// Help menu). Lines stay under 80 columns; headings bright cyan.
+pub const help_text = blk: {
+    const mac = builtin.os.tag == .macos;
+    const new_shell = if (mac) "Cmd+T" else "Ctrl+Shift+T";
+    const zoom_keys = if (mac) "Cmd +/-" else "Ctrl +/-";
+    const b = "\x1b[1;36m";
+    const o = "\x1b[0m";
+    break :blk b ++ "gtty prompt commands" ++ o ++ "\n" ++
+        \\
+        \\Type at the prompt (bottom of the screen) and press Enter.
+        \\
+        \\
+    ++ b ++ "Without the AI" ++ o ++ "   (prompt: gtty ›)\n" ++
+        \\  ls -l, make, vim …   anything your shell knows runs in a new window:
+        \\                       programs, scripts, cd, your aliases and functions
+        \\  a gtty command       when your shell doesn't know the name (below)
+        \\  /name                always gtty's command, even if your shell has
+        \\                       the same name (/clear)
+        \\
+        \\
+    ++ b ++ "With the AI" ++ o ++ "   (Settings → AI; prompt: ✦ ›)\n" ++
+        \\  any text             a request to the AI ("list the big files here").
+        \\                       Its shell commands run in the current shell
+        \\                       window; when that shell is busy, or there is
+        \\                       none, gtty opens a new shell first.
+        \\  /name                a gtty command, not sent to the AI (/s, /close 3)
+        \\  !line                not sent to the AI: runs as without it (!ls -l)
+        \\  -x                   in a request: show the script before it runs
+        \\  Esc                  cancel the request
+        \\
+        \\
+    ++ b ++ "gtty commands" ++ o ++ "   (with the AI on: /s, /list, /help …)\n" ++
+        \\  s [PROGRAM]          open your shell (or PROGRAM) in a new window
+        \\
+    ++ "                       (also " ++ new_shell ++ ")\n" ++
+        \\  s --cwd FOLDER       open your shell in FOLDER
+        \\  run COMMAND          run COMMAND in a new window
+        \\  list                 list the job windows
+        \\  focus N              bring window #N up (also: click it, Ctrl+Tab)
+        \\  close [N | all]      close windows (running jobs are hung up)
+        \\
+    ++ "  zoom in | out | 150% zoom the current window (also " ++ zoom_keys ++ ")\n" ++
+        \\  colors [on | off]    show or hide the current window's colors
+        \\  show [-a] FILE       open FILE in its default app (-a: choose the app)
+        \\  /clear [N | all]     clear the current window (plain clear is the
+        \\                       shell's)
+        \\  settings             open the settings window
+        \\  help                 this list (also: Help ▸ gtty Help)
+        \\  quit                 exit gtty
+        \\
+        \\
+    ++ b ++ "Keys at the prompt" ++ o ++ "\n" ++
+        \\  Enter                run the line
+        \\  ↑ / ↓                earlier lines (history)
+        \\  Esc                  clear the line (with the AI: cancel the request)
+        \\  Ctrl+Tab             the running windows, then back to the prompt
+        \\
+    ;
+};
 
 /// A prompt line: `/…` is a gtty command; anything else is `.line`.
 pub fn parse(line_in: []const u8) Command {
@@ -263,13 +310,14 @@ pub fn parseGtty(text: []const u8, explicit: bool) Command {
     if (eq(sub, "key")) return if (rest.len > 0) .{ .key = rest } else .{ .bad = "/key ctrl+shift+left" };
     if (eq(sub, "wait")) return .{ .wait = std.fmt.parseInt(u32, rest, 10) catch 500 };
     if (eq(sub, "menu")) {
-        const usage = "/menu run | settings | new-shell | new-window | sync-typing | about";
+        const usage = "/menu run | settings | new-shell | new-window | sync-typing | about | help";
         if (eq(rest, "run")) return .{ .menu = .run };
         if (eq(rest, "settings")) return .{ .menu = .settings };
         if (eq(rest, "new-shell")) return .{ .menu = .new_shell };
         if (eq(rest, "new-window")) return .{ .menu = .new_window };
         if (eq(rest, "sync-typing")) return .{ .menu = .sync_typing };
         if (eq(rest, "about")) return .{ .menu = .about };
+        if (eq(rest, "help")) return .{ .menu = .help };
         return .{ .bad = usage };
     }
     if (eq(sub, "mods")) return if (rest.len > 0) .{ .mods = rest } else .{ .bad = "/mods cmd+shift | none" };
@@ -281,11 +329,10 @@ pub fn parseGtty(text: []const u8, explicit: bool) Command {
     return .{ .unknown = sub };
 }
 
-/// With the AI on, a line that is exactly one of gtty's commands (no
-/// slash) runs at once; anything looser goes to the AI, which knows the
-/// shell's commands too. Exact: a known name with the arguments it takes
-/// (`close 3`, `focus 2`, `s`, `list`), not "close the finished windows"
-/// or "show me the big files". Script hooks always need the slash.
+/// One of gtty's commands, exactly (no slash): the AI's `gt` actions.
+/// Exact: a known name with the arguments it takes (`close 3`, `focus 2`,
+/// `s`, `list`), not "close the finished windows" or "show me the big
+/// files". Script hooks always need the slash.
 pub fn parseExact(text_in: []const u8) ?Command {
     const text = std.mem.trim(u8, text_in, " \t");
     const cmd = parseGtty(text, false);
@@ -390,6 +437,7 @@ test "parse prompt lines and gtty commands" {
     try t.expect(parseGtty("show -a", false) == .bad);
     try t.expect(parseGtty("settings", false) == .settings);
     try t.expect(parse("/menu run").menu == .run);
+    try t.expect(parse("/menu help").menu == .help);
     try t.expect(parse("/menu sub 0") == .bad);
     try t.expect(parse("/menu x") == .bad);
     try t.expect(parseGtty("menu run", false) == .unknown);

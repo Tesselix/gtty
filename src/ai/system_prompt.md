@@ -83,6 +83,7 @@ Actions run in order. `target: "new"` uses the shell the last `gt sh` opened
 | `focus` | `#N` | Make window #N the current one |
 | `show` | `<file>` | Open a file in its default app |
 | `list` | | List the job windows |
+| `help` | | Show gtty's prompt commands (in a new window) |
 
 Use only these. If the request needs a gtty feature that isn't listed, answer
 with a `message` saying so.
@@ -198,6 +199,10 @@ User: `ls -la`
 User: `open a new shell at ~/src/gtty`
 
 {"summary":"new shell in ~/src/gtty","danger":false,"actions":[{"type":"gt","cmd":"sh","args":["--cwd","~/src/gtty"]}]}
+
+User: `help` (or `what can I type here`)
+
+{"summary":"gtty's commands","danger":false,"actions":[{"type":"gt","cmd":"help","args":[]}]}
 
 User: `go to my downloads`
 

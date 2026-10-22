@@ -18,6 +18,26 @@ the shell. Users expect it to behave like a shell in a terminal.
   window that takes the keyboard (run mode). Back to the prompt: click it,
   click empty space, Ctrl+Tab (cycles running jobs, then the prompt), or the
   job exits. The prompt label says where typing goes.
+- **Prompt hide / pin** (added 2026-10-22; `Prompt.collapsed`, `pinned`,
+  `hide_r` / `pin_r` / `open_r`, `buttonAt`; `App.promptButton`,
+  `setPromptCollapsed`, `tickPrompt`): on the prompt's top border, right,
+  a ▾ and a pin (blue, upright = pinned; dim and tilted = not). Hidden,
+  the prompt is one thin strip (`Prompt.height`): "▴ prompt" on the left
+  (a click opens it with the keyboard), the notices, the pin; the windows
+  area takes the room (`relayoutAnimated`). ▾ = unpin + hide, the keyboard
+  to the current window (pinned means always open). Unpinned, it hides
+  when the keyboard leaves it (`focus` set) or the AI is done with a
+  request (`aiBusy` ends), and opens when the keyboard comes back (click,
+  Ctrl+Tab, a job ending) or on typing / editing keys at it. Config
+  `prompt-pinned` (default on), saved on each change. Test:
+  `test/prompt-pin.gt`.
+- **Help** (2026-10-22; `help`, `/help`, `/` alone, Help ▸ gtty Help —
+  macOS a Help menu ⌘?, Linux the drawn bar's Help — `GTTY_MENU_HELP`,
+  `/menu help`; the AI's `gt help`): `App.openHelp` opens a job window
+  titled `help` that prints `commands.help_text` (`/bin/sh -c printf`;
+  cyan headings, keys per OS) and finishes (green); `Spec.show_top`
+  scrolls it to its top once all its output is read. Test:
+  `test/help.gt`.
 - **Window system:** the **current job window** fills the windows area
   (full height); every other job window is minimized into the **job grid**.
   **A window coming into the windows area joins it** (`setFocus` on a
@@ -169,7 +189,8 @@ the shell. Users expect it to behave like a shell in a terminal.
     its peek (the peek closes) → Copy Name / Copy Path (`App.copyFolder`:
     clipboard + paste history, the chip flashes white,
     `JobWindow.flashFolderChip`) / Open in Finder (Linux "Open in Files";
-    `App.openFolder`, as the title bar's folder button). Test:
+    `App.openFolder`, as the title bar's folder button) / Get Folder Info
+    (`Menu.chip_info`, `App.folderInfo`; see "Finder rows"). Test:
     `test/folderchip.gt`.
   - **Recent chip** (added 2026-10-10; `recent_chip_r`, clock icon +
     `recent`, after the git chip, hidden in a remote session): a click
@@ -217,7 +238,7 @@ the shell. Users expect it to behave like a shell in a terminal.
   drawn as boxes by `drawFileSel`; a plain click in a window's text
   clears it). Right-click on a name = the file menu (`Menu.Purpose.files`,
   `openFileMenu` / `fileMenuPick`, files in `App.menu_files`): Open /
-  Open with <app> / Open With… (files; see below), cd <name> (16 characters, …; `cd_label_max`) / Open in Finder (folders); no title row (it opens at the name), Rename… (F2),
+  Open with <app> / Open With… (files; see below), cd <name> (16 characters, …; `cd_label_max`) / Open in Finder (folders); Show in Finder (files, or several names: selected in their folder, `revealPaths`) and Get Info (all; Linux Show in Files / Properties; `showInfo`; 2026-10-22, see "Finder rows"), a separator; no title row (it opens at the name), Rename… (F2),
   Copy (⌘C; one copy: the paste decides, so no Copy Name / Copy Path
   rows, 2026-10-13), Cut (⌘X), Paste (⌘V; files
   waiting: the paste menu, see below; else text typed into the job), Move to Trash (⌘⌫, Linux Ctrl+Delete; only when
@@ -283,6 +304,19 @@ the shell. Users expect it to behave like a shell in a terminal.
   same rows over the prompt (`addPickerRows`, `openWithPick`), no apps
   → the chooser. `GTTY_SHOW_DRY=1`: "would ask which app opens X".
   Test: `test/openwith.gt`.
+- **Finder rows** (2026-10-22; `src/sys/gtty_finder.{h,m,c}`,
+  `App.revealPaths` / `showInfo`, `GTTY_SHOW_DRY=1` only says so): **Show
+  in Finder** = macOS NSWorkspace `activateFileViewerSelectingURLs` (no
+  permission); Linux `gdbus` → `org.freedesktop.FileManager1.ShowItems`
+  (file:// URIs, %-encoded), no gdbus / session bus: xdg-open of the
+  folder. **Get Info** = macOS Finder's information window through
+  `osascript` (paths as the script's arguments; detached by a double
+  fork, so the first-time "gtty wants to control Finder" question never
+  blocks gtty; errors only on osascript's stderr); Linux
+  `ShowItemProperties` (no gdbus: the row is dimmed,
+  `gtty_info_supported`). Rows: the file menu, the job window's
+  right-click menu (its folder) and the folder chip menu (Get Folder
+  Info, `Menu.chip_info`). Test: `test/fileinfo.gt`.
 - **Folder button** (the title bar's folder icon, `JobWindow.files_r`,
   windows area only; `App.openFolder`): the folder the window's program
   is in at the click (`JobWindow.folder`) in the system's file manager
@@ -378,9 +412,11 @@ the shell. Users expect it to behave like a shell in a terminal.
   `_ENDPOINT` / `_KEY` win (`App.aiSetup`). Not set up (`aiReady`): the
   prompt works as before, an empty prompt shows a dim hint
   (`Prompt.DrawInfo.hint`). Set up: label `✦ ›` (purple), `submit` →
-  `askAi`: `/name`, `!line` (old resolution) and exact gtty commands
-  (`commands.parseExact`; `show` only if the file exists) run at once,
-  the rest is a request (`-x` stripped = show the script). One request at
+  `askAi`: `/name` (gtty's command) and `!line` (old resolution) run at
+  once; everything else is a request, even an exact gtty or shell
+  command (2026-10-22, the user's rule: with the AI on, the text is for
+  it; `commands.parseExact` is only for the plan's `gt` actions) (`-x`
+  stripped = show the script). One request at
   a time (`Ai.Request`: `curl -K -` on pipes, `gtty_spawn_pipes`; body in
   `<tmp>/ai-req.json` 0600, the key only in curl's stdin config; polled in
   `tickAi`; label "✦ thinking…", Esc = `cancelAi`). System prompt
@@ -393,13 +429,16 @@ the shell. Users expect it to behave like a shell in a terminal.
   never reveals it, and requests to reveal / ignore / change it get the
   out-of-scope message. Answer = JSON plan (`Ai.parsePlan`:
   outermost `{…}`, fences / prose ignored): actions `gt` (sh [--cwd],
-  close, focus, show, list → `aiGt`), `shell` {target current / new /
+  close, focus, show, list, help → `aiGt`), `shell` {target current / new /
   #N, script}, `cd`, `remember` (memory note), `message` (status bar).
   `stepPlan` runs them in order; a shell step waits for its window's
   prompt (new shell: 20 s, `ai_wait_ms`) and for the plan's previous
   command there to end (`Screen.ai` back to off). `"current"` = `aiTarget`
-  at ask time (front shell at its prompt, else another, else a new one,
-  `aiOpenShell`: in front, keyboard stays at the prompt). `aiRunScript`:
+  at ask time: the current window if it is a shell at its prompt; a
+  shell there that is busy → a new one (2026-10-22, the user's choice);
+  the current window not a shell → another shown one at its prompt, else
+  the last used one, else a new one (`aiOpenShell`: in front, keyboard
+  stays at the prompt; opened before any shell step runs). `aiRunScript`:
   `<tmp>/ai-<n>.sh` (0600), typed as `\x15 gtty-ai <n> '<request>'\r`
   (`JobWindow.runAi`, sets `Screen.ai` = armed → running at C → off at D:
   echo + output get zone `.ai`, purple); `gtty-ai` is a hook function
@@ -449,7 +488,10 @@ the shell. Users expect it to behave like a shell in a terminal.
   none), **Copy last output** / **Copy all output** (job windows: the
   title-bar copy, `copyJob`, with its flash; rows carry codes,
   `Menu.edit_*`), **Paste** (dimmed for a finished job or an empty clipboard),
-  shortcut shown per row. Right-clicking a running window focuses it; the
+  shortcut shown per row; job windows also get, between separators,
+  **Open Folder in Finder** / **Get Folder Info** (Linux "… in Files" /
+  "Folder Properties"; `edit_folder_open` / `_info`, `Menu.FolderRows`:
+  dimmed without a local folder; `openFolder`, `folderInfo`; 2026-10-22). Right-clicking a running window focuses it; the
   selection stays. **Paste ▸** (paste history): every copy from a job
   window (`App.toClipboard`: ⌘C, title-bar copy, menu Copy) goes on top
   of `App.paste_history` (this session's copies, newest first, 5, no
@@ -580,7 +622,8 @@ the shell. Users expect it to behave like a shell in a terminal.
   it would open (`test/show.gt`). Linux side compiles but is untested
   (picker: mimeinfo.cache, `gio launch` / `gtk-launch`).
 - **Menu bar** (mouse; shortcuts could clash with the jobs' keys): menus
-  **gtty** (About gtty, Settings…, New Window, New Shell, Run command, Sync Typing). **No Edit
+  **gtty** (About gtty, Settings…, New Window, New Shell, Run command, Sync Typing)
+  and **Help** (gtty Help, ⌘? on macOS; see "Help"). **No Edit
   menu** (removed 2026-10-07: with several job windows its Copy / Paste
   were confusing): ⌘C / ⌘V / ⌘A (Linux Ctrl+Shift+C / V / A) are plain
   keys (`copySelection`, `pasteKey`, `selectAll`). **About gtty** (`GTTY_MENU_ABOUT`; macOS: SDL's
@@ -830,7 +873,9 @@ decisions; items marked *open* are undecided.
   `build_options.version`; package.sh defaults to `0.0.0-dev`, nfpm wants
   semver); build.zig.zon's `.version` is a placeholder nothing reads. Every package carries `LICENSE` and
   `THIRD_PARTY.md` (gtty.app: `Contents/Resources`; Linux:
-  `share/doc/gtty`). Signing: `GTTY_SIGN_ID`, notarizing:
+  `share/doc/gtty`). gtty.app is signed with
+  `packaging/macos/gtty.entitlements` (hardened runtime + `apple-events`,
+  for Get Info; Info.plist `NSAppleEventsUsageDescription`). Signing: `GTTY_SIGN_ID`, notarizing:
   `GTTY_NOTARY_PROFILE` (keychain profile) or `GTTY_NOTARY_KEY` /
   `_KEY_ID` / `_ISSUER` (API key); else ad hoc.
 - **Signed releases** (`scripts/sign-macos.sh`, bash; `--check` = only
@@ -872,7 +917,7 @@ decisions; items marked *open* are undecided.
   (screenshot; convert with `sips -s format png`), `/type text` (text + Enter
   through the real keyboard path), `/click x y` (real mouse event, window coords), `/dclick x y` (double click), `/down x y` / `/up x y` (left button), `/rclick x y` (right click), `/move x y` (mouse move, no button: hover / tooltips), `/drag x1 y1 x2 y2` (press, move, release), `/text text` (typed, no Enter; each ASCII character's key down first, as a keyboard sends it, `scriptTyping`),
   `/key ctrl+shift+left` (a key with modifiers: ctrl shift alt cmd + left right up down home end backspace delete enter escape tab c v x insert a n t f period pageup pagedown f2 1 2 3), `/resize w h`
-  (gtty's OS window), `/menu run|settings|new-shell|new-window|sync-typing|about` (a menu pick; macOS
+  (gtty's OS window), `/menu run|settings|new-shell|new-window|sync-typing|about|help` (a menu pick; macOS
   menus can't be clicked from a script), `/target main|settings` (where
   the next /click /move /drag /text /key /type /shot go), `/mods
   cmd+shift|none` (modifier keys held, via SDL_SetModState), `/quit`. macOS blocks synthetic keystrokes (osascript), so use
@@ -932,7 +977,7 @@ decisions; items marked *open* are undecided.
   HiDPI → recompute grid → resize PTY). In a grid it keeps a normal-size title
   bar over its content rendered offscreen and scaled down (the PTY size never
   changes). Keep that ownership there.
-- `src/ui/Prompt.zig` — 2-line command area; `src/ui/StatusBar.zig` — status
+- `src/ui/Prompt.zig` — 2-line command area (hide ▾ / pin on its border); `src/ui/StatusBar.zig` — status
   bar: the file opener's help line on the left, short notices on the right.
 - `src/ui/Peek.zig` — a chip's peek / expanded peek (git branches: filter,
   switch); App owns it and routes mouse / keys to it.
@@ -952,6 +997,8 @@ decisions; items marked *open* are undecided.
   `gtty_menu.h` code). App opens
   it and acts on the row picked.
 - `src/sys/gtty_drag.{m,c}` — drag files out (macOS / Wayland);
+  `src/sys/gtty_finder.{m,c}` — Show in Finder / Get Info (see "Finder
+  rows");
   `src/sys/gtty_copy.c` — copying dropped files in the background.
 - `src/ui/SettingsWindow.zig` — the settings window; `src/core/Config.zig`
   — settings file (parse / format unit-tested); `src/sys/gtty_menu.m` / `.c` — native menu (macOS) /

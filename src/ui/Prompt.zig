@@ -3,7 +3,11 @@
 
 //! The fixed command area at the bottom of the gtty screen:
 //! a two-line input editor, with the status bar line underneath it
-//! (drawn by StatusBar into `status_r`).
+//! (drawn by StatusBar into `status_r`). On its top border, right: a pin
+//! and a ▾ that hides it; hidden (`collapsed`) it is one thin strip,
+//! "▴ prompt" on the left (a click opens it), the status bar's notices
+//! and the pin. Unpinned, App hides it when the keyboard leaves it or the
+//! AI is done with a request.
 
 const std = @import("std");
 const color = @import("../core/color.zig");
@@ -32,6 +36,15 @@ stash: std.ArrayList(u21) = .empty,
 rect: Rect = .{},
 input_r: Rect = .{},
 status_r: Rect = .{},
+/// Hidden: only the thin strip (`open_r` opens it).
+collapsed: bool = false,
+/// Always open (the default; config `prompt-pinned`).
+pinned: bool = true,
+/// The buttons on its top border: hide (▾; open: nothing), pin.
+hide_r: Rect = .{},
+pin_r: Rect = .{},
+/// Collapsed: "▴ prompt", a click opens it.
+open_r: Rect = .{},
 
 pub fn init(gpa: std.mem.Allocator) Prompt {
     return .{ .gpa = gpa };
@@ -290,17 +303,82 @@ fn encode(gpa: std.mem.Allocator, cps: []const u21) ![]u8 {
 
 // ------------------------------------------------------------ layout & draw
 
-/// Height of the dock for a given face (2 input lines + status bar).
-pub fn height(f: *const Gfx.Face, status: *const Gfx.Face, ui: f32) f32 {
+/// Height of the dock for a given face (2 input lines + status bar);
+/// collapsed: one status line.
+pub fn height(p: *const Prompt, f: *const Gfx.Face, status: *const Gfx.Face, ui: f32) f32 {
+    if (p.collapsed) return @round(status.cell_h + 12 * ui);
     return @round(f.cell_h * 2 + status.cell_h + 30 * ui);
 }
 
-pub fn layout(p: *Prompt, r: Rect, f: *const Gfx.Face, ui: f32) void {
+pub const collapsed_label = "prompt";
+
+pub fn layout(p: *Prompt, r: Rect, f: *const Gfx.Face, status: *const Gfx.Face, ui: f32) void {
     p.rect = r;
     const pad = @round(10 * ui);
-    p.input_r = .{ .x = r.x + pad, .y = r.y + @round(8 * ui), .w = r.w - 2 * pad, .h = f.cell_h * 2 };
+    const btn = @round(status.cell_h * 1.25);
+    const gap = @round(6 * ui);
+    const top = r.y + @round(@max(2 * ui, 2) + (if (p.collapsed) (r.h - btn) / 2 - ui else 4 * ui));
+    p.pin_r = .{ .x = r.x + r.w - pad - btn, .y = top, .w = btn, .h = btn };
+    p.hide_r = if (p.collapsed) .{} else .{ .x = p.pin_r.x - gap - btn, .y = top, .w = btn, .h = btn };
+    if (p.collapsed) {
+        p.input_r = .{};
+        p.open_r = .{ .x = r.x + pad, .y = top, .w = btn + gap + Gfx.textWidth(status, collapsed_label) + gap, .h = btn };
+        const sx = p.open_r.x + p.open_r.w + pad;
+        p.status_r = .{ .x = sx, .y = r.y + (r.h - status.cell_h) / 2 + ui, .w = p.pin_r.x - gap - sx, .h = status.cell_h };
+        return;
+    }
+    p.open_r = .{};
+    p.input_r = .{ .x = r.x + pad, .y = r.y + @round(8 * ui), .w = p.hide_r.x - gap - r.x - pad, .h = f.cell_h * 2 };
     const sy = p.input_r.y + p.input_r.h + @round(4 * ui);
     p.status_r = .{ .x = r.x + pad, .y = sy, .w = r.w - 2 * pad, .h = r.y + r.h - sy - @round(3 * ui) };
+}
+
+pub const Button = enum { hide, pin, open };
+
+/// The border button (or the collapsed strip's "▴ prompt") at x, y.
+pub fn buttonAt(p: *const Prompt, x: f32, y: f32) ?Button {
+    if (p.pin_r.contains(x, y)) return .pin;
+    if (p.hide_r.contains(x, y)) return .hide;
+    if (p.open_r.contains(x, y)) return .open;
+    return null;
+}
+
+/// ▾ / ▴ (`up`) in the box `r`.
+fn chevron(gfx: *Gfx, r: Rect, up: bool, col: color.Rgb, ui: f32) void {
+    const cx = r.x + r.w / 2;
+    const hw = r.w * 0.3;
+    const hh = r.w * 0.16;
+    const cy = r.y + r.h / 2;
+    const tip = if (up) cy - hh else cy + hh;
+    const base = if (up) cy + hh else cy - hh;
+    const th = @max(1.5 * ui, 1.5);
+    gfx.line(cx - hw, base, cx, tip, col, th);
+    gfx.line(cx, tip, cx + hw, base, col, th);
+}
+
+/// A push pin in the box `r`: upright while pinned, lying over 45° when
+/// not. Cap, flange across, needle.
+fn pin(gfx: *Gfx, r: Rect, pinned: bool, col: color.Rgb, ui: f32) void {
+    const th = @max(1.5 * ui, 1.5);
+    const cx = r.x + r.w / 2;
+    const cy = r.y + r.h / 2;
+    const k: f32 = if (pinned) 0 else std.math.sqrt1_2; // sin 45°
+    const cs: f32 = if (pinned) 1 else std.math.sqrt1_2;
+    const P = struct {
+        fn at(x0: f32, y0: f32, s_: f32, c_: f32, u: f32, v: f32, size: f32) [2]f32 {
+            // (u, v): across / along the pin, -0.5 … 0.5 of the box.
+            return .{ x0 + (u * c_ - v * s_) * size, y0 + (u * s_ + v * c_) * size };
+        }
+    };
+    const sz = r.w;
+    const cap0 = P.at(cx, cy, k, cs, 0, -0.42, sz);
+    const cap1 = P.at(cx, cy, k, cs, 0, -0.12, sz);
+    const fl0 = P.at(cx, cy, k, cs, -0.3, -0.06, sz);
+    const fl1 = P.at(cx, cy, k, cs, 0.3, -0.06, sz);
+    const nd1 = P.at(cx, cy, k, cs, 0, 0.45, sz);
+    gfx.line(cap0[0], cap0[1], cap1[0], cap1[1], col, @round(sz * 0.32));
+    gfx.line(fl0[0], fl0[1], fl1[0], fl1[1], col, th * 1.3);
+    gfx.line(cap1[0], cap1[1], nd1[0], nd1[1], col, th * 0.8);
 }
 
 pub const DrawInfo = struct {
@@ -312,12 +390,37 @@ pub const DrawInfo = struct {
     text_color: ?color.Rgb = null,
     /// Dim text shown in place of an empty line (what can be typed).
     hint: ?[]const u8 = null,
+    /// The button under the mouse (drawn brighter).
+    hover: ?Button = null,
+    /// For the collapsed strip's label.
+    status_face: *Gfx.Face,
 };
 
 pub fn draw(p: *Prompt, gfx: *Gfx, theme: *const Theme, f: *Gfx.Face, ui: f32, info: DrawInfo) void {
     gfx.fill(p.rect, theme.prompt_bg);
     // Divider between the windows area and the dock (2 px at 1x).
     gfx.fill(.{ .x = p.rect.x, .y = p.rect.y, .w = p.rect.w, .h = @max(@round(2 * ui), 2) }, theme.divider);
+    const hot = theme.prompt_fg;
+    for ([_]Button{ .hide, .pin, .open }) |b| {
+        const br = switch (b) {
+            .hide => p.hide_r,
+            .pin => p.pin_r,
+            .open => p.open_r,
+        };
+        if (br.w == 0) continue;
+        if (info.hover == b) gfx.fill(br, theme.focus.mix(theme.prompt_bg, 0.75));
+        const col = if (info.hover == b) hot else theme.dim;
+        switch (b) {
+            .hide => chevron(gfx, br, false, col, ui),
+            .pin => pin(gfx, br, p.pinned, if (p.pinned) theme.focus else col, ui),
+            .open => {
+                const sf = info.status_face;
+                chevron(gfx, .{ .x = br.x, .y = br.y, .w = br.h, .h = br.h }, true, col, ui);
+                _ = gfx.text(sf, br.x + br.h + @round(6 * ui), br.y + (br.h - sf.cell_h) / 2, collapsed_label, col);
+            },
+        }
+    }
+    if (p.collapsed) return;
 
     // Label, then the text wrapped over two lines.
     const r = p.input_r;

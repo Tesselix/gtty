@@ -4,8 +4,8 @@
 // macOS: gtty's menus in the menu bar SDL creates (gtty app menu with
 // About / Preferences… / Services / Hide / Quit, then Window). SDL's
 // "Preferences…" row (⌘,, no action) becomes "Settings…" with New Window
-// (⌘N), New Shell (⌘T), Run Command and Sync Typing under it. No Edit
-// menu (see gtty_menu.h).
+// (⌘N), New Shell (⌘T), Run Command and Sync Typing under it; a Help
+// menu with gtty Help (⌘?). No Edit menu (see gtty_menu.h).
 // The Dock icon's menu (right click) gets New Window too, as Terminal's
 // and Chrome's do.
 #import <Cocoa/Cocoa.h>
@@ -100,6 +100,12 @@ bool gtty_menu_install(uint32_t event_type, gtty_menu_enabled_fn enabled, gtty_m
         [app insertItem:item(@"New Shell", GTTY_MENU_NEW_SHELL, @"t") atIndex:at + 2];
         [app insertItem:item(@"Run Command", GTTY_MENU_RUN, @"") atIndex:at + 3];
         [app insertItem:item(@"Sync Typing", GTTY_MENU_SYNC_TYPING, @"") atIndex:at + 4];
+
+        // Help ▸ gtty Help (⌘?), last in the bar as on every Mac app; the
+        // system adds its search field to it.
+        NSMenu *help = topMenu(bar, @"Help", [bar numberOfItems]);
+        [help addItem:item(@"gtty Help", GTTY_MENU_HELP, @"?")];
+        [NSApp setHelpMenu:help];
 
         // Dock menu: New Window. NSApp asks its delegate each time the menu
         // opens, so adding the method now is enough.

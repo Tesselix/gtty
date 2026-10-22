@@ -94,8 +94,8 @@ pub const Purpose = union(enum) {
 pub const open_with_other = -1;
 
 /// The drawn menu bar's menus, left to right.
-pub const Bar = enum { gtty };
-pub const bar_titles = [_][]const u8{"gtty"};
+pub const Bar = enum { gtty, help };
+pub const bar_titles = [_][]const u8{ "gtty", "Help" };
 
 /// The right-click menu's rows, as `codes[i]` (a row's place depends on
 /// which rows the menu has).
@@ -112,6 +112,18 @@ pub const edit_new_shell = 4;
 /// Copy last input (a shell at its prompt that ran a command): the last
 /// command line, as it was when Enter ran it.
 pub const edit_input = 5;
+/// Open Folder in Finder / Get Folder Info (job windows with a local
+/// folder): the folder the window's program is in.
+pub const edit_folder_open = 6;
+pub const edit_folder_info = 7;
+
+/// The file manager's rows (macOS Finder; Linux the desktop's).
+const mac = builtin.os.tag == .macos;
+pub const reveal_label = if (mac) "Show in Finder" else "Show in Files";
+pub const open_folder_label = if (mac) "Open in Finder" else "Open in Files";
+pub const info_label = if (mac) "Get Info" else "Properties";
+pub const window_folder_label = if (mac) "Open Folder in Finder" else "Open Folder in Files";
+pub const window_info_label = if (mac) "Get Folder Info" else "Folder Properties";
 
 /// New Shell's key (a new tab in other terminals): ⌘T on macOS,
 /// Ctrl+Shift+T elsewhere (as GNOME Terminal; Ctrl+T alone is the job's:
@@ -125,6 +137,7 @@ pub const new_window_key = if (builtin.os.tag == .macos) "⌘N" else "Ctrl+Shift
 pub const chip_copy_name = 0;
 pub const chip_copy_path = 1;
 pub const chip_open = 2;
+pub const chip_info = 3;
 
 /// The paste menu's rows (files copied last): their names or full paths
 /// as text, or the files themselves (copied / moved into a folder).
@@ -161,28 +174,39 @@ codes: [max_rows]i32 = undefined,
 /// takes a paste). `output`: a row under Copy with this label (job
 /// windows: "Copy last output" / "Copy all output"). `input`: a "Copy last
 /// input" row under it (left out when false). `folders`: a History ▸
-/// row (job windows), enabled when the window has a folder history. Each
-/// row's `codes[i]` says which it is (`edit_copy`, …). Paste pastes what
-/// was copied last: text, or files on gtty's file clipboard (App decides).
-pub fn edit(target: Target, at: [2]f32, copy_ok: bool, output: ?[]const u8, input: bool, paste_ok: bool, history_ok: bool, folders: ?bool) Menu {
+/// row (job windows), enabled when the window has a folder history.
+/// `folder`: after a separator, Open Folder in Finder and Get Folder Info
+/// (job windows; each enabled or dimmed). Each row's `codes[i]` says which
+/// it is (`edit_copy`, …). Paste pastes what was copied last: text, or
+/// files on gtty's file clipboard (App decides).
+pub const FolderRows = struct { open: bool, info: bool };
+
+pub fn edit(target: Target, at: [2]f32, copy_ok: bool, output: ?[]const u8, input: bool, paste_ok: bool, history_ok: bool, folders: ?bool, folder: ?FolderRows) Menu {
     var m: Menu = .{ .purpose = .{ .edit = target }, .at = at };
     m.addCode(.{ .label = "Copy", .key = edit_keys[0], .enabled = copy_ok }, edit_copy);
     if (output) |label| m.addCode(.{ .label = label }, edit_output);
     if (input) m.addCode(.{ .label = "Copy last input" }, edit_input);
     m.addCode(.{ .label = "Paste", .key = edit_keys[1], .enabled = paste_ok, .sub = true, .sub_on = history_ok }, edit_paste);
     if (folders) |on| m.addCode(.{ .label = "History", .enabled = on, .sub = true, .sub_on = on }, edit_folders);
+    if (folder) |f| {
+        m.addCode(separator, -1);
+        m.addCode(.{ .label = window_folder_label, .enabled = f.open }, edit_folder_open);
+        m.addCode(.{ .label = window_info_label, .enabled = f.info }, edit_folder_info);
+        m.addCode(separator, -1);
+    }
     m.addCode(.{ .label = "New Shell", .key = new_shell_key }, edit_new_shell);
     return m;
 }
 
 /// The right-click menu of window `uid`'s folder chip (or its peek):
 /// Copy Name, Copy Path, Open in Finder (Linux: the desktop's file
-/// manager).
-pub fn folderChip(uid: ids.Id, at: [2]f32) Menu {
+/// manager), Get Folder Info (`info_ok`: the file manager can).
+pub fn folderChip(uid: ids.Id, at: [2]f32, info_ok: bool) Menu {
     var m: Menu = .{ .purpose = .{ .folder_chip = uid }, .at = at };
     m.addCode(.{ .label = "Copy Name" }, chip_copy_name);
     m.addCode(.{ .label = "Copy Path" }, chip_copy_path);
-    m.addCode(.{ .label = if (builtin.os.tag == .macos) "Open in Finder" else "Open in Files" }, chip_open);
+    m.addCode(.{ .label = open_folder_label }, chip_open);
+    m.addCode(.{ .label = window_info_label, .enabled = info_ok }, chip_info);
     return m;
 }
 
@@ -461,7 +485,7 @@ test "layout keeps the menu on screen" {
     var f: Gfx.Face = undefined;
     f.cell_w = 8;
     f.cell_h = 16;
-    var m = Menu.edit(.prompt, .{ 790, 590 }, false, null, false, true, true, null);
+    var m = Menu.edit(.prompt, .{ 790, 590 }, false, null, false, true, true, null, null);
     const screen: Rect = .{ .x = 0, .y = 0, .w = 800, .h = 600 };
     m.layout(&f, 1, screen);
     try std.testing.expect(m.r.x + m.r.w <= 800 and m.r.y + m.r.h <= 600);
@@ -489,7 +513,7 @@ test "Paste's ▸ box opens the submenu, the rest of the row pastes" {
     var f: Gfx.Face = undefined;
     f.cell_w = 8;
     f.cell_h = 16;
-    var m = Menu.edit(.prompt, .{ 10, 10 }, true, null, false, true, true, null);
+    var m = Menu.edit(.prompt, .{ 10, 10 }, true, null, false, true, true, null, null);
     m.layout(&f, 1, .{ .x = 0, .y = 0, .w = 800, .h = 600 });
     const a = m.arrow_r[edit_paste];
     try std.testing.expectEqual(@as(usize, edit_paste), m.arrowAt(a.x + 1, a.y + 1).?);
@@ -501,7 +525,7 @@ test "Paste's ▸ box opens the submenu, the rest of the row pastes" {
 }
 
 test "the right-click menu of a job window: Copy last output under Copy" {
-    const m = Menu.edit(.{ .job = 7 }, .{ 10, 10 }, false, "Copy last output", false, true, false, false);
+    const m = Menu.edit(.{ .job = 7 }, .{ 10, 10 }, false, "Copy last output", false, true, false, false, null);
     try std.testing.expectEqual(@as(usize, 5), m.n);
     try std.testing.expectEqualStrings("Copy last output", m.rows[1].label);
     try std.testing.expectEqual(@as(i32, edit_output), m.codes[1]);
@@ -540,9 +564,21 @@ test "separators take no clicks; a whole-row submenu takes its ▸" {
 }
 
 test "Copy last input sits under Copy last output, only when asked for" {
-    const m = Menu.edit(.{ .job = 7 }, .{ 10, 10 }, false, "Copy last output", true, true, false, false);
+    const m = Menu.edit(.{ .job = 7 }, .{ 10, 10 }, false, "Copy last output", true, true, false, false, null);
     try std.testing.expectEqual(@as(usize, 6), m.n);
     try std.testing.expectEqualStrings("Copy last input", m.rows[2].label);
     try std.testing.expectEqual(@as(i32, edit_input), m.codes[2]);
     try std.testing.expectEqual(@as(i32, edit_paste), m.codes[3]);
+}
+
+test "a job window's folder rows: between separators, before New Shell" {
+    const m = Menu.edit(.{ .job = 7 }, .{ 10, 10 }, false, "Copy last output", false, true, false, false, .{ .open = true, .info = false });
+    try std.testing.expectEqual(@as(usize, 9), m.n);
+    try std.testing.expect(m.rows[4].sep);
+    try std.testing.expectEqual(@as(i32, edit_folder_open), m.codes[5]);
+    try std.testing.expect(m.rows[5].enabled);
+    try std.testing.expectEqual(@as(i32, edit_folder_info), m.codes[6]);
+    try std.testing.expect(!m.rows[6].enabled);
+    try std.testing.expect(m.rows[7].sep);
+    try std.testing.expectEqual(@as(i32, edit_new_shell), m.codes[8]);
 }

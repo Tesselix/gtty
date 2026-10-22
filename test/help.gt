@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# help: the prompt's commands in a new job window (finished, green).
+# Run: zig build && zig-out/bin/gtty --script test/help.gt
+# Expect: help-1: a "help" window listing the commands (bold headings);
+# help-2: a second one from the Help menu (/menu help), the first in the grid.
+help
+/wait 800
+/shot help-1.bmp
+/menu help
+/wait 800
+/shot help-2.bmp
+/quit

@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# The prompt's ▾ (hide) and pin on its top border, at the default size.
+# Run: zig build && GTTY_AI_REPLY=test/ai-reply.json GTTY_AI_MEMORY=/tmp/gtty-ai-mem \
+#        zig-out/bin/gtty --script test/prompt-pin.gt
+# Expect: ▾ hides and unpins it (the shell takes the keyboard and the
+# room); q1: "▴ prompt" opened it again with the keyboard; q2: a click in
+# the shell hid it; q3: hidden again once the AI was done; q4: the pin
+# (on the strip's right) pinned and opened it.
+/s
+/wait 1800
+/click 500 690
+/wait 300
+/click 1063 653
+/wait 500
+/click 35 707
+/wait 500
+/shot q1-open.bmp
+/click 500 300
+/wait 500
+/shot q2-left.bmp
+/click 35 707
+/wait 400
+/type ls
+/wait 3000
+/shot q3-ai-done.bmp
+/click 1080 707
+/wait 500
+/shot q4-pinned.bmp
+/quit

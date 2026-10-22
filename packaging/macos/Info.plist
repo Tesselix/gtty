@@ -30,5 +30,7 @@
 	<true/>
 	<key>NSSupportsAutomaticGraphicsSwitching</key>
 	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>gtty asks Finder to show the Get Info window of a file or folder you picked.</string>
 </dict>
 </plist>

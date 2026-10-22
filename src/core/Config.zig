@@ -104,6 +104,9 @@ refresh_ls: bool = true,
 /// The last shell window closed or exited (and no other job running):
 /// gtty quits instead of opening a new shell.
 quit_on_last_shell: bool = true,
+/// The prompt always open (pinned); off: it hides when the keyboard
+/// leaves it or the AI is done (its pin button).
+prompt_pinned: bool = true,
 /// AI at the prompt (src/ai/): provider, model, endpoint (empty: the
 /// provider's), API key (empty: $ANTHROPIC_API_KEY / $OPENAI_API_KEY),
 /// the user's extra instructions, and the local memory on / off.
@@ -269,6 +272,8 @@ pub fn parseLine(cfg: *Config, line_in: []const u8) void {
         if (parseBool(val)) |b| cfg.color_folders = b;
     } else if (std.mem.eql(u8, key, "quit-on-last-shell")) {
         if (parseBool(val)) |b| cfg.quit_on_last_shell = b;
+    } else if (std.mem.eql(u8, key, "prompt-pinned")) {
+        if (parseBool(val)) |b| cfg.prompt_pinned = b;
     } else {
         for (color_keys, 0..) |k, i| if (std.mem.eql(u8, k, key)) {
             if (parseRgb(val)) |rgb| cfg.colorPtr(i).* = rgb;
@@ -302,7 +307,8 @@ pub fn format(cfg: *const Config, w: *std.Io.Writer) !void {
     try w.print("file-opener = {s}\n", .{if (cfg.file_opener) "on" else "off"});
     try w.print("color-folders = {s}\n", .{if (cfg.color_folders) "on" else "off"});
     try w.print("refresh-ls = {s}\n", .{if (cfg.refresh_ls) "on" else "off"});
-    try w.print("quit-on-last-shell = {s}\n\n", .{if (cfg.quit_on_last_shell) "on" else "off"});
+    try w.print("quit-on-last-shell = {s}\n", .{if (cfg.quit_on_last_shell) "on" else "off"});
+    try w.print("prompt-pinned = {s}\n\n", .{if (cfg.prompt_pinned) "on" else "off"});
     for (color_keys, 0..) |k, i| {
         const rgb = cfg.colorAt(i);
         try w.print("{s} = #{x:0>2}{x:0>2}{x:0>2}\n", .{ k, rgb.r, rgb.g, rgb.b });
@@ -386,6 +392,7 @@ test "config: parse, clamp, skip bad lines, round trip" {
         \\sub.nope = off
         \\marks = off
         \\quit-on-last-shell = off
+        \\prompt-pinned = off
         \\mark-input = #00ff00
         \\ai = anthropic
         \\ai-model = "claude-x"
@@ -409,6 +416,7 @@ test "config: parse, clamp, skip bad lines, round trip" {
     try t.expect(cfg.palette[2].eql((color.Theme{}).palette[2]));
     try t.expect(!cfg.file_opener);
     try t.expect(!cfg.quit_on_last_shell);
+    try t.expect(!cfg.prompt_pinned);
 
     cfg.setCommand("");
     var out: [16384]u8 = undefined;
@@ -423,6 +431,7 @@ test "config: parse, clamp, skip bad lines, round trip" {
     try t.expect(!back.colors);
     try t.expect(!back.marks);
     try t.expect(!back.quit_on_last_shell);
+    try t.expect(!back.prompt_pinned);
     try t.expect(back.mark_input.eql(Rgb.hex(0x00ff00)));
     try t.expectEqual(AiProvider.anthropic, back.ai_provider);
     try t.expectEqualStrings("claude-x", back.ai_model.get());

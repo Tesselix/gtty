@@ -24,15 +24,16 @@ connect to the build server
 ```
 
 The AI answers with **one script and runs it right away**, without asking
-you questions, in the shell window you're working in (or a new one when
-none is waiting at its prompt). The shell's line shows your request
+you questions, in the shell window you're working in. When that shell is busy, or
+there is none, gtty opens a new shell first. The shell's line shows your request
 (`gtty-ai 3 'copy all doc files to ~/docs -r'`), and the request and its
 output are marked **purple** on the left edge.
 
-- **Commands still work.** gtty's own commands (`s`, `list`, `close 3`,
-  `focus 2`, …) run at once, without the AI. A command for the shell
-  (`ls -la`, `git status`) goes to the AI, which hands it back unchanged.
-  To skip the AI, start the line with **`!`** (`!make`).
+- **Everything you type goes to the AI**, commands too: a command for
+  the shell (`ls -la`, `git status`) or for gtty (`list`, `close 3`) comes
+  back unchanged and runs. To skip the AI, start the line with **`/`**
+  for gtty's own commands (`/list`, `/help`) or **`!`** for anything else
+  (`!make`).
 - **Risky scripts ask first.** A script that deletes, moves, overwrites,
   edits files in place, kills programs, uses `sudo` or sends anything over
   the network is printed in the shell, followed by `Run it? [y/N]`. The window
