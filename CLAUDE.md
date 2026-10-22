@@ -1101,6 +1101,28 @@ decisions; items marked *open* are undecided.
   dmg checks (codesign, stapler, spctl), `SHA256SUMS`, `gh release
   upload --clobber`; then slsa-github-generator's generic generator
   (referenced by tag, as it requires) uploads `gtty.intoto.jsonl`);
+  `deps.yml` (2026-10-22; called by ci.yml as job `deps`, part of
+  `build-and-test`; also weekly and by hand): `zig build --fetch=all`,
+  then `scripts/check-deps.py` against **`.github/deps.toml`** (every
+  package in `zig-pkg/` by hash, transitive ones too; license files'
+  sha256; SPDX expressions — the entry's `licenses` or every one in the
+  package's REUSE.toml — met by `allowed`, GPL-3.0-compatible only;
+  OSV.dev by the upstream commit). Unreviewed / changed dependency or a
+  license problem: fails. Known vulnerabilities: warnings on PRs (run
+  summary + one PR comment, `--comment`, marker `gtty-deps-report`,
+  updated in place) with a **suggested pin** (smallest newer release
+  with none known, else the fewest; `zig fetch --save=<name> <url>`),
+  failing in the weekly run only when rated `fail_severity` (deps.toml,
+  `high`) or worse — CVSS v4, else v3, else the database's rating, via
+  the `cvss` package pinned by hash in `scripts/requirements-deps.txt`
+  (a venv in CI); unrated ones count; `ignore` entries need a reason and
+  an `until` date (zlib's two gzwrite.c CVEs: not built, see build.zig).
+  Bumped 2026-10-22: FreeType 2.15.0 (adds `src/hvf/hvf.c` to
+  `freetype_srcs`, as upstream's CMake BASE_SRCS), libpng 1.6.59, zlib
+  1.3.2. **Changing `build.zig.zon` means updating
+  `.github/deps.toml`** (`check-deps.py --print` lists hashes and license
+  files). Plus `actions/dependency-review-action` on PRs (warn-only).
+  The user's rule: don't bump the dependencies unasked; only scan.
   `codeql.yml` (actions + c-cpp with build-mode none, no Zig support,
   `security-extended`; PRs to main, pushes to main, weekly);
   `scorecard.yml` (the ossf/scorecard-action template: push to main,

@@ -1,0 +1,74 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# The dependencies' licenses and known vulnerabilities
+# (scripts/check-deps.py, against .github/deps.toml).
+#   - Pull requests and pushes to main: called by ci.yml (part of the
+#     required check build-and-test). License problems and dependencies
+#     not reviewed fail; known vulnerabilities are warnings, in the run
+#     summary and one pull request comment, each with a version to pin.
+#   - Weekly (and by hand): known vulnerabilities rated `fail_severity`
+#     (deps.toml: high) or worse fail too, so a newly found one reaches
+#     the maintainers (GitHub mails a failed scheduled run); lower ones
+#     stay warnings.
+# The workflow's own actions: dependency review on pull requests
+# (warnings only).
+name: Dependencies
+
+on:
+  workflow_call:
+    inputs:
+      vulns:
+        description: "warn | fail: what a known vulnerability does"
+        type: string
+        default: warn
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deps:
+    name: Licenses and vulnerabilities
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: write # the report comment (read-only for forks: then only the summary)
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # No version: setup-zig reads minimum_zig_version from build.zig.zon.
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+      - name: Fetch the dependencies
+        run: zig build --fetch=all
+      # The CVSS scorer, pinned by hash (scripts/requirements-deps.txt).
+      - name: Set up the checker
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --require-hashes --only-binary :all: -r scripts/requirements-deps.txt
+      - name: Check
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          VULNS: ${{ inputs.vulns || 'fail' }}
+          COMMENT: ${{ github.event_name == 'pull_request' }}
+        run: |
+          args=(--vulns "$VULNS")
+          [ "$COMMENT" = true ] && args+=(--comment)
+          "$RUNNER_TEMP/venv/bin/python" scripts/check-deps.py "${args[@]}"
+
+  # GitHub Actions used by the workflows: known-vulnerable versions a pull
+  # request brings in (the GitHub dependency graph; warnings only).
+  actions:
+    name: Actions review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
+        with:
+          fail-on-severity: moderate
+          warn-only: true

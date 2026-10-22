@@ -26,9 +26,13 @@ system's SDL3 / SDL3_ttf instead.
 | castholm/SDL build scripts | b72b367 | MIT | Yes |
 | sdl_linux_deps (Linux build headers: X11, Wayland, ALSA, PipeWire, DRM, fribidi, liburing, …; pulled in by castholm/SDL) | 0.0.0 | MIT, X11, ISC, HPND, AFL, LGPL-2.1-or-later, "(GPL-2.0-only WITH Linux-syscall-note) OR MIT" (per `REUSE.toml`) | Yes (headers only; the libraries are loaded at run time by SDL) |
 | SDL3_ttf | 3.2.2 | Zlib | Yes |
-| FreeType | 2.13.3 | FreeType License (FTL), or GPL-2.0-or-later | Yes (FTL is GPL-3.0-compatible) |
-| libpng | 1.6.44 | PNG Reference Library License v2 | Yes |
-| zlib | 1.3.1 | Zlib | Yes |
+| FreeType | 2.15.0 | FreeType License (FTL), or GPL-2.0-or-later; `src/autofit/ft-hb-*` from HarfBuzz under its "Old MIT" license | Yes (FTL is GPL-3.0-compatible) |
+| libpng | 1.6.59 | PNG Reference Library License v2 | Yes |
+| zlib | 1.3.2 (core files only: no gz* file API) | Zlib | Yes |
+
+`.github/deps.toml` records what was reviewed for each (hash, license
+files, licenses); CI checks it and the known vulnerabilities
+(`scripts/check-deps.py`).
 
 ## Used at run time, not shipped
 
@@ -54,6 +58,7 @@ system's SDL3 / SDL3_ttf instead.
 ## Tools for building, packaging and demos (not shipped)
 
 Zig, nfpm, Xcode command line tools, img2webp (libwebp, BSD-3-Clause),
+the Python package `cvss` (LGPL-3.0-or-later; CI's dependency check),
 `cc` for `test/fake-ssh/ssh.c` (gtty's own test stand-in).
 
 ## Flags
