@@ -48,7 +48,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             opts.script = args.next();
         } else if (std.mem.eql(u8, a, "-c") or std.mem.eql(u8, a, "--command")) {
             opts.command = args.next() orelse {
-                std.debug.print("{s} needs a command, e.g. gtty -c 'htop' (\"\" for none)\n", .{a});
+                std.debug.print("{s} needs a command, e.g. gtty -c 'htop' (\"\": your shell)\n", .{a});
                 return;
             };
             command_given = true;
@@ -65,7 +65,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
             std.debug.print(
                 \\usage: gtty [-c command] [--script file] [--scrollback lines]
                 \\  -c, --command cmd   run cmd at start as if typed at the prompt
-                \\                      (default: s, your shell; "" for none)
+                \\                      (default and "": s, your shell; gtty always
+                \\                      opens your shell if the command starts nothing)
                 \\
             , .{});
             return;
