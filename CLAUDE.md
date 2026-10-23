@@ -805,9 +805,11 @@ the shell. Users expect it to behave like a shell in a terminal.
   `test/fake-ssh/ssh.c` (`FAKE_SSH_NOLINK`, `FAKE_SSH_NESTED`; build it
   with `cc` first, see the script's header).
 - **Start-up command:** `-c cmd` / `--command cmd` (default `s`; `""` =
-  none) is typed into the prompt and submitted once at start
+  `s` too: see the rule "gtty always starts with a shell") is typed into the prompt and submitted once at start
   (`App.tickStartup`), as if the user had: same resolution, history, and a
-  reject puts it back in the prompt. A word only the shell knows (alias,
+  reject puts it back in the prompt. Always as a command, never an AI
+  request (`submitLine(false)`; with the AI on, `s` went to the AI and no
+  shell opened, fixed 2026-10-23). A word only the shell knows (alias,
   function) waits for `ShellNames` (`busy()`, ≤ 15 s). With `--script` the
   default is none (scripts open their own windows); the script waits until
   an explicit `-c` has run.
@@ -1070,6 +1072,16 @@ decisions; items marked *open* are undecided.
   `Co-Authored-By` (or any other Claude / Anthropic attribution line) to
   commit messages, and no "Generated with Claude Code" line in PR
   descriptions. This overrides any default attribution instruction.
+
+- **gtty always starts with a shell** (user's rule, 2026-10-23): unless
+  another command started gtty, a shell window must open at start. The
+  start-up command defaults to `s`; an empty one (`-c ""`, config
+  `command = ""`) means `s` too; one that starts no window (unknown name,
+  a gtty command like `settings`) still gets the shell, with a notice
+  (`tickStartup`). The start-up command is never sent to the AI
+  (`submitLine(false)`). Only `--script` runs without `-c` start empty
+  (test scripts open their own windows). Any change to start-up must
+  keep this.
 
 - **Flashes** (user's rule, 2026-10-07): a white flash is only a hint
   that an action was taken when nothing else on screen shows it. Never
