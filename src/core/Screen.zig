@@ -1362,7 +1362,11 @@ fn reflow(s: *Screen, new_cols: u16) !void {
         var used = one.items.len;
         while (used > 0 and blankCell(one.items[used - 1])) used -= 1;
         if (first == last and used <= new) {
-            // Fits on one row as it is: move it over without copying.
+            // Fits on one row as it is: move it over without copying. The
+            // capacity reserved above is the old row count; a narrower
+            // width can already have used it up on earlier lines.
+            try lines.ensureUnusedCapacity(s.gpa, 1);
+            try wraps.ensureUnusedCapacity(s.gpa, 1);
             lines.appendAssumeCapacity(one.*);
             wraps.appendAssumeCapacity(false);
             one.* = .empty;
@@ -1982,6 +1986,19 @@ test "reflow joins wrapped rows and re-wraps at the new width" {
     try std.testing.expectEqualStrings("0123456789abcdefghij\nshort\n$", t);
     s.feed("x");
     try std.testing.expectEqual(@as(u21, 'x'), s.lines.items[s.cur_row].items[2].cp);
+}
+
+test "reflow: a long line split early, short lines after it (crashed)" {
+    var s = Screen.init(std.testing.allocator);
+    defer s.deinit();
+    s.resize(80, 5);
+    s.feed("0123456789" ** 8 ++ "\r\n");
+    for (0..9) |_| s.feed("ab\r\n");
+    // 16 rows from the first line: more new rows than reserved (the old
+    // count, rounded up) before the short lines come.
+    s.resize(5, 5);
+    try std.testing.expectEqual(@as(usize, 16 + 9 + 1), s.lines.items.len);
+    try std.testing.expectEqual(s.lines.items.len, s.wrapped.items.len);
 }
 
 test "memory window drops old rows" {

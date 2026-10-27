@@ -458,9 +458,13 @@ pub fn create(gpa: std.mem.Allocator, opts: Options) !*App {
     if (app.tmp) |d| app.hooks = shell_hooks.install(d.path);
     app.updateScale();
     if (opts.script) |path| try app.loadScript(path);
-    if (opts.command) |cmd| if (std.mem.trim(u8, cmd, " \t").len > 0) {
-        app.startup = try gpa.dupe(u8, cmd);
-    };
+    // The project's rule: gtty always starts with a shell unless another
+    // command started it, so an empty start-up command means the shell.
+    // (A --script run without -c has none: test scripts open their own.)
+    if (opts.command) |cmd| {
+        const trimmed = std.mem.trim(u8, cmd, " \t");
+        app.startup = try gpa.dupe(u8, if (trimmed.len > 0) trimmed else "s");
+    }
     app.shell_names.refresh(userShell(), &app.reaper);
     return app;
 }
@@ -3541,9 +3545,15 @@ fn tickMemory(app: *App, now: u64) void {
 // ------------------------------------------------------------ commands
 
 fn submit(app: *App) void {
+    app.submitLine(app.aiReady());
+}
+
+/// The prompt's line: an AI request when `ai` (and the prompt has the
+/// keyboard), else a command.
+fn submitLine(app: *App, ai: bool) void {
     const line = app.prompt.take() catch return;
     defer app.gpa.free(line);
-    if (app.focusedJob() == null and app.aiReady()) app.askAi(line) else app.exec(line);
+    if (app.focusedJob() == null and ai) app.askAi(line) else app.exec(line);
     app.dirty = true;
 }
 
@@ -6750,7 +6760,10 @@ fn loadScript(app: *App, path: []const u8) !void {
 }
 
 /// The start-up command (`-c`, default `s`): typed into the prompt and
-/// submitted once, as if the user had. A word only the user's shell knows
+/// submitted once, as if the user had — always as a command, never an AI
+/// request (with the AI on, `s` would go to it). If it starts no window,
+/// the user's shell opens instead (the project's rule: gtty always starts
+/// with a shell unless another command started it). A word only the user's shell knows
 /// (an alias, a function) waits until gtty has the shell's names (at most
 /// ShellNames' timeout); programs and gtty's own commands run at once.
 fn tickStartup(app: *App) void {
@@ -6766,7 +6779,15 @@ fn tickStartup(app: *App) void {
     defer app.gpa.free(line);
     app.prompt.clear();
     app.prompt.insertUtf8(line);
-    app.submit();
+    const before = app.jobs.items.len;
+    app.submitLine(false);
+    // Nothing started (an unknown name, a gtty command with no window):
+    // the shell after all, so gtty never starts empty.
+    if (app.jobs.items.len == before) {
+        app.prompt.clear(); // a rejected line came back there; the notice says it
+        app.openShell(null);
+        if (!std.mem.eql(u8, line, "s")) app.sayFmt("start-up command `{s}` started nothing: opened your shell", .{line}, app.theme.stderr_accent);
+    }
 }
 
 fn tickScript(app: *App) void {

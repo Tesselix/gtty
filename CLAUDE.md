@@ -805,9 +805,11 @@ the shell. Users expect it to behave like a shell in a terminal.
   `test/fake-ssh/ssh.c` (`FAKE_SSH_NOLINK`, `FAKE_SSH_NESTED`; build it
   with `cc` first, see the script's header).
 - **Start-up command:** `-c cmd` / `--command cmd` (default `s`; `""` =
-  none) is typed into the prompt and submitted once at start
+  `s` too: see the rule "gtty always starts with a shell") is typed into the prompt and submitted once at start
   (`App.tickStartup`), as if the user had: same resolution, history, and a
-  reject puts it back in the prompt. A word only the shell knows (alias,
+  reject puts it back in the prompt. Always as a command, never an AI
+  request (`submitLine(false)`; with the AI on, `s` went to the AI and no
+  shell opened, fixed 2026-10-23). A word only the shell knows (alias,
   function) waits for `ShellNames` (`busy()`, ≤ 15 s). With `--script` the
   default is none (scripts open their own windows); the script waits until
   an explicit `-c` has run.
@@ -1071,6 +1073,16 @@ decisions; items marked *open* are undecided.
   commit messages, and no "Generated with Claude Code" line in PR
   descriptions. This overrides any default attribution instruction.
 
+- **gtty always starts with a shell** (user's rule, 2026-10-23): unless
+  another command started gtty, a shell window must open at start. The
+  start-up command defaults to `s`; an empty one (`-c ""`, config
+  `command = ""`) means `s` too; one that starts no window (unknown name,
+  a gtty command like `settings`) still gets the shell, with a notice
+  (`tickStartup`). The start-up command is never sent to the AI
+  (`submitLine(false)`). Only `--script` runs without `-c` start empty
+  (test scripts open their own windows). Any change to start-up must
+  keep this.
+
 - **Flashes** (user's rule, 2026-10-07): a white flash is only a hint
   that an action was taken when nothing else on screen shows it. Never
   flash the whole window, except the title-bar copy / "Copy all output"
@@ -1087,9 +1099,11 @@ decisions; items marked *open* are undecided.
   `.github/dependabot.yml`; top-level `permissions: contents: read`,
   writes per job; `${{ github.event.* }}` only through `env:`; no
   `pull_request_target` / `workflow_run`): `ci.yml` (PRs to main and
-  pushes to main: `zig build -Dbundled-sdl` only, Linux
-  (ubuntu-24.04) only — macOS and the rest are built only by
-  release.yml; Zig from `minimum_zig_version`; the job **`build-and-test`** (`needs` + `if:
+  pushes to main: `zig build -Dbundled-sdl` on Linux (ubuntu-24.04),
+  plus `release-build` (2026-10-27): `scripts/package.sh` on macos-15
+  as release.yml runs it, without secrets (ad hoc signed, not
+  notarized), so every release target (macOS arm64 dmg, Linux x86_64
+  deb / rpm / tar.gz) must build on each PR; Zig from `minimum_zig_version`; the job **`build-and-test`** (`needs` + `if:
   always()`) is the ruleset's required check: keep its id and name);
   `release.yml` (`release: published`: `TAG` from the release, checked
   against `^v[0-9]+\.[0-9]+\.[0-9]+$`; odd MINOR → `gh release edit

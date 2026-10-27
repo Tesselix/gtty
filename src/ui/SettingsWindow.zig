@@ -437,7 +437,7 @@ pub fn render(s: *SettingsWindow, theme: *const Theme) void {
             const fw = @min(W - ctl_x - pad, 30 * f.cell_w);
             s.fieldBox(f, theme, .{ .x = ctl_x, .y = y + @round(row_h * 0.12), .w = fw, .h = @round(row_h * 0.76) }, .command, s.cfg.command());
             y += row_h;
-            _ = g.text(small, ctl_x, y, "at the next start; s = your shell, empty = none", theme.dim);
+            _ = g.text(small, ctl_x, y, "at the next start; s or empty = your shell", theme.dim);
             // Left-edge marks of the rows: typed / AI.
             y += @round(small.cell_h * 1.6) + @round(row_h * 0.3);
             y = s.checkRow(f, theme, y, row_h, label_x, ctl_x, "Marks on the left edge", s.cfg.marks, .marks);

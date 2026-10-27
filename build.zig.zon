@@ -20,7 +20,9 @@
             .lazy = true,
         },
         .freetype = .{
-            .url = "https://download.savannah.gnu.org/releases/freetype/freetype-2.15.0.tar.gz",
+            // SourceForge, not download.savannah.gnu.org: the same tarball
+            // (same hash), and Savannah times out (504) now and then.
+            .url = "https://downloads.sourceforge.net/project/freetype/freetype2/2.15.0/freetype-2.15.0.tar.gz",
             .hash = "N-V-__8AAOifNQHeG8LWEk8vTKJvdEHXW0b89201Lv65Zcj1",
             .lazy = true,
         },

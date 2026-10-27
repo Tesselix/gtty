@@ -1,9 +1,9 @@
 # SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# The pull request gate: gtty must build on Linux, and its dependencies
-# must pass deps.yml. No tests, no artifacts, no secrets. Every platform
-# (macOS too) is built only when a release is published (release.yml).
+# The pull request gate: gtty must build on Linux, every release target
+# must build and package as release.yml does it, and the dependencies
+# must pass deps.yml. No tests, no artifacts, no secrets.
 # The job build-and-test is the status check main's ruleset requires;
 # keep its id and name.
 name: CI
@@ -38,6 +38,26 @@ jobs:
       - name: Build
         run: zig build -Dbundled-sdl
 
+  # What release.yml builds, on the same runner: build-bin.sh (macOS arm64
+  # + Linux x86_64, ReleaseSafe, stripped) and package.sh (dmg, deb, rpm,
+  # tar.gz). Without secrets: the app is signed ad hoc, not notarized.
+  release-build:
+    name: Release build (all targets)
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # No version: setup-zig reads minimum_zig_version from build.zig.zon.
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+      - name: Install packaging tools
+        run: brew install nfpm
+      - name: Build and package
+        run: scripts/package.sh
+      - name: List the packages
+        run: ls -l dist
+
   # The dependencies' licenses and known vulnerabilities (deps.yml):
   # vulnerabilities are only warnings here, with a version to pin.
   deps:
@@ -49,18 +69,19 @@ jobs:
       contents: read
       pull-requests: write # deps.yml's report comment
 
-  # The required status check: green only when the build and the
+  # The required status check: green only when the builds and the
   # dependency check are.
   build-and-test:
     name: build-and-test
-    needs: [build, deps]
+    needs: [build, release-build, deps]
     if: always()
     runs-on: ubuntu-24.04
     steps:
       - name: All checks passed
         env:
           BUILD: ${{ needs.build.result }}
+          RELEASE: ${{ needs.release-build.result }}
           DEPS: ${{ needs.deps.result }}
         run: |
-          echo "build: $BUILD, deps: $DEPS"
-          [ "$BUILD" = success ] && [ "$DEPS" = success ]
+          echo "build: $BUILD, release build: $RELEASE, deps: $DEPS"
+          [ "$BUILD" = success ] && [ "$RELEASE" = success ] && [ "$DEPS" = success ]

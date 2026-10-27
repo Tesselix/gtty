@@ -14,7 +14,6 @@ folder), with your shell already running in a window.
 | Option | |
 |---|---|
 | `gtty -c htop` | start with another command instead of your shell (`--command` too) |
-| `gtty -c ""` | start with just the prompt |
 | `gtty --help` | usage |
 | `gtty --version` | version |
 | `GTTY_FONT_SIZE=16 gtty` | bigger or smaller text |

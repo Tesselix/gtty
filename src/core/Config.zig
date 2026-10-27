@@ -74,7 +74,8 @@ pub const ai_text_keys = [_][]const u8{ "ai-model", "ai-endpoint", "ai-key" };
 
 font_pt: f32 = 13,
 scrollback: usize = Screen.default_max_lines,
-/// The start-up command (`-c`): "s" = the user's shell, "" = none.
+/// The start-up command (`-c`): "s" = the user's shell; "" = the shell too
+/// (gtty always starts with a shell unless another command started it).
 command_buf: [max_command]u8 = [_]u8{'s'} ++ [_]u8{0} ** (max_command - 1),
 command_len: usize = 1,
 /// New job windows start with colors on.
