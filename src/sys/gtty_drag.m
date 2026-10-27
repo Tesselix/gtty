@@ -113,3 +113,7 @@ bool gtty_wdrag_take_incoming(char *buf, int cap, double *x, double *y) {
     (void)buf, (void)cap, (void)x, (void)y;
     return false;
 }
+bool gtty_wdrag_hover(double *x, double *y) {
+    (void)x, (void)y;
+    return false;
+}

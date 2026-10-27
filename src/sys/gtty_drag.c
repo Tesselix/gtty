@@ -509,3 +509,10 @@ bool gtty_wdrag_take_incoming(char *buf, int cap, double *x, double *y) {
     *y = in_y;
     return true;
 }
+
+bool gtty_wdrag_hover(double *x, double *y) {
+    if (offer_now == NULL) return false;
+    *x = at_x;
+    *y = at_y;
+    return true;
+}

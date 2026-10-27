@@ -102,6 +102,15 @@ offer: ?struct { window: ids_mod.Id, until: u64 } = null,
 /// Started for a window dropped on the desktop (GTTY_ADOPT "socket<TAB>id"):
 /// it is taken from that gtty at start, in place of the start-up shell.
 adopt_from: ?Adopt = null,
+/// A window from another gtty dragged over this one: where it would land
+/// (`landing`) is drawn as a placeholder tile (`drawLanding`) until
+/// `until` (the other gtty keeps telling, `op hover`; Wayland: this
+/// gtty's own data device sees the drag).
+drop_hover: ?DropHover = null,
+/// The gtty a window dragged out of this one is over now (its pid; 0:
+/// none), told where the mouse is at most every `hover_every_ms`.
+hover_peer: c_int = 0,
+hover_sent_ms: u64 = 0,
 /// Keyboard focus: a job window in the windows area (run mode), or null
 /// for the prompt (compose mode).
 focus: ?usize = null,
@@ -560,6 +569,12 @@ const Tip = struct { uid: ids_mod.Id, hit: JobWindow.Hit, since: u64 };
 /// A window to take from another gtty at start: its socket, the window.
 const Adopt = struct { path: [:0]u8, uid: ids_mod.Id };
 
+/// A window from another gtty over this one: its name ("#3 zsh"), where
+/// the mouse is (window pixels), until when (no news: it left).
+const DropHover = struct { label: [96]u8 = undefined, len: usize = 0, x: f32, y: f32, until: u64 };
+const hover_every_ms = 40;
+const hover_keep_ms = 400;
+
 /// A window being dragged by its title bar: where the mouse is, where on
 /// the window it took it (a share of its size), and the window it would
 /// swap places with if dropped now.
@@ -995,6 +1010,86 @@ fn swapShown(app: *App, a: *JobWindow, b: *JobWindow) void {
     app.arranged = true;
     a.touch();
     app.relayoutAnimated();
+}
+
+/// The windows in the windows area in `order` (the current window among
+/// them): `extras` and `main_slot` from it.
+fn setShownOrder(app: *App, order: []const *JobWindow) void {
+    const m = app.main orelse return;
+    app.extras.clearRetainingCapacity();
+    for (order, 0..) |w, t| {
+        if (w == app.jobs.items[m]) app.main_slot = t else app.extras.append(app.gpa, w) catch {};
+    }
+}
+
+/// Window `w` (in the windows area) to tile `slot`; the others keep their
+/// order around it (the user's order from now on).
+fn placeShown(app: *App, w: *JobWindow, slot: usize) void {
+    var buf: [64]*JobWindow = undefined;
+    const order = app.shownOrder(&buf);
+    const i = std.mem.indexOfScalar(*JobWindow, order, w) orelse return;
+    const to = @min(slot, order.len - 1);
+    if (i == to) return;
+    var list: [64]*JobWindow = undefined;
+    var n: usize = 0;
+    for (order) |o| if (o != w) {
+        list[n] = o;
+        n += 1;
+    };
+    std.mem.copyBackwards(*JobWindow, list[to + 1 .. n + 1], list[to..n]);
+    list[to] = w;
+    app.setShownOrder(list[0 .. n + 1]);
+    app.arranged = true;
+    app.relayoutAnimated();
+}
+
+/// Where a window coming in from another gtty, dropped at (x, y) (window
+/// pixels), would go: the windows area laid out with one window more
+/// (one less in the job grid's way when not all fit), the tile under the
+/// mouse (else the nearest). The windows shown keep their order.
+fn landing(app: *App, x: f32, y: f32) struct { slot: usize, rect: Rect } {
+    var buf: [64]*JobWindow = undefined;
+    const shown = app.shownOrder(&buf).len;
+    var grid_n = app.gridCount();
+    if (shown == 0 or app.maximizedShown() != null) return .{ .slot = 0, .rect = app.layoutFor(grid_n).main };
+    var n = shown + 1;
+    if (n > app.capacityWith(grid_n)) {
+        grid_n += 1; // the last one shown makes room
+        n = @min(n, app.capacityWith(grid_n));
+    }
+    var tiles: [64]Rect = undefined;
+    tiling.arrange(app.layoutFor(grid_n).main, app.minWindow(), @round(8 * app.scale.ui), tiles[0..n]);
+    var best: usize = 0;
+    var best_d: f32 = std.math.floatMax(f32);
+    for (tiles[0..n], 0..) |r, k| {
+        if (r.contains(x, y)) return .{ .slot = k, .rect = r };
+        const dx = r.x + r.w / 2 - x;
+        const dy = r.y + r.h / 2 - y;
+        if (dx * dx + dy * dy < best_d) {
+            best_d = dx * dx + dy * dy;
+            best = k;
+        }
+    }
+    return .{ .slot = best, .rect = tiles[best] };
+}
+
+/// A window from another gtty over this one: its tile-to-be, blue, with
+/// its name.
+fn drawLanding(app: *App) void {
+    const h = app.drop_hover orelse return;
+    const l = app.landing(h.x, h.y);
+    const t = &app.theme;
+    const ui = app.scale.ui;
+    app.gfx.fillAlpha(l.rect, t.desktop, 200);
+    app.gfx.fillAlpha(l.rect, t.focus, 50);
+    app.gfx.outline(l.rect, t.focus, @max(@round(2 * ui), 1));
+    const f, _ = app.promptFaces();
+    const sf = app.statusFace();
+    const name = h.label[0..h.len];
+    const hint = "drop to move it here";
+    const cy = l.rect.y + l.rect.h / 2;
+    _ = app.gfx.text(f, l.rect.x + @round((l.rect.w - Gfx.textWidth(f, name)) / 2), cy - f.cell_h, name, t.title_fg);
+    _ = app.gfx.text(sf, l.rect.x + @round((l.rect.w - Gfx.textWidth(sf, hint)) / 2), cy + @round(4 * ui), hint, t.dim);
 }
 
 fn indexOfWindow(app: *App, w: *JobWindow) ?usize {
@@ -4756,6 +4851,7 @@ fn moveWinDrag(app: *App, x: f32, y: f32) void {
     }
     app.mouse = if (inside) .{ x, y } else null;
     app.dirty = true;
+    if (inside) app.endHover() else if (!(c.gtty_drag_supported() and builtin.os.tag == .linux)) app.tellHover(d.*, x, y);
     // Wayland: out of gtty's window the drag goes on as a drag and drop
     // (only that reaches other windows); the gtty it lands on asks for
     // the window (`tickWdrag`).
@@ -4782,6 +4878,7 @@ fn dropWindow(app: *App, x: f32, y: f32) void {
     app.win_drag = null;
     app.dirty = true;
     app.updateCursor();
+    app.endHover();
     const w = app.jobByUid(d.window) orelse return;
     if (d.target) |uid| if (app.jobByUid(uid)) |t| return app.swapShown(w, t);
     if (app.insideWindow(x, y)) return;
@@ -4799,6 +4896,69 @@ fn dropWindow(app: *App, x: f32, y: f32) void {
         0 => app.tearOff(w, g, d.grab),
         else => {},
     }
+}
+
+/// Tell the gtty under the mouse (outside this one's window) that a window
+/// is dragged over it and where, so it shows where the window would land
+/// (`op hover`; the one it left: `op leave`). At most every
+/// `hover_every_ms`.
+fn tellHover(app: *App, d: WinDrag, x: f32, y: f32) void {
+    const now = c.SDL_GetTicks();
+    if (now -| app.hover_sent_ms < hover_every_ms) return;
+    app.hover_sent_ms = now;
+    const g = app.globalPoint(x, y);
+    var pid: c_int = 0;
+    const peer: c_int = if (c.gtty_window_at(app.window, g[0], g[1], &pid) == 1) pid else 0;
+    if (peer != app.hover_peer) app.endHover();
+    if (peer == 0) return;
+    const w = app.jobByUid(d.window) orelse return;
+    var lbuf: [96]u8 = undefined;
+    const label = std.fmt.bufPrint(&lbuf, "#{d} {s}", .{ w.serial, w.title }) catch w.title;
+    if (app.notify(peer, "hover", g, label)) app.hover_peer = peer;
+}
+
+/// The window dragged out left the gtty it was over (or was dropped).
+fn endHover(app: *App) void {
+    if (app.hover_peer == 0) return;
+    _ = app.notify(app.hover_peer, "leave", null, null);
+    app.hover_peer = 0;
+}
+
+/// A message to the gtty `pid` that needs no answer; false: it isn't a
+/// gtty (no socket) or doesn't listen.
+fn notify(app: *App, pid: c_int, op: []const u8, at: ?[2]f64, label: ?[]const u8) bool {
+    var pbuf: [1024]u8 = undefined;
+    const path = Handoff.socketPath(&pbuf, pid) orelse return false;
+    if (c.access(path.ptr, c.F_OK) != 0) return false;
+    const fd = c.gtty_ctl_connect(path.ptr);
+    if (fd < 0) return false;
+    defer c.gtty_close(fd);
+    var msg = Handoff.Writer.init(app.gpa);
+    defer msg.deinit();
+    msg.put("v", Handoff.version);
+    msg.put("op", op);
+    if (at) |g| putPoint(&msg, g);
+    if (label) |l| msg.put("label", l);
+    return Handoff.send(fd, msg.bytes(), &.{});
+}
+
+/// A screen point in a message (`x`, `y`: global coordinates, hundredths).
+fn putPoint(msg: *Handoff.Writer, g: [2]f64) void {
+    msg.putInt("x", @as(i64, @intFromFloat(@round(g[0] * 100))));
+    msg.putInt("y", @as(i64, @intFromFloat(@round(g[1] * 100))));
+}
+
+/// A point from a message, in this gtty's window (pixels); null: none.
+fn readPoint(app: *App, r: Handoff.Reader) ?[2]f32 {
+    const gx = r.int(i64, "x") orelse return null;
+    const gy = r.int(i64, "y") orelse return null;
+    var wx: c_int = 0;
+    var wy: c_int = 0;
+    _ = c.SDL_GetWindowPosition(app.window, &wx, &wy);
+    return .{
+        @floatCast((@as(f64, @floatFromInt(gx)) / 100 - @as(f64, @floatFromInt(wx))) * app.density),
+        @floatCast((@as(f64, @floatFromInt(gy)) / 100 - @as(f64, @floatFromInt(wy))) * app.density),
+    };
 }
 
 /// A point in gtty's window (pixels) on the screen (global coordinates,
@@ -4842,6 +5002,22 @@ fn tickCtl(app: *App) void {
         app.offer = null;
         app.dirty = true;
     };
+    // Wayland: a gtty window dragged over this one (not its own, out and
+    // back: that one has an offer out).
+    var hx: f64 = 0;
+    var hy: f64 = 0;
+    if (app.offer == null and c.gtty_wdrag_hover(&hx, &hy)) {
+        var h: DropHover = .{ .x = @floatCast(hx * app.density), .y = @floatCast(hy * app.density), .until = c.SDL_GetTicks() + hover_keep_ms };
+        const l = "a window from another gtty";
+        @memcpy(h.label[0..l.len], l);
+        h.len = l.len;
+        app.drop_hover = h;
+        app.dirty = true;
+    }
+    if (app.drop_hover) |h| if (c.SDL_GetTicks() > h.until) {
+        app.drop_hover = null;
+        app.dirty = true;
+    };
     while (true) {
         const fd = c.gtty_ctl_accept(app.ctl_fd);
         if (fd < 0) break;
@@ -4863,24 +5039,34 @@ fn serveCtl(app: *App, fd: c_int) void {
     var ob: [16]u8 = undefined;
     const op = m.op(&ob);
     if (std.mem.eql(u8, op, "move")) {
-        if (app.receiveWindow(m)) |_| Handoff.reply(app.gpa, fd, "ok", null) else Handoff.reply(app.gpa, fd, "no", "it couldn't be opened there");
+        if (app.receiveWindow(m, app.readPoint(m.reader()))) |_| Handoff.reply(app.gpa, fd, "ok", null) else Handoff.reply(app.gpa, fd, "no", "it couldn't be opened there");
     } else if (std.mem.eql(u8, op, "take")) {
         const uid = m.reader().int(ids_mod.Id, "window") orelse return;
         const o = app.offer orelse return Handoff.reply(app.gpa, fd, "no", "that window isn't offered");
         if (o.window != uid) return Handoff.reply(app.gpa, fd, "no", "that window isn't offered");
         const w = app.jobByUid(uid) orelse return Handoff.reply(app.gpa, fd, "no", "that window is gone");
-        if (app.sendWindow(fd, w)) app.letGo(w);
+        if (app.sendWindow(fd, w, null)) app.letGo(w);
+    } else if (std.mem.eql(u8, op, "hover")) {
+        const p = app.readPoint(m.reader()) orelse return;
+        var h: DropHover = .{ .x = p[0], .y = p[1], .until = c.SDL_GetTicks() + hover_keep_ms };
+        h.len = if (m.reader().get("label", &h.label)) |l| l.len else 0;
+        app.drop_hover = h;
+        app.dirty = true;
+    } else if (std.mem.eql(u8, op, "leave")) {
+        app.drop_hover = null;
+        app.dirty = true;
     }
 }
 
 /// Send window `w` over `fd` (`move`) and wait for the answer: true when
 /// the other gtty has it now.
-fn sendWindow(app: *App, fd: c_int, w: *JobWindow) bool {
+fn sendWindow(app: *App, fd: c_int, w: *JobWindow, at: ?[2]f64) bool {
     var msg = Handoff.Writer.init(app.gpa);
     defer msg.deinit();
     msg.put("v", Handoff.version);
     msg.put("op", "move");
     msg.putInt("window", w.uid);
+    if (at) |g| putPoint(&msg, g);
     var fds: [Handoff.max_fds]c_int = undefined;
     const n = w.handoffCard(&msg, &fds);
     if (!Handoff.send(fd, msg.bytes(), fds[0..n])) {
@@ -4916,14 +5102,13 @@ fn letGo(app: *App, w: *JobWindow) void {
 
 /// A window dropped on another gtty's window (macOS, X11): sent there.
 fn pushWindow(app: *App, w: *JobWindow, path: [:0]const u8, at: [2]f64) void {
-    _ = at;
     const fd = c.gtty_ctl_connect(path.ptr);
     if (fd < 0) {
         beep.beep();
         return app.sayFmt("#{d} couldn't be moved: the other gtty doesn't answer", .{w.serial}, app.theme.stderr_accent);
     }
     defer c.gtty_close(fd);
-    if (app.sendWindow(fd, w)) app.letGo(w);
+    if (app.sendWindow(fd, w, at)) app.letGo(w);
 }
 
 /// A window dropped on the desktop: a new gtty there takes it (it asks
@@ -4970,14 +5155,14 @@ fn tickAdopt(app: *App) void {
     const a = app.adopt_from orelse return;
     app.adopt_from = null;
     defer app.gpa.free(a.path);
-    if (app.pullWindow(a.path, a.uid)) return;
+    if (app.pullWindow(a.path, a.uid, null)) return;
     app.openShell(null);
     app.say("the window couldn't be taken from the other gtty: opened your shell", app.theme.stderr_accent);
 }
 
 /// Ask the gtty at `path` for its window `uid` (`take`); true when it
 /// came and is shown here.
-fn pullWindow(app: *App, path: [:0]const u8, uid: ids_mod.Id) bool {
+fn pullWindow(app: *App, path: [:0]const u8, uid: ids_mod.Id, at: ?[2]f32) bool {
     const fd = c.gtty_ctl_connect(path.ptr);
     if (fd < 0) return false;
     defer c.gtty_close(fd);
@@ -4993,7 +5178,7 @@ fn pullWindow(app: *App, path: [:0]const u8, uid: ids_mod.Id) bool {
     defer m.deinit();
     var ob: [16]u8 = undefined;
     if (!Handoff.recv(fd, m) or !std.mem.eql(u8, m.op(&ob), "move")) return false;
-    if (app.receiveWindow(m) == null) {
+    if (app.receiveWindow(m, at) == null) {
         Handoff.reply(app.gpa, fd, "no", "it couldn't be opened there");
         return false;
     }
@@ -5002,9 +5187,14 @@ fn pullWindow(app: *App, path: [:0]const u8, uid: ids_mod.Id) bool {
 }
 
 /// A window from another gtty (`move` in `m`): a job window here, in the
-/// windows area with the keyboard, and gtty comes to the front.
-fn receiveWindow(app: *App, m: *Handoff.Incoming) ?*JobWindow {
+/// windows area with the keyboard, and gtty comes to the front. Dropped
+/// at `at` (window pixels): in the tile there (`landing`, as the
+/// placeholder showed), the others keep their order; else the first.
+fn receiveWindow(app: *App, m: *Handoff.Incoming, at: ?[2]f32) ?*JobWindow {
+    app.drop_hover = null;
+    app.dirty = true;
     if (app.jobs.items.len >= 64) return null;
+    const slot = if (at) |p| app.landing(p[0], p[1]).slot else 0;
     const main_r = app.layoutFor(app.jobs.items.len).main;
     const w = JobWindow.adopt(app.gpa, &app.gfx, app.ids.take(), app.next_serial, m.reader(), m.fds[0..m.n_fds], main_r, app.scale, app.scrollback, if (app.tmp) |d| d.path else null) catch return null;
     app.next_serial += 1;
@@ -5015,7 +5205,14 @@ fn receiveWindow(app: *App, m: *Handoff.Incoming) ?*JobWindow {
     app.startup = null;
     if (app.main) |mi| app.jobs.items[mi].maximized = false;
     app.grid_scroll = 0;
+    // Placed by the drop: the windows there keep their order around it.
+    if (at != null and app.main != null and app.maximizedShown() == null) app.arranged = true;
     app.setFocus(app.jobs.items.len - 1);
+    if (slot > 0) app.placeShown(w, slot);
+    if (at) |p| {
+        const b = w.screenBox();
+        w.animateFrom(.{ .x = p[0] - b.w / 8, .y = p[1] - b.h / 8, .w = b.w / 4, .h = b.h / 4 });
+    }
     app.front_until = c.SDL_GetTicks() + 3000;
     var tb: [128]u8 = undefined;
     app.sayFmt("#{d} came from another gtty (#{s} there)", .{ w.serial, m.reader().get("serial", &tb) orelse "?" }, app.theme.dim);
@@ -5053,13 +5250,14 @@ fn tickWdrag(app: *App) void {
         for (app.shownOrder(&obuf)) |t| if (t != w and t.rect.contains(px, py)) return app.swapShown(w, t);
         return;
     };
-    if (!app.pullWindow(path, uid)) {
+    if (!app.pullWindow(path, uid, .{ @floatCast(x * app.density), @floatCast(y * app.density) })) {
         beep.beep();
         app.say("the window couldn't be taken from the other gtty", app.theme.stderr_accent);
     }
 }
 
 fn cancelWinDrag(app: *App) void {
+    app.endHover();
     app.win_drag = null;
     app.win_press = null;
     app.updateCursor();
@@ -6984,6 +7182,7 @@ fn render(app: *App) void {
     app.drawFetch();
     app.drawMoving();
     app.drawWinDrag();
+    app.drawLanding();
     // The peek over everything but tooltips (not while its window moves).
     if (app.peekWindow()) |w| if (w.anim_from == null) {
         app.layoutPeek();

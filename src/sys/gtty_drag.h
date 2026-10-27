@@ -62,6 +62,9 @@ enum {
 bool gtty_wdrag_start(void *sdl_window, const char *payload);
 // How the last window drag ended (once; GTTY_WDRAG_NONE while it lasts).
 int gtty_wdrag_result(void);
+// A gtty window is being dragged over this gtty's window now: where
+// (window coordinates, points). Its payload comes only with the drop.
+bool gtty_wdrag_hover(double *x, double *y);
 // A gtty window dropped on this gtty's window (once): its payload and
 // where (window coordinates, points).
 bool gtty_wdrag_take_incoming(char *buf, int cap, double *x, double *y);
