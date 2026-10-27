@@ -39,6 +39,7 @@ const tiling = @import("ui/tiling.zig");
 const Ai = @import("ai/Ai.zig");
 const Memory = @import("ai/Memory.zig");
 const RecentFolders = @import("core/RecentFolders.zig");
+const Handoff = @import("core/Handoff.zig");
 
 const App = @This();
 
@@ -77,6 +78,30 @@ main: ?usize = null,
 /// selection changes, then kept while they are shown). Empty: the current
 /// window alone.
 extras: std.ArrayList(*JobWindow) = .empty,
+/// The tile the current window is drawn in (0: the first, top-left); the
+/// selected windows fill the other tiles in their order (`shownOrder`).
+/// Moves off 0 only once the user rearranged the windows (`arranged`).
+main_slot: usize = 0,
+/// The user dragged the windows in the windows area into an order of
+/// their own: it stays (`restamp` doesn't re-sort, a window coming in
+/// goes first, the rest keep their places) until one window is left.
+arranged: bool = false,
+/// A left press on the title bar of a window in the windows area, and the
+/// window drag it becomes once the mouse moves (`onMotion`): dropped on
+/// another window there, the two swap places (`dropWindow`).
+win_press: ?struct { window: ids_mod.Id, x: f32, y: f32 } = null,
+win_drag: ?WinDrag = null,
+/// This gtty's control socket (`<tmp>/ctl.sock`, -1: none): job windows
+/// come and go between gttys through it (core/Handoff.zig).
+ctl_fd: c_int = -1,
+ctl_path: ?[:0]u8 = null,
+/// A window another gtty may take from this one (`op take`): dropped on
+/// the desktop (a new gtty is starting for it) or dragged out under
+/// Wayland (the gtty it lands on asks for it); until `until`.
+offer: ?struct { window: ids_mod.Id, until: u64 } = null,
+/// Started for a window dropped on the desktop (GTTY_ADOPT "socket<TAB>id"):
+/// it is taken from that gtty at start, in place of the start-up shell.
+adopt_from: ?Adopt = null,
 /// Keyboard focus: a job window in the windows area (run mode), or null
 /// for the prompt (compose mode).
 focus: ?usize = null,
@@ -304,8 +329,10 @@ drag_out: ?struct { window: ids_mod.Id, ended_ms: u64 = 0, next_ms: u64 = 0 } = 
 /// mouse).
 hover_src: ?ids_mod.Id = null,
 /// Mouse pointer shape now.
-cursor_kind: enum { arrow, text, hand } = .arrow,
+cursor_kind: enum { arrow, text, hand, move } = .arrow,
 hand_cursor: ?*c.SDL_Cursor = null,
+/// While a window is dragged by its title bar.
+move_cursor: ?*c.SDL_Cursor = null,
 /// A window was closed, or a shell ended by itself: on the next frame,
 /// open a new shell if none is running (`ensureShell`).
 want_shell: bool = false,
@@ -458,13 +485,17 @@ pub fn create(gpa: std.mem.Allocator, opts: Options) !*App {
     if (app.tmp) |d| app.hooks = shell_hooks.install(d.path);
     app.updateScale();
     if (opts.script) |path| try app.loadScript(path);
+    app.listenCtl();
+    app.adopt_from = app.adoptEnv();
     // The project's rule: gtty always starts with a shell unless another
     // command started it, so an empty start-up command means the shell.
     // (A --script run without -c has none: test scripts open their own.)
-    if (opts.command) |cmd| {
+    // Started for a window dropped on the desktop: that window instead
+    // (`tickAdopt`; the shell after all if it can't be taken).
+    if (opts.command) |cmd| if (app.adopt_from == null) {
         const trimmed = std.mem.trim(u8, cmd, " \t");
         app.startup = try gpa.dupe(u8, if (trimmed.len > 0) trimmed else "s");
-    }
+    };
     app.shell_names.refresh(userShell(), &app.reaper);
     return app;
 }
@@ -481,6 +512,9 @@ pub fn destroy(app: *App) void {
     if (app.fetch) |*f| f.job.deinit(app.gpa);
     for (app.jobs.items) |w| w.destroy(&app.reaper);
     app.jobs.deinit(app.gpa);
+    c.gtty_close(app.ctl_fd);
+    if (app.ctl_path) |p| app.gpa.free(p);
+    if (app.adopt_from) |a| app.gpa.free(a.path);
     app.extras.deinit(app.gpa);
     if (app.peek) |*pk| pk.deinit(&app.reaper);
     app.freePicker();
@@ -512,6 +546,7 @@ pub fn destroy(app: *App) void {
     if (app.text_cursor) |cur| c.SDL_DestroyCursor(cur);
     if (app.arrow_cursor) |cur| c.SDL_DestroyCursor(cur);
     if (app.hand_cursor) |cur| c.SDL_DestroyCursor(cur);
+    if (app.move_cursor) |cur| c.SDL_DestroyCursor(cur);
     if (app.anim_canvas) |cv| c.SDL_DestroyTexture(cv);
     app.gfx.deinit();
     c.SDL_DestroyRenderer(app.renderer);
@@ -521,6 +556,20 @@ pub fn destroy(app: *App) void {
 }
 
 const Tip = struct { uid: ids_mod.Id, hit: JobWindow.Hit, since: u64 };
+
+/// A window to take from another gtty at start: its socket, the window.
+const Adopt = struct { path: [:0]u8, uid: ids_mod.Id };
+
+/// A window being dragged by its title bar: where the mouse is, where on
+/// the window it took it (a share of its size), and the window it would
+/// swap places with if dropped now.
+const WinDrag = struct {
+    window: ids_mod.Id,
+    grab: [2]f32,
+    x: f32,
+    y: f32,
+    target: ?ids_mod.Id = null,
+};
 // Tooltips after `tip_delay_ms`; the mouse resting on a chip
 // `chip_hover_ms` opens its peek (so brushing past it on the way
 // elsewhere doesn't; a click opens it at once). Both are settings.
@@ -575,6 +624,7 @@ pub fn run(app: *App) void {
         app.reaper.tick();
         app.shell_names.tick(&app.reaper);
         app.tickStartup();
+        app.tickCtl();
         app.tickScript();
         c.gtty_drag_tick();
         app.tickFront();
@@ -723,15 +773,22 @@ fn relayout(app: *App) void {
 
     // The windows area: the current window alone, or with the selected
     // ones (spread evenly, the current one first: see tiling.arrange).
+    // One window left: the user's order is over.
+    if (app.extras.items.len == 0) {
+        app.main_slot = 0;
+        app.arranged = false;
+    }
+    app.main_slot = @min(app.main_slot, app.extras.items.len);
     if (app.main) |m| {
         const top = app.menubar_r.h;
         const full: Rect = .{ .x = 0, .y = top, .w = app.width_px, .h = app.height_px - top };
-        const n = 1 + app.extras.items.len;
+        var buf: [64]*JobWindow = undefined;
+        const order = app.shownOrder(&buf);
+        const n = order.len;
         var tiles: [64]Rect = undefined;
         tiling.arrange(l.main, app.minWindow(), @round(8 * app.scale.ui), tiles[0..n]);
-        for (0..n) |k| {
-            const w = if (k == 0) app.jobs.items[m] else app.extras.items[k - 1];
-            w.check = if (n == 1) .hidden else if (k == 0) .locked else .on;
+        for (order, 0..) |w, k| {
+            w.check = if (n == 1) .hidden else if (w == app.jobs.items[m]) .locked else .on;
             w.place(&app.gfx, if (w.maximized) full else tiles[k], null);
         }
     }
@@ -902,6 +959,44 @@ fn extraIndex(app: *App, w: *JobWindow) ?usize {
     return null;
 }
 
+/// The windows in the windows area in tile order: the selected ones, the
+/// current window at `main_slot`.
+fn shownOrder(app: *App, buf: *[64]*JobWindow) []*JobWindow {
+    const m = app.main orelse return buf[0..0];
+    const ex = app.extras.items;
+    const s = @min(app.main_slot, ex.len);
+    const n = @min(ex.len + 1, buf.len);
+    for (0..n) |t| buf[t] = if (t == s) app.jobs.items[m] else ex[if (t < s) t else t - 1];
+    return buf[0..n];
+}
+
+/// Take a selected window out of `extras`; the current window keeps its
+/// tile among the others.
+fn removeExtra(app: *App, k: usize) *JobWindow {
+    if (k < app.main_slot) app.main_slot -= 1;
+    return app.extras.orderedRemove(k);
+}
+
+/// Two windows in the windows area swap tiles (a window dropped on
+/// another); the tiles themselves stay as they are. The order is the
+/// user's from now on (`arranged`).
+fn swapShown(app: *App, a: *JobWindow, b: *JobWindow) void {
+    const m = app.main orelse return;
+    var buf: [64]*JobWindow = undefined;
+    const order = app.shownOrder(&buf);
+    const ia = std.mem.indexOfScalar(*JobWindow, order, a) orelse return;
+    const ib = std.mem.indexOfScalar(*JobWindow, order, b) orelse return;
+    if (ia == ib) return;
+    std.mem.swap(*JobWindow, &order[ia], &order[ib]);
+    app.extras.clearRetainingCapacity();
+    for (order, 0..) |w, t| {
+        if (w == app.jobs.items[m]) app.main_slot = t else app.extras.appendAssumeCapacity(w);
+    }
+    app.arranged = true;
+    a.touch();
+    app.relayoutAnimated();
+}
+
 fn indexOfWindow(app: *App, w: *JobWindow) ?usize {
     for (app.jobs.items, 0..) |j, i| if (j == w) return i;
     return null;
@@ -951,6 +1046,11 @@ fn unshow(app: *App, w: *JobWindow) void {
 fn restamp(app: *App) void {
     const m = app.main orelse return;
     const items = app.extras.items;
+    // The user's own order stays; only the current window's time moves.
+    if (app.arranged) {
+        app.jobs.items[m].last_activity_ms = c.SDL_GetTicks();
+        return;
+    }
     const S = struct {
         fn live(w: *JobWindow) bool {
             return w.running() and !w.ending();
@@ -983,7 +1083,7 @@ fn noRoom(app: *App, cap: usize) void {
 fn toggleCheck(app: *App, i: usize) void {
     const w = app.jobs.items[i];
     if (app.extraIndex(w)) |k| {
-        _ = app.extras.orderedRemove(k);
+        _ = app.removeExtra(k);
         app.unshow(w);
         app.restamp();
         return app.relayoutAnimated();
@@ -1007,6 +1107,7 @@ fn toggleCheck(app: *App, i: usize) void {
 fn toggleCheckAll(app: *App) void {
     if (app.extras.items.len > 0) {
         while (app.extras.pop()) |w| app.unshow(w);
+        app.main_slot = 0;
         app.restamp();
         return app.relayoutAnimated();
     }
@@ -1159,7 +1260,7 @@ fn newWindow(app: *App, from: ?*JobWindow) void {
     var gbuf: [64]u8 = undefined;
     const geo: ?[:0]const u8 = if (app.cascade()) |g| std.fmt.bufPrintZ(&gbuf, "{d},{d},{d},{d}", .{ g[0], g[1], g[2], g[3] }) catch null else null;
     if (c.getenv("GTTY_SHOW_DRY") != null) return app.sayFmt("would open a new gtty in {s} at {s}", .{ dir orelse ".", geo orelse "-" }, app.theme.dim);
-    const pid = c.gtty_open_new_instance(if (dir) |d| d.ptr else null, if (geo) |g| g.ptr else null);
+    const pid = c.gtty_open_new_instance(if (dir) |d| d.ptr else null, if (geo) |g| g.ptr else null, null);
     if (pid <= 0) {
         beep.beep();
         return app.say("could not start a new gtty", app.theme.stderr_accent);
@@ -1389,9 +1490,11 @@ fn closeOrKillMenu(app: *App, i: usize) void {
 
 fn closeJob(app: *App, index: usize) void {
     const w = app.jobs.items[index];
-    if (app.extraIndex(w)) |k| _ = app.extras.orderedRemove(k);
-    // The current window went away: the next selected one takes its place.
+    if (app.extraIndex(w)) |k| _ = app.removeExtra(k);
+    // The current window went away: the next selected one takes its place
+    // (the first tile: the others keep their order).
     const promoted: ?*JobWindow = if (app.main == index and app.extras.items.len > 0) app.extras.orderedRemove(0) else null;
+    if (promoted != null) app.main_slot = 0;
     if (app.hover_src == w.uid) app.sendLeave();
     _ = app.jobs.orderedRemove(index);
     w.destroy(&app.reaper);
@@ -1415,7 +1518,7 @@ fn closeJob(app: *App, index: usize) void {
 fn minimizeJob(app: *App, i: usize) void {
     const w = app.jobs.items[i];
     if (app.extraIndex(w)) |k| {
-        _ = app.extras.orderedRemove(k);
+        _ = app.removeExtra(k);
         app.unshow(w);
         app.restamp();
         return app.relayoutAnimated();
@@ -1426,6 +1529,7 @@ fn minimizeJob(app: *App, i: usize) void {
     if (app.focus == i) app.focus = null;
     if (app.extras.items.len > 0) {
         app.main = app.indexOfWindow(app.extras.orderedRemove(0));
+        app.main_slot = 0;
         app.restamp();
     } else app.main = app.newestRunning(i);
     app.relayoutAnimated();
@@ -1481,12 +1585,15 @@ fn bringIn(app: *App, i: usize) void {
     // as a selected window next to it. Not all fit: the selected windows
     // last in order (finished first, then the oldest) go to the job grid
     // until they do.
+    // In the user's own order the one that was current keeps its tile and
+    // the others theirs (all one further on).
     app.jobs.items[i].touch();
     if (app.main) |m| {
         app.jobs.items[m].maximized = false;
-        app.extras.insert(app.gpa, 0, app.jobs.items[m]) catch {};
+        app.extras.insert(app.gpa, if (app.arranged) @min(app.main_slot, app.extras.items.len) else 0, app.jobs.items[m]) catch {};
     }
     app.main = i;
+    app.main_slot = 0;
     if (app.extras.items.len > 0) app.restamp();
     while (app.extras.items.len > 0 and app.extras.items.len + 1 > app.capacityWith(app.gridCount())) {
         app.unshow(app.extras.pop().?);
@@ -1511,11 +1618,8 @@ fn cycleFocus(app: *App, delta: isize) void {
     // their order), then the prompt.
     var buf: [65]usize = undefined;
     var n: usize = 0;
-    if (app.main) |m| if (app.jobs.items[m].running()) {
-        buf[n] = m;
-        n += 1;
-    };
-    for (app.extras.items) |e| if (e.running()) if (app.indexOfWindow(e)) |i| {
+    var obuf: [64]*JobWindow = undefined;
+    for (app.shownOrder(&obuf)) |e| if (e.running()) if (app.indexOfWindow(e)) |i| {
         buf[n] = i;
         n += 1;
     };
@@ -3927,7 +4031,7 @@ fn handle(app: *App, ev: *const c.SDL_Event) void {
         // again under the mouse.
         c.SDL_EVENT_KEY_UP => if (isModifier(ev.key.key)) app.sendHover(),
         c.SDL_EVENT_MOUSE_BUTTON_DOWN => app.onClick(ev.button.x * app.density, ev.button.y * app.density, ev.button.button, ev.button.clicks),
-        c.SDL_EVENT_MOUSE_BUTTON_UP => app.onMouseUp(),
+        c.SDL_EVENT_MOUSE_BUTTON_UP => app.onMouseUp(ev.button.x * app.density, ev.button.y * app.density),
         c.SDL_EVENT_MOUSE_MOTION => app.onMotion(ev.motion.x * app.density, ev.motion.y * app.density),
         c.SDL_EVENT_WINDOW_MOUSE_LEAVE => app.onMouseLeave(),
         c.SDL_EVENT_MOUSE_WHEEL => app.onWheel(ev.wheel.mouse_x * app.density, ev.wheel.mouse_y * app.density, ev.wheel.y),
@@ -3990,6 +4094,9 @@ fn onKey(app: *App, key: c.SDL_Keycode, mod: c.SDL_Keymod) void {
     defer if (!isModifier(key)) {
         app.last_key_ms = c.SDL_GetTicks();
     };
+
+    // Esc while dragging a window: the drag is off, nothing moves.
+    if (app.win_drag != null and key == c.SDLK_ESCAPE) return app.cancelWinDrag();
 
     // Any key closes the About box, and does nothing else.
     if (app.about_visible) {
@@ -4465,12 +4572,17 @@ fn clickJob(app: *App, i: usize, x: f32, y: f32, button: u8, clicks: u8) void {
             const was_main = w.grid_r == null;
             app.setFocus(i);
             if (was_main and hit == .out and button == c.SDL_BUTTON_LEFT) w.mouseDown(x, y, clicks);
+            // The title bar of a window in the windows area: moving with
+            // the button down drags the window (`onMotion`).
+            if (was_main and hit == .title and button == c.SDL_BUTTON_LEFT and clicks == 1) app.win_press = .{ .window = w.uid, .x = x, .y = y };
         },
     }
 }
 
-fn onMouseUp(app: *App) void {
+fn onMouseUp(app: *App, x: f32, y: f32) void {
     app.text_drag = .none;
+    app.win_press = null;
+    if (app.win_drag != null) return app.dropWindow(x, y);
     // A press on a file name that didn't move: a plain click there. A
     // command being typed in that shell: the name (or the selection
     // clicked) goes into it at the cursor; else on the clipboard.
@@ -4513,6 +4625,16 @@ fn onMotion(app: *App, x: f32, y: f32) void {
         },
     }
     if (app.grid_drag) app.gridBarTo(y);
+    // A press on a title bar moved: the window is being dragged. Nothing
+    // under the mouse reacts while it is.
+    if (app.win_press) |p| {
+        const far = @max(@round(6 * app.scale.ui), 3);
+        if ((x - p.x) * (x - p.x) + (y - p.y) * (y - p.y) >= far * far) {
+            app.win_press = null;
+            if (app.jobByUid(p.window)) |w| app.startWinDrag(w, p.x, p.y);
+        }
+    }
+    if (app.win_drag != null) return app.moveWinDrag(x, y);
     // A press on a file name moved: held long enough → drag the file out;
     // else → select text from the press.
     if (app.file_press) |p| {
@@ -4583,17 +4705,396 @@ fn onMotion(app: *App, x: f32, y: f32) void {
 /// else the arrow.
 fn updateCursor(app: *App) void {
     const marked = if (app.hoverWindow()) |w| w.opener.mark != null else false;
-    const want: @TypeOf(app.cursor_kind) = if (marked) .hand else if (app.over_text) .text else .arrow;
+    const want: @TypeOf(app.cursor_kind) = if (app.win_drag != null) .move else if (marked) .hand else if (app.over_text) .text else .arrow;
     if (want == app.cursor_kind) return;
     app.cursor_kind = want;
     if (app.text_cursor == null) app.text_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_TEXT);
     if (app.arrow_cursor == null) app.arrow_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_DEFAULT);
     if (app.hand_cursor == null) app.hand_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_POINTER);
+    if (app.move_cursor == null) app.move_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_MOVE);
     _ = c.SDL_SetCursor(switch (want) {
         .hand => app.hand_cursor,
         .text => app.text_cursor,
         .arrow => app.arrow_cursor,
+        .move => app.move_cursor,
     });
+}
+
+// ------------------------------------------------------------ window drag
+
+/// A title-bar press moved: the window is on the move. The mouse keeps the
+/// same spot of its (smaller) picture.
+fn startWinDrag(app: *App, w: *JobWindow, px: f32, py: f32) void {
+    app.closeMenu();
+    app.closePeek();
+    app.hideTip();
+    app.sendLeave();
+    const r = w.rect;
+    app.win_drag = .{
+        .window = w.uid,
+        .grab = .{ std.math.clamp((px - r.x) / @max(r.w, 1), 0, 1), std.math.clamp((py - r.y) / @max(r.h, 1), 0, 1) },
+        .x = px,
+        .y = py,
+    };
+    app.updateCursor();
+    app.dirty = true;
+}
+
+/// The window being dragged follows the mouse; the window under it (in
+/// the windows area, not itself) is where it would go.
+fn moveWinDrag(app: *App, x: f32, y: f32) void {
+    const d = &app.win_drag.?;
+    d.x = x;
+    d.y = y;
+    d.target = null;
+    const inside = app.insideWindow(x, y);
+    if (inside and app.maximizedShown() == null) {
+        var buf: [64]*JobWindow = undefined;
+        for (app.shownOrder(&buf)) |w| if (w.uid != d.window and w.rect.contains(x, y)) {
+            d.target = w.uid;
+        };
+    }
+    app.mouse = if (inside) .{ x, y } else null;
+    app.dirty = true;
+    // Wayland: out of gtty's window the drag goes on as a drag and drop
+    // (only that reaches other windows); the gtty it lands on asks for
+    // the window (`tickWdrag`).
+    if (!inside and c.gtty_drag_supported() and builtin.os.tag == .linux) {
+        const path = app.ctl_path orelse return;
+        var pbuf: [1100]u8 = undefined;
+        const payload = std.fmt.bufPrintZ(&pbuf, "{s}\t{d}", .{ path, d.window }) catch return;
+        if (!c.gtty_wdrag_start(app.window, payload.ptr)) return;
+        app.offer = .{ .window = d.window, .until = c.SDL_GetTicks() + 15_000 };
+        app.win_drag = null;
+        app.updateCursor();
+    }
+}
+
+/// (x, y), in window pixels, is on gtty's own OS window.
+fn insideWindow(app: *const App, x: f32, y: f32) bool {
+    return x >= 0 and y >= 0 and x < app.width_px and y < app.height_px;
+}
+
+/// The button let go: on another window in the windows area the two swap
+/// tiles; elsewhere on gtty nothing moves.
+fn dropWindow(app: *App, x: f32, y: f32) void {
+    const d = app.win_drag.?;
+    app.win_drag = null;
+    app.dirty = true;
+    app.updateCursor();
+    const w = app.jobByUid(d.window) orelse return;
+    if (d.target) |uid| if (app.jobByUid(uid)) |t| return app.swapShown(w, t);
+    if (app.insideWindow(x, y)) return;
+    // Outside gtty's window: onto another gtty it goes there; onto the
+    // desktop a new gtty takes it; onto another app nothing happens.
+    const g = app.globalPoint(x, y);
+    var pid: c_int = 0;
+    switch (c.gtty_window_at(app.window, g[0], g[1], &pid)) {
+        1 => {
+            var pbuf: [1024]u8 = undefined;
+            const path = Handoff.socketPath(&pbuf, pid) orelse return;
+            if (c.access(path.ptr, c.F_OK) != 0) return app.say("not a gtty window: nothing moved", app.theme.dim);
+            app.pushWindow(w, path, g);
+        },
+        0 => app.tearOff(w, g, d.grab),
+        else => {},
+    }
+}
+
+/// A point in gtty's window (pixels) on the screen (global coordinates,
+/// as the OS places windows: points on macOS).
+fn globalPoint(app: *App, x: f32, y: f32) [2]f64 {
+    var wx: c_int = 0;
+    var wy: c_int = 0;
+    _ = c.SDL_GetWindowPosition(app.window, &wx, &wy);
+    return .{ @as(f64, @floatFromInt(wx)) + x / app.density, @as(f64, @floatFromInt(wy)) + y / app.density };
+}
+
+// ------------------------------------------------------------ windows between gttys
+
+/// The control socket other gttys hand windows over through.
+fn listenCtl(app: *App) void {
+    const d = app.tmp orelse return;
+    const path = std.fmt.allocPrintSentinel(app.gpa, "{s}/ctl.sock", .{d.path}, 0) catch return;
+    app.ctl_fd = c.gtty_ctl_listen(path.ptr);
+    if (app.ctl_fd < 0) return app.gpa.free(path);
+    app.ctl_path = path;
+}
+
+/// GTTY_ADOPT ("socket<TAB>window id", from the gtty a window was dragged
+/// out of onto the desktop), taken out of the environment.
+fn adoptEnv(app: *App) ?Adopt {
+    const v = c.getenv("GTTY_ADOPT") orelse return null;
+    defer _ = c.unsetenv("GTTY_ADOPT");
+    const s = std.mem.span(v);
+    const tab = std.mem.indexOfScalar(u8, s, '\t') orelse return null;
+    const uid = std.fmt.parseInt(ids_mod.Id, s[tab + 1 ..], 10) catch return null;
+    const path = app.gpa.dupeZ(u8, s[0..tab]) catch return null;
+    return .{ .path = path, .uid = uid };
+}
+
+/// Each frame: a window to take at start, a Wayland window drag (out or
+/// in), the offer running out, and other gttys at the control socket.
+fn tickCtl(app: *App) void {
+    app.tickAdopt();
+    app.tickWdrag();
+    if (app.offer) |o| if (c.SDL_GetTicks() > o.until) {
+        app.offer = null;
+        app.dirty = true;
+    };
+    while (true) {
+        const fd = c.gtty_ctl_accept(app.ctl_fd);
+        if (fd < 0) break;
+        defer c.gtty_close(fd);
+        app.serveCtl(fd);
+    }
+}
+
+/// One request from another gtty: a window it sends (`move`), or one it
+/// asks for (`take`: only the window offered to it).
+fn serveCtl(app: *App, fd: c_int) void {
+    const m = app.gpa.create(Handoff.Incoming) catch return;
+    defer app.gpa.destroy(m);
+    m.* = .{};
+    defer m.deinit();
+    if (!Handoff.recv(fd, m)) return;
+    var vb: [8]u8 = undefined;
+    if (!std.mem.eql(u8, m.reader().get("v", &vb) orelse "", Handoff.version)) return Handoff.reply(app.gpa, fd, "no", "another gtty version");
+    var ob: [16]u8 = undefined;
+    const op = m.op(&ob);
+    if (std.mem.eql(u8, op, "move")) {
+        if (app.receiveWindow(m)) |_| Handoff.reply(app.gpa, fd, "ok", null) else Handoff.reply(app.gpa, fd, "no", "it couldn't be opened there");
+    } else if (std.mem.eql(u8, op, "take")) {
+        const uid = m.reader().int(ids_mod.Id, "window") orelse return;
+        const o = app.offer orelse return Handoff.reply(app.gpa, fd, "no", "that window isn't offered");
+        if (o.window != uid) return Handoff.reply(app.gpa, fd, "no", "that window isn't offered");
+        const w = app.jobByUid(uid) orelse return Handoff.reply(app.gpa, fd, "no", "that window is gone");
+        if (app.sendWindow(fd, w)) app.letGo(w);
+    }
+}
+
+/// Send window `w` over `fd` (`move`) and wait for the answer: true when
+/// the other gtty has it now.
+fn sendWindow(app: *App, fd: c_int, w: *JobWindow) bool {
+    var msg = Handoff.Writer.init(app.gpa);
+    defer msg.deinit();
+    msg.put("v", Handoff.version);
+    msg.put("op", "move");
+    msg.putInt("window", w.uid);
+    var fds: [Handoff.max_fds]c_int = undefined;
+    const n = w.handoffCard(&msg, &fds);
+    if (!Handoff.send(fd, msg.bytes(), fds[0..n])) {
+        app.sayFmt("#{d} couldn't be moved: the other gtty didn't answer", .{w.serial}, app.theme.stderr_accent);
+        return false;
+    }
+    const m = app.gpa.create(Handoff.Incoming) catch return false;
+    defer app.gpa.destroy(m);
+    m.* = .{};
+    defer m.deinit();
+    var ob: [16]u8 = undefined;
+    if (Handoff.recv(fd, m) and std.mem.eql(u8, m.op(&ob), "ok")) return true;
+    var yb: [128]u8 = undefined;
+    const why = m.reader().get("why", &yb) orelse "the other gtty didn't answer";
+    beep.beep();
+    app.sayFmt("#{d} couldn't be moved: {s}", .{ w.serial, why }, app.theme.stderr_accent);
+    return false;
+}
+
+/// The window is another gtty's now: it goes from here without its job
+/// being hung up. Like a close otherwise: no shell left, a new one (or
+/// gtty quits: `quit-on-last-shell`, so dragging out the only window
+/// moves it).
+fn letGo(app: *App, w: *JobWindow) void {
+    const i = app.indexOfWindow(w) orelse return;
+    if (app.offer) |o| if (o.window == w.uid) {
+        app.offer = null;
+    };
+    app.sayFmt("#{d} moved to another gtty", .{w.serial}, app.theme.dim);
+    w.release(&app.reaper);
+    app.closeWindow(i);
+}
+
+/// A window dropped on another gtty's window (macOS, X11): sent there.
+fn pushWindow(app: *App, w: *JobWindow, path: [:0]const u8, at: [2]f64) void {
+    _ = at;
+    const fd = c.gtty_ctl_connect(path.ptr);
+    if (fd < 0) {
+        beep.beep();
+        return app.sayFmt("#{d} couldn't be moved: the other gtty doesn't answer", .{w.serial}, app.theme.stderr_accent);
+    }
+    defer c.gtty_close(fd);
+    if (app.sendWindow(fd, w)) app.letGo(w);
+}
+
+/// A window dropped on the desktop: a new gtty there takes it (it asks
+/// for it with `take`, `tickAdopt`). Its OS window gets this one's size,
+/// placed so the mouse is on its top, as where the window was taken.
+fn tearOff(app: *App, w: *JobWindow, at: [2]f64, grab: [2]f32) void {
+    var gbuf: [64]u8 = undefined;
+    var ww: c_int = 1100;
+    var wh: c_int = 720;
+    _ = c.SDL_GetWindowSize(app.window, &ww, &wh);
+    var gx: c_int = @intFromFloat(at[0] - @as(f64, @floatFromInt(ww)) * grab[0]);
+    var gy: c_int = @intFromFloat(at[1] - 12);
+    var r: c.SDL_Rect = undefined;
+    const pt: c.SDL_Point = .{ .x = @intFromFloat(at[0]), .y = @intFromFloat(at[1]) };
+    const display = c.SDL_GetDisplayForPoint(&pt);
+    if (display != 0 and c.SDL_GetDisplayUsableBounds(display, &r)) {
+        gx = std.math.clamp(gx, r.x, @max(r.x, r.x + r.w - ww));
+        gy = std.math.clamp(gy, r.y, @max(r.y, r.y + r.h - wh));
+    }
+    const geo: ?[:0]const u8 = if (builtin.os.tag == .linux and !c.gtty_drag_supported())
+        std.fmt.bufPrintZ(&gbuf, "{d},{d},{d},{d}", .{ gx, gy, ww, wh }) catch null
+    else if (builtin.os.tag == .macos) std.fmt.bufPrintZ(&gbuf, "{d},{d},{d},{d}", .{ gx, gy, ww, wh }) catch null else null;
+    const path = app.ctl_path orelse return app.say("can't move windows: gtty has no control socket", app.theme.stderr_accent);
+    var abuf: [1100]u8 = undefined;
+    const adopt = std.fmt.bufPrintZ(&abuf, "{s}\t{d}", .{ path, w.uid }) catch return;
+    var fbuf: [4096]u8 = undefined;
+    var zbuf: [4097]u8 = undefined;
+    const d = w.folder(&fbuf);
+    const dir: ?[:0]const u8 = if (d.len > 0) (if (std.fmt.bufPrintZ(&zbuf, "{s}", .{d}) catch null) |z| (if (isDir(z)) z else null) else null) else null;
+    if (c.getenv("GTTY_SHOW_DRY") != null) return app.sayFmt("would open a new gtty for #{d} at {s}", .{ w.serial, geo orelse "-" }, app.theme.dim);
+    app.offer = .{ .window = w.uid, .until = c.SDL_GetTicks() + 15_000 };
+    const pid = c.gtty_open_new_instance(if (dir) |z| z.ptr else null, if (geo) |g| g.ptr else null, adopt.ptr);
+    if (pid <= 0) {
+        app.offer = null;
+        beep.beep();
+        return app.say("could not start a new gtty", app.theme.stderr_accent);
+    }
+    app.sayFmt("#{d}: opening a new gtty for it…", .{w.serial}, app.theme.dim);
+}
+
+/// Started for a window dropped on the desktop: take it from the gtty it
+/// was in. Can't: the shell, as any gtty start.
+fn tickAdopt(app: *App) void {
+    const a = app.adopt_from orelse return;
+    app.adopt_from = null;
+    defer app.gpa.free(a.path);
+    if (app.pullWindow(a.path, a.uid)) return;
+    app.openShell(null);
+    app.say("the window couldn't be taken from the other gtty: opened your shell", app.theme.stderr_accent);
+}
+
+/// Ask the gtty at `path` for its window `uid` (`take`); true when it
+/// came and is shown here.
+fn pullWindow(app: *App, path: [:0]const u8, uid: ids_mod.Id) bool {
+    const fd = c.gtty_ctl_connect(path.ptr);
+    if (fd < 0) return false;
+    defer c.gtty_close(fd);
+    var msg = Handoff.Writer.init(app.gpa);
+    defer msg.deinit();
+    msg.put("v", Handoff.version);
+    msg.put("op", "take");
+    msg.putInt("window", uid);
+    if (!Handoff.send(fd, msg.bytes(), &.{})) return false;
+    const m = app.gpa.create(Handoff.Incoming) catch return false;
+    defer app.gpa.destroy(m);
+    m.* = .{};
+    defer m.deinit();
+    var ob: [16]u8 = undefined;
+    if (!Handoff.recv(fd, m) or !std.mem.eql(u8, m.op(&ob), "move")) return false;
+    if (app.receiveWindow(m) == null) {
+        Handoff.reply(app.gpa, fd, "no", "it couldn't be opened there");
+        return false;
+    }
+    Handoff.reply(app.gpa, fd, "ok", null);
+    return true;
+}
+
+/// A window from another gtty (`move` in `m`): a job window here, in the
+/// windows area with the keyboard, and gtty comes to the front.
+fn receiveWindow(app: *App, m: *Handoff.Incoming) ?*JobWindow {
+    if (app.jobs.items.len >= 64) return null;
+    const main_r = app.layoutFor(app.jobs.items.len).main;
+    const w = JobWindow.adopt(app.gpa, &app.gfx, app.ids.take(), app.next_serial, m.reader(), m.fds[0..m.n_fds], main_r, app.scale, app.scrollback, if (app.tmp) |d| d.path else null) catch return null;
+    app.next_serial += 1;
+    app.jobs.append(app.gpa, w) catch {
+        w.destroy(&app.reaper);
+        return null;
+    };
+    app.startup = null;
+    if (app.main) |mi| app.jobs.items[mi].maximized = false;
+    app.grid_scroll = 0;
+    app.setFocus(app.jobs.items.len - 1);
+    app.front_until = c.SDL_GetTicks() + 3000;
+    var tb: [128]u8 = undefined;
+    app.sayFmt("#{d} came from another gtty (#{s} there)", .{ w.serial, m.reader().get("serial", &tb) orelse "?" }, app.theme.dim);
+    return w;
+}
+
+/// Wayland window drags: one that left gtty's window is a real drag and
+/// drop now; how it ended decides (dropped on a gtty: that one asks for
+/// the window; let go elsewhere: a new gtty takes it; called off:
+/// nothing). One dropped on this gtty: asked for from its gtty (or, its
+/// own window come back, a swap there).
+fn tickWdrag(app: *App) void {
+    switch (c.gtty_wdrag_result()) {
+        c.GTTY_WDRAG_OUTSIDE => if (app.offer) |o| if (app.jobByUid(o.window)) |w| app.tearOff(w, .{ 0, 0 }, .{ 0, 0 }),
+        c.GTTY_WDRAG_CANCELLED => app.offer = null,
+        else => {},
+    }
+    var buf: [1100]u8 = undefined;
+    var x: f64 = 0;
+    var y: f64 = 0;
+    if (!c.gtty_wdrag_take_incoming(&buf, buf.len, &x, &y)) return;
+    const s = std.mem.sliceTo(&buf, 0);
+    const tab = std.mem.indexOfScalar(u8, s, '\t') orelse return;
+    const uid = std.fmt.parseInt(ids_mod.Id, s[tab + 1 ..], 10) catch return;
+    buf[tab] = 0;
+    const path: [:0]const u8 = buf[0..tab :0];
+    if (app.ctl_path) |own| if (std.mem.eql(u8, own, path)) {
+        // Back on its own gtty: onto another window there, the two swap.
+        app.offer = null;
+        const px: f32 = @floatCast(x * app.density);
+        const py: f32 = @floatCast(y * app.density);
+        const w = app.jobByUid(uid) orelse return;
+        if (app.maximizedShown() != null) return;
+        var obuf: [64]*JobWindow = undefined;
+        for (app.shownOrder(&obuf)) |t| if (t != w and t.rect.contains(px, py)) return app.swapShown(w, t);
+        return;
+    };
+    if (!app.pullWindow(path, uid)) {
+        beep.beep();
+        app.say("the window couldn't be taken from the other gtty", app.theme.stderr_accent);
+    }
+}
+
+fn cancelWinDrag(app: *App) void {
+    app.win_drag = null;
+    app.win_press = null;
+    app.updateCursor();
+    app.dirty = true;
+}
+
+/// While a window is dragged: its tile dimmed, the window it would swap
+/// with outlined, and its picture (smaller, see-through) at the mouse.
+fn drawWinDrag(app: *App) void {
+    const d = app.win_drag orelse return;
+    const w = app.jobByUid(d.window) orelse return;
+    const t = &app.theme;
+    const ui = app.scale.ui;
+    app.gfx.fillAlpha(w.rect, t.desktop, 170);
+    if (d.target) |uid| if (app.jobByUid(uid)) |tw| {
+        app.gfx.fillAlpha(tw.rect, t.focus, 40);
+        app.gfx.outline(tw.rect, t.focus, @max(@round(2 * ui), 1));
+    };
+    if (!app.insideWindow(d.x, d.y)) return;
+    const k = @min(0.5, 420 * ui / @max(w.rect.w, 1));
+    const gw = @round(w.rect.w * k);
+    const gh = @round(w.rect.h * k);
+    const ghost: Rect = .{ .x = @round(d.x - d.grab[0] * gw), .y = @round(d.y - d.grab[1] * gh), .w = gw, .h = gh };
+    const cv = app.canvas() orelse return;
+    _ = c.SDL_SetRenderTarget(app.renderer, cv);
+    _ = c.SDL_SetRenderDrawColor(app.renderer, 0, 0, 0, 0);
+    _ = c.SDL_RenderClear(app.renderer);
+    w.draw(&app.gfx, t);
+    _ = c.SDL_SetRenderTarget(app.renderer, null);
+    const src: c.SDL_FRect = .{ .x = w.rect.x, .y = w.rect.y, .w = w.rect.w, .h = w.rect.h };
+    const dst: c.SDL_FRect = .{ .x = ghost.x, .y = ghost.y, .w = ghost.w, .h = ghost.h };
+    _ = c.SDL_SetTextureAlphaMod(cv, 215);
+    _ = c.SDL_RenderTexture(app.renderer, cv, &src, &dst);
+    _ = c.SDL_SetTextureAlphaMod(cv, 255);
+    app.gfx.outline(ghost, t.focus, @max(@round(ui), 1));
 }
 
 // ------------------------------------------------------------ file opener
@@ -4623,6 +5124,12 @@ fn textWindowAt(app: *App, x: f32, y: f32) ?usize {
 /// The status bar's left side: where a drop would go while files are
 /// dragged over gtty, else the file opener's help.
 fn helpLine(app: *App, buf: []u8) []const u8 {
+    if (app.win_drag) |d| {
+        const w = app.jobByUid(d.window) orelse return "";
+        if (d.target) |uid| if (app.jobByUid(uid)) |t| return std.fmt.bufPrint(buf, "drop: #{d} and #{d} swap places", .{ w.serial, t.serial }) catch "";
+        if (!app.insideWindow(d.x, d.y)) return std.fmt.bufPrint(buf, "drop on another gtty to move #{d} there, on the desktop for a new gtty", .{w.serial}) catch "";
+        return "drop on another window to swap places, outside gtty to move it out";
+    }
     if (app.dropping and app.drop_inside) return app.insideHelp(buf);
     if (app.dropping) {
         var dbuf: [4096]u8 = undefined;
@@ -6292,17 +6799,30 @@ fn onWheel(app: *App, x: f32, y: f32, dy: f32) void {
 
 // ------------------------------------------------------------ rendering
 
-/// Windows in transition, over everything: each is drawn at its new place
-/// on the canvas, then that picture is stretched to where it is on the way.
-/// The one coming into the windows area is drawn last (on top).
-fn drawMoving(app: *App) void {
-    const now = c.SDL_GetTicks();
+/// The screen-size offscreen canvas (`anim_canvas`), made again when
+/// gtty's window changed size.
+fn canvas(app: *App) ?*c.SDL_Texture {
     const pw: c_int = @intFromFloat(@max(app.width_px, 1));
     const ph: c_int = @intFromFloat(@max(app.height_px, 1));
     if (app.anim_canvas) |cv| if (cv.*.w != pw or cv.*.h != ph) {
         c.SDL_DestroyTexture(cv);
         app.anim_canvas = null;
     };
+    if (app.anim_canvas == null) {
+        app.anim_canvas = c.SDL_CreateTexture(app.renderer, c.SDL_PIXELFORMAT_ARGB8888, c.SDL_TEXTUREACCESS_TARGET, pw, ph);
+        if (app.anim_canvas) |cv| {
+            _ = c.SDL_SetTextureScaleMode(cv, c.SDL_SCALEMODE_LINEAR);
+            _ = c.SDL_SetTextureBlendMode(cv, c.SDL_BLENDMODE_BLEND);
+        }
+    }
+    return app.anim_canvas;
+}
+
+/// Windows in transition, over everything: each is drawn at its new place
+/// on the canvas, then that picture is stretched to where it is on the way.
+/// The one coming into the windows area is drawn last (on top).
+fn drawMoving(app: *App) void {
+    const now = c.SDL_GetTicks();
     var order: [64]usize = undefined;
     var n: usize = 0;
     for (app.jobs.items, 0..) |w, i| if (w.anim_from != null and !app.isShown(i)) {
@@ -6319,14 +6839,7 @@ fn drawMoving(app: *App) void {
             w.draw(&app.gfx, &app.theme); // just finished: in place
             continue;
         };
-        if (app.anim_canvas == null) {
-            app.anim_canvas = c.SDL_CreateTexture(app.renderer, c.SDL_PIXELFORMAT_ARGB8888, c.SDL_TEXTUREACCESS_TARGET, pw, ph);
-            if (app.anim_canvas) |cv| {
-                _ = c.SDL_SetTextureScaleMode(cv, c.SDL_SCALEMODE_LINEAR);
-                _ = c.SDL_SetTextureBlendMode(cv, c.SDL_BLENDMODE_BLEND);
-            }
-        }
-        const cv = app.anim_canvas orelse return w.draw(&app.gfx, &app.theme);
+        const cv = app.canvas() orelse return w.draw(&app.gfx, &app.theme);
         _ = c.SDL_SetRenderTarget(app.renderer, cv);
         _ = c.SDL_SetRenderDrawColor(app.renderer, 0, 0, 0, 0);
         _ = c.SDL_RenderClear(app.renderer);
@@ -6470,6 +6983,7 @@ fn render(app: *App) void {
     app.drawLinkHover();
     app.drawFetch();
     app.drawMoving();
+    app.drawWinDrag();
     // The peek over everything but tooltips (not while its window moves).
     if (app.peekWindow()) |w| if (w.anim_from == null) {
         app.layoutPeek();

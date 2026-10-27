@@ -9,10 +9,21 @@
 
 // Spawn argv on fresh PTYs. On success returns 0 and fills the master fds
 // (err_master is -1 unless split != 0) and the child pid. Returns -errno on error.
+// status_fd non-NULL: the job runs under a keeper process (*keeper_pid,
+// gtty's child) that writes the job's wait status to *status_fd (a
+// non-blocking pipe) when it ends; see gtty_read_status.
 int gtty_spawn(const char *const argv[], int split, unsigned short cols,
                unsigned short rows, const char *term, const char *cwd,
                const char *const env[],
-               int *out_master, int *err_master, int *pid_out);
+               int *out_master, int *err_master, int *pid_out,
+               int *status_fd, int *keeper_pid);
+
+// A keeper's status pipe: 1 and *code once the job has ended (128 + signal
+// when killed; -1 unknown), 0 while it runs. keeper > 0: that keeper is
+// reaped too (gtty's own child; 0 for a job moved in from another gtty).
+int gtty_read_status(int fd, int keeper, int *code);
+// waitpid(pid, WNOHANG): 1 once reaped (or not a child), 0 while it runs.
+int gtty_reap(int pid);
 
 int gtty_resize(int master_fd, unsigned short cols, unsigned short rows);
 
