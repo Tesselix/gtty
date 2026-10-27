@@ -73,6 +73,8 @@ fn configure(b: *std.Build, mod: *std.Build.Module, target: std.Build.ResolvedTa
     mod.addCSourceFile(.{ .file = b.path("src/sys/gtty_open.c"), .flags = &.{ "-std=gnu11", "-Wall", "-Wno-deprecated-declarations" } });
     // Files dropped on gtty: copied into a folder in the background.
     mod.addCSourceFile(.{ .file = b.path("src/sys/gtty_copy.c"), .flags = &.{ "-std=gnu11", "-Wall" } });
+    // Job windows moved between gtty processes: the control socket.
+    mod.addCSourceFile(.{ .file = b.path("src/sys/gtty_ctl.c"), .flags = &.{ "-std=gnu11", "-Wall" } });
 
     if (target.result.os.tag == .macos) {
         // The gtty menu in the system menu bar (Cocoa).
@@ -87,6 +89,9 @@ fn configure(b: *std.Build, mod: *std.Build.Module, target: std.Build.ResolvedTa
         mod.addCSourceFile(.{ .file = b.path("src/sys/gtty_fileclip.m"), .flags = &.{"-Wall"} });
         // Show in Finder (NSWorkspace), Get Info (Finder via osascript).
         mod.addCSourceFile(.{ .file = b.path("src/sys/gtty_finder.m"), .flags = &.{"-Wall"} });
+        // The window under the mouse when a job window is dropped
+        // (CGWindowList).
+        mod.addCSourceFile(.{ .file = b.path("src/sys/gtty_winat.m"), .flags = &.{"-Wall"} });
     } else {
         mod.addCSourceFile(.{ .file = b.path("src/sys/gtty_menu.c"), .flags = &.{ "-std=gnu11", "-Wall" } });
         // Dragging files out under Wayland (libwayland-client via dlopen).
@@ -99,6 +104,9 @@ fn configure(b: *std.Build, mod: *std.Build.Module, target: std.Build.ResolvedTa
         mod.addCSourceFile(.{ .file = b.path("src/sys/gtty_fileclip.c"), .flags = &.{ "-std=gnu11", "-Wall" } });
         // Show in Files / Properties (FileManager1 over D-Bus, gdbus).
         mod.addCSourceFile(.{ .file = b.path("src/sys/gtty_finder.c"), .flags = &.{ "-std=gnu11", "-Wall" } });
+        // The window under the mouse when a job window is dropped (X11,
+        // libX11 via dlopen).
+        mod.addCSourceFile(.{ .file = b.path("src/sys/gtty_winat.c"), .flags = &.{ "-std=gnu11", "-Wall" } });
     }
 
     if (target.result.os.tag == .macos) {
@@ -107,6 +115,7 @@ fn configure(b: *std.Build, mod: *std.Build.Module, target: std.Build.ResolvedTa
         mod.linkFramework("AudioToolbox", .{}); // the system alert sound
         mod.linkFramework("CoreServices", .{}); // LaunchServices (`show`)
         mod.linkFramework("CoreFoundation", .{});
+        mod.linkFramework("CoreGraphics", .{}); // the window list (window drags)
         mod.linkFramework("UniformTypeIdentifiers", .{}); // the app chooser
     } else {
         mod.linkSystemLibrary("util", .{}); // openpty on older glibc

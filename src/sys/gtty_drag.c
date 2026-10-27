@@ -21,6 +21,8 @@
 
 #include <SDL3/SDL.h>
 #include <dlfcn.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -66,7 +68,11 @@ enum {
     SOURCE_DESTROY = 1,
     SOURCE_SET_ACTIONS = 2, // since version 3
     DEVICE_START_DRAG = 0,
+    OFFER_ACCEPT = 0,
+    OFFER_RECEIVE = 1,
     OFFER_DESTROY = 2,
+    OFFER_FINISH = 3,      // since version 3
+    OFFER_SET_ACTIONS = 4, // since version 3
     ACTION_COPY = 1,
     ACTION_MOVE = 2,
 };
@@ -81,6 +87,26 @@ static char *uri_list; // what the active drag offers (text/uri-list)
 static bool active;
 static bool dropped; // the active drag was dropped on gtty's own window
 static bool dropped_move; // ... with the move key held
+
+// Window drags (gtty_wdrag_*). Out: the source and what it carries, how
+// it ended. In: the offer of the drag over gtty's window (a gtty window
+// only), the one being read after a drop.
+#define WIN_MIME "application/x-gtty-window"
+static struct wl_proxy *wsource;
+static char *wpayload;
+static bool wperformed;
+static int wresult;
+static struct wl_proxy *pending_offer; // announced, not entered yet
+static bool pending_win;               // ... carries a gtty window
+static struct wl_proxy *offer_now;     // over gtty's window now
+static uint32_t enter_serial;
+static double at_x, at_y;
+static struct wl_proxy *in_offer; // dropped, payload being read
+static int in_fd = -1;
+static char in_buf[1024];
+static size_t in_len;
+static bool in_ready;
+static double in_x, in_y;
 
 static uint32_t ver(struct wl_proxy *p) { return W.get_version(p); }
 
@@ -161,20 +187,59 @@ static fn_t seat_listener[] = {(fn_t)s_caps, (fn_t)s_name};
 
 // ---------------------------------------------------------------- data device
 
-// Offers of drags coming in (SDL handles drops on its own data device):
-// not used here, destroyed at once. A drop while gtty's own drag is
-// active lands on gtty's window: noted for gtty_drag_take_drop (SDL can't
-// read the URI list then: the source's send waits for gtty_drag_tick).
+// Offers of drags coming in: files and text are SDL's (its own data
+// device); here only a gtty window (WIN_MIME) is taken, every other offer
+// destroyed. A drop while gtty's own file drag is active lands on gtty's
+// window: noted for gtty_drag_take_drop (SDL can't read the URI list
+// then: the source's send waits for gtty_drag_tick).
+static void dropOffer(struct wl_proxy **o) {
+    if (*o) W.marshal_flags(*o, OFFER_DESTROY, NULL, ver(*o), MARSHAL_DESTROY);
+    *o = NULL;
+}
+static void o_offer(void *d, struct wl_proxy *o, const char *mime) {
+    (void)d;
+    if (o == pending_offer && mime && strcmp(mime, WIN_MIME) == 0) pending_win = true;
+}
+static void o_actions(void *d, struct wl_proxy *o, uint32_t a) { (void)d, (void)o, (void)a; }
+static fn_t offer_listener[] = {(fn_t)o_offer, (fn_t)o_actions, (fn_t)o_actions};
+
+// Taking the gtty window: again on every motion (SDL's data device turns
+// the same drag down on its own offer; the last answer counts).
+static void acceptWin(void) {
+    W.marshal_flags(offer_now, OFFER_ACCEPT, NULL, ver(offer_now), 0, enter_serial, WIN_MIME);
+    if (ver(offer_now) >= 3) W.marshal_flags(offer_now, OFFER_SET_ACTIONS, NULL, ver(offer_now), 0, (uint32_t)ACTION_MOVE, (uint32_t)ACTION_MOVE);
+}
+
 static void d_offer(void *d, struct wl_proxy *dev, struct wl_proxy *offer) {
     (void)d, (void)dev;
-    if (offer) W.marshal_flags(offer, OFFER_DESTROY, NULL, ver(offer), MARSHAL_DESTROY);
+    dropOffer(&pending_offer);
+    pending_offer = offer;
+    pending_win = false;
+    if (offer) W.add_listener(offer, offer_listener, NULL);
 }
 static void d_enter(void *d, struct wl_proxy *dev, uint32_t serial, struct wl_proxy *s, int32_t x, int32_t y, struct wl_proxy *o) {
-    (void)d, (void)dev, (void)serial, (void)s, (void)x, (void)y, (void)o;
+    (void)d, (void)dev, (void)s;
+    dropOffer(&offer_now);
+    if (o != NULL && o == pending_offer && pending_win) {
+        offer_now = o;
+        pending_offer = NULL;
+        enter_serial = serial;
+        at_x = x / 256.0;
+        at_y = y / 256.0;
+        acceptWin();
+    } else if (o == pending_offer) {
+        dropOffer(&pending_offer);
+    }
 }
-static void d_leave(void *d, struct wl_proxy *dev) { (void)d, (void)dev; }
+static void d_leave(void *d, struct wl_proxy *dev) {
+    (void)d, (void)dev;
+    dropOffer(&offer_now);
+}
 static void d_motion(void *d, struct wl_proxy *dev, uint32_t t, int32_t x, int32_t y) {
-    (void)d, (void)dev, (void)t, (void)x, (void)y;
+    (void)d, (void)dev, (void)t;
+    at_x = x / 256.0;
+    at_y = y / 256.0;
+    if (offer_now) acceptWin();
 }
 static void d_drop(void *d, struct wl_proxy *dev) {
     (void)d, (void)dev;
@@ -182,8 +247,32 @@ static void d_drop(void *d, struct wl_proxy *dev) {
         dropped = true;
         dropped_move = gtty_drag_move_key();
     }
+    // A gtty window: read what it carries (the source writes it when its
+    // gtty dispatches the request; gtty_drag_tick reads on).
+    if (offer_now) {
+        int p[2];
+        dropOffer(&in_offer);
+        if (in_fd >= 0) close(in_fd);
+        in_fd = -1;
+        if (pipe(p) == 0) {
+            W.marshal_flags(offer_now, OFFER_RECEIVE, NULL, ver(offer_now), 0, WIN_MIME, p[1]);
+            close(p[1]);
+            fcntl(p[0], F_SETFL, fcntl(p[0], F_GETFL) | O_NONBLOCK);
+            in_fd = p[0];
+            in_len = 0;
+            in_ready = false;
+            in_x = at_x;
+            in_y = at_y;
+            in_offer = offer_now;
+            offer_now = NULL;
+        } else dropOffer(&offer_now);
+        W.flush(display);
+    }
 }
-static void d_selection(void *d, struct wl_proxy *dev, struct wl_proxy *o) { (void)d, (void)dev, (void)o; }
+static void d_selection(void *d, struct wl_proxy *dev, struct wl_proxy *o) {
+    (void)d, (void)dev;
+    if (o != NULL && o == pending_offer) dropOffer(&pending_offer);
+}
 static fn_t device_listener[] = {(fn_t)d_offer, (fn_t)d_enter, (fn_t)d_leave, (fn_t)d_motion, (fn_t)d_drop, (fn_t)d_selection};
 
 // ---------------------------------------------------------------- data source
@@ -217,6 +306,26 @@ static void ds_performed(void *d, struct wl_proxy *s) { (void)d, (void)s; }
 static void ds_finished(void *d, struct wl_proxy *s) { (void)d, (void)s, endDrag(); }
 static void ds_action(void *d, struct wl_proxy *s, uint32_t a) { (void)d, (void)s, (void)a; }
 static fn_t source_listener[] = {(fn_t)ds_target, (fn_t)ds_send, (fn_t)ds_cancelled, (fn_t)ds_performed, (fn_t)ds_finished, (fn_t)ds_action};
+
+// A window drag's source: what it carries, and how it ended. Let go
+// without a taker (drop performed, then cancelled) is "outside"; called
+// off before a drop is "cancelled".
+static void endWin(int result) {
+    if (wsource) W.marshal_flags(wsource, SOURCE_DESTROY, NULL, ver(wsource), MARSHAL_DESTROY);
+    wsource = NULL;
+    free(wpayload);
+    wpayload = NULL;
+    wresult = result;
+}
+static void ws_send(void *d, struct wl_proxy *s, const char *mime, int32_t fd) {
+    (void)d, (void)s;
+    if (wpayload && mime && strcmp(mime, WIN_MIME) == 0) (void)!write(fd, wpayload, strlen(wpayload));
+    close(fd);
+}
+static void ws_cancelled(void *d, struct wl_proxy *s) { (void)d, (void)s, endWin(wperformed ? GTTY_WDRAG_OUTSIDE : GTTY_WDRAG_CANCELLED); }
+static void ws_performed(void *d, struct wl_proxy *s) { (void)d, (void)s, wperformed = true; }
+static void ws_finished(void *d, struct wl_proxy *s) { (void)d, (void)s, endWin(GTTY_WDRAG_TAKEN); }
+static fn_t win_source_listener[] = {(fn_t)ds_target, (fn_t)ws_send, (fn_t)ws_cancelled, (fn_t)ws_performed, (fn_t)ws_finished, (fn_t)ds_action};
 
 // ---------------------------------------------------------------- registry
 
@@ -278,6 +387,24 @@ bool gtty_drag_supported(void) { return ok; }
 void gtty_drag_tick(void) {
     if (!ok) return;
     W.dispatch_queue_pending(display, queue);
+    // A gtty window dropped here: its payload, until the source closes.
+    while (in_fd >= 0) {
+        ssize_t n = read(in_fd, in_buf + in_len, sizeof in_buf - 1 - in_len);
+        if (n > 0) {
+            in_len += (size_t)n;
+            if (in_len < sizeof in_buf - 1) continue;
+        } else if (n < 0 && errno == EAGAIN) {
+            break;
+        }
+        // The end (or too long, or an error): done with the offer.
+        close(in_fd);
+        in_fd = -1;
+        in_buf[in_len] = 0;
+        in_ready = in_len > 0;
+        if (in_offer && ver(in_offer) >= 3) W.marshal_flags(in_offer, OFFER_FINISH, NULL, ver(in_offer), 0);
+        dropOffer(&in_offer);
+        W.flush(display);
+    }
 }
 
 bool gtty_drag_active(void) { return active; }
@@ -339,5 +466,53 @@ bool gtty_drag_files(void *sdl_window, const char *const *paths, int n) {
     W.flush(display);
     active = true;
     dropped = false;
+    return true;
+}
+
+bool gtty_wdrag_start(void *sdl_window, const char *payload) {
+    if (!ok || !have_press || payload == NULL) return false;
+    W.dispatch_queue_pending(display, queue);
+    SDL_PropertiesID props = SDL_GetWindowProperties((SDL_Window *)sdl_window);
+    struct wl_proxy *surface = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WAYLAND_SURFACE_POINTER, NULL);
+    if (surface == NULL) return false;
+    if (wsource) endWin(GTTY_WDRAG_NONE);
+    wpayload = strdup(payload);
+    if (wpayload == NULL) return false;
+    wsource = W.marshal_flags(ddm, DDM_CREATE_DATA_SOURCE, W.ds_if, ver(ddm), 0, NULL);
+    if (wsource == NULL) {
+        endWin(GTTY_WDRAG_NONE);
+        return false;
+    }
+    W.add_listener(wsource, win_source_listener, NULL);
+    W.marshal_flags(wsource, SOURCE_OFFER, NULL, ver(wsource), 0, WIN_MIME);
+    if (ver(wsource) >= 3) W.marshal_flags(wsource, SOURCE_SET_ACTIONS, NULL, ver(wsource), 0, (uint32_t)ACTION_MOVE);
+    W.marshal_flags(device, DEVICE_START_DRAG, NULL, ver(device), 0, wsource, surface, NULL, press_serial);
+    W.flush(display);
+    wperformed = false;
+    wresult = GTTY_WDRAG_NONE;
+    return true;
+}
+
+int gtty_wdrag_result(void) {
+    int r = wresult;
+    wresult = GTTY_WDRAG_NONE;
+    return r;
+}
+
+bool gtty_wdrag_take_incoming(char *buf, int cap, double *x, double *y) {
+    if (!in_ready || cap <= 0) return false;
+    in_ready = false;
+    size_t n = in_len < (size_t)cap - 1 ? in_len : (size_t)cap - 1;
+    memcpy(buf, in_buf, n);
+    buf[n] = 0;
+    *x = in_x;
+    *y = in_y;
+    return true;
+}
+
+bool gtty_wdrag_hover(double *x, double *y) {
+    if (offer_now == NULL) return false;
+    *x = at_x;
+    *y = at_y;
     return true;
 }

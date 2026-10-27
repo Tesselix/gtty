@@ -29,8 +29,10 @@ int gtty_open_with(const char *path, const char *id);
 /* Start another gtty (a second OS window, its own process) in folder `cwd`
  * (NULL: gtty's folder): gtty's own executable, no arguments (so it opens
  * a shell). `geometry` (NULL: none): put in its environment as
- * GTTY_WINDOW ("x,y,w,h", where its window goes). Detached; doesn't wait.
+ * GTTY_WINDOW ("x,y,w,h", where its window goes). `adopt` (NULL: none):
+ * GTTY_ADOPT, a job window it takes from this gtty instead of opening a
+ * shell (App, window drag). Detached; doesn't wait.
  * Its process id: > 0; -1: failed. */
-int gtty_open_new_instance(const char *cwd, const char *geometry);
+int gtty_open_new_instance(const char *cwd, const char *geometry, const char *adopt);
 
 #endif

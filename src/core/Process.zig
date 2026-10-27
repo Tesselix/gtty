@@ -22,6 +22,11 @@ out_open: bool = false,
 err_open: bool = false,
 exited: bool = false,
 exit_code: i32 = 0,
+/// With a keeper (`Options.keeper`): the pipe its wait status comes on,
+/// and the keeper's pid (gtty's child; 0 when the job was moved in from
+/// another gtty: that one's child, or nobody's).
+status_fd: c_int = -1,
+keeper: c_int = 0,
 /// Input the PTY had no room for yet (its queue is ~1 KB on macOS: a big
 /// paste fills it before the child reads); sent by `flush` as it reads.
 pending: std.ArrayList(u8) = .empty,
@@ -36,6 +41,9 @@ pub const Options = struct {
     cwd: ?[:0]const u8 = null,
     /// Extra environment for the child, "NAME=value".
     env: []const [:0]const u8 = &.{},
+    /// Run it under a keeper process (see gtty_spawn), so how it ends can
+    /// still be learned after its window moved to another gtty.
+    keeper: bool = false,
 };
 
 pub fn spawn(gpa: std.mem.Allocator, opts: Options) !Process {
@@ -62,6 +70,8 @@ pub fn spawn(gpa: std.mem.Allocator, opts: Options) !Process {
         &p.out_fd,
         &p.err_fd,
         &p.pid,
+        if (opts.keeper) &p.status_fd else null,
+        if (opts.keeper) &p.keeper else null,
     );
     if (rc != 0) return error.SpawnFailed;
     p.out_open = true;
@@ -129,10 +139,25 @@ pub fn resize(p: *Process, cols: u16, rows: u16) void {
     if (p.err_fd >= 0) _ = c.gtty_resize(p.err_fd, cols, rows);
 }
 
+/// A job moved in from another gtty (its PTY and its keeper's status
+/// pipe came over the control socket; core/Handoff.zig).
+pub fn adopt(gpa: std.mem.Allocator, pid: c_int, pty: c_int, status_fd: c_int) Process {
+    return .{ .gpa = gpa, .pid = pid, .out_fd = pty, .out_open = pty >= 0, .status_fd = status_fd };
+}
+
 /// Non-blocking check for exit. Returns true once, when the child has exited.
 pub fn pollExit(p: *Process) bool {
     if (p.exited or p.pid <= 0) return false;
     var code: c_int = 0;
+    if (p.status_fd >= 0) {
+        if (c.gtty_read_status(p.status_fd, p.keeper, &code) == 0) return false;
+        c.gtty_close(p.status_fd);
+        p.status_fd = -1;
+        p.keeper = 0;
+        p.exited = true;
+        p.exit_code = code;
+        return true;
+    }
     if (c.gtty_poll_exit(p.pid, &code) == 1) {
         p.exited = true;
         p.exit_code = code;
@@ -156,8 +181,12 @@ pub fn killHard(p: *Process) void {
 pub fn terminate(p: *Process, reaper: *Reaper) void {
     if (p.running()) {
         c.gtty_hangup(p.pid);
-        reaper.add(p.pid);
-    }
+        reaper.add(p.pid, p.keeper, p.status_fd);
+        p.status_fd = -1;
+    } else if (p.keeper > 0) reaper.add(0, p.keeper, -1);
+    c.gtty_close(p.status_fd);
+    p.status_fd = -1;
+    p.keeper = 0;
     c.gtty_close(p.out_fd);
     c.gtty_close(p.err_fd);
     p.out_fd = -1;
@@ -169,34 +198,59 @@ pub fn terminate(p: *Process, reaper: *Reaper) void {
     p.pending = .empty;
 }
 
+/// The job now belongs to another gtty (its window moved there): the
+/// PTY and the status pipe are closed here without hanging up; the
+/// keeper, still this gtty's child, is reaped once the job ends.
+pub fn release(p: *Process, reaper: *Reaper) void {
+    if (p.keeper > 0) reaper.add(0, p.keeper, -1);
+    c.gtty_close(p.status_fd);
+    c.gtty_close(p.out_fd);
+    c.gtty_close(p.err_fd);
+    p.* = .{ .exited = true, .exit_code = p.exit_code };
+}
+
 /// Collects processes we hung up on, so they don't stay as zombies.
-/// Anything still alive a few seconds after SIGHUP gets SIGKILL.
+/// Anything still alive a few seconds after SIGHUP gets SIGKILL. Also the
+/// keepers of jobs whose windows moved to another gtty (no pid to kill:
+/// they end with their job).
 pub const Reaper = struct {
     pending: std.ArrayList(Entry) = .empty,
     gpa: std.mem.Allocator,
 
-    const Entry = struct { pid: c_int, since: u64 };
+    /// `pid`: the job (0: none to kill); `keeper` / `status_fd`: how its
+    /// end is learned (else waitpid on `pid`).
+    const Entry = struct { pid: c_int, keeper: c_int = 0, status_fd: c_int = -1, since: u64 };
 
-    pub fn add(r: *Reaper, pid: c_int) void {
-        r.pending.append(r.gpa, .{ .pid = pid, .since = c.SDL_GetTicks() }) catch {};
+    pub fn add(r: *Reaper, pid: c_int, keeper: c_int, status_fd: c_int) void {
+        r.pending.append(r.gpa, .{ .pid = pid, .keeper = keeper, .status_fd = status_fd, .since = c.SDL_GetTicks() }) catch {};
+    }
+
+    fn done(e: Entry) bool {
+        var code: c_int = 0;
+        if (e.status_fd >= 0) return c.gtty_read_status(e.status_fd, e.keeper, &code) == 1;
+        if (e.keeper > 0) return c.gtty_reap(e.keeper) == 1;
+        return c.gtty_poll_exit(e.pid, &code) == 1;
     }
 
     pub fn tick(r: *Reaper) void {
         var i: usize = 0;
         while (i < r.pending.items.len) {
             const e = r.pending.items[i];
-            var code: c_int = 0;
-            if (c.gtty_poll_exit(e.pid, &code) == 1) {
+            if (done(e)) {
+                c.gtty_close(e.status_fd);
                 _ = r.pending.swapRemove(i);
                 continue;
             }
-            if (c.SDL_GetTicks() - e.since > 3000) c.gtty_kill(e.pid);
+            if (e.pid > 0 and c.SDL_GetTicks() - e.since > 3000) c.gtty_kill(e.pid);
             i += 1;
         }
     }
 
     pub fn deinit(r: *Reaper) void {
-        for (r.pending.items) |e| c.gtty_kill(e.pid);
+        for (r.pending.items) |e| {
+            c.gtty_kill(e.pid);
+            c.gtty_close(e.status_fd);
+        }
         r.pending.deinit(r.gpa);
     }
 };

@@ -45,3 +45,26 @@ bool gtty_drag_take_drop(bool *move);
 // (macOS ⌘, read from the system: SDL's state doesn't follow keys during
 // a drag; Linux Shift, the usual drag-and-drop move key there).
 bool gtty_drag_move_key(void);
+
+// Job windows dragged between gttys under Wayland (macOS / X11 find the
+// window under the mouse instead, gtty_window_at). A Wayland client
+// can't see other windows, so the drag is a real drag and drop offering
+// only "application/x-gtty-window" (no other app takes it): a gtty's
+// data device takes the drop and reads the payload (the source gtty's
+// socket and the window), then asks for the window over that socket.
+enum {
+    GTTY_WDRAG_NONE = 0,     // nothing (yet)
+    GTTY_WDRAG_TAKEN = 1,    // dropped on a gtty: it asks for the window
+    GTTY_WDRAG_OUTSIDE = 2,  // let go where no gtty took it
+    GTTY_WDRAG_CANCELLED = 3 // the drag was called off (Esc)
+};
+// Start the drag from `sdl_window` (the left button down) with `payload`.
+bool gtty_wdrag_start(void *sdl_window, const char *payload);
+// How the last window drag ended (once; GTTY_WDRAG_NONE while it lasts).
+int gtty_wdrag_result(void);
+// A gtty window is being dragged over this gtty's window now: where
+// (window coordinates, points). Its payload comes only with the drop.
+bool gtty_wdrag_hover(double *x, double *y);
+// A gtty window dropped on this gtty's window (once): its payload and
+// where (window coordinates, points).
+bool gtty_wdrag_take_incoming(char *buf, int cap, double *x, double *y);

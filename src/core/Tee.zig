@@ -85,6 +85,33 @@ pub const Log = struct {
         return .{ .file = f, .path = path };
     }
 
+    /// The output file of a job window moved in from another gtty
+    /// (`src`, open there as `fd`, `bytes` long): moved into `dir` as this
+    /// window's file (both temp folders are on one disk as a rule), else
+    /// copied from `fd`. Written on from its end.
+    pub fn adopt(gpa: std.mem.Allocator, dir: []const u8, serial: u32, src: []const u8, fd: c_int, bytes: u64) !Log {
+        const path = try std.fmt.allocPrintSentinel(gpa, "{s}/job-{d}.log", .{ dir, serial }, 0);
+        errdefer gpa.free(path);
+        const src_z = try gpa.dupeZ(u8, src);
+        defer gpa.free(src_z);
+        if (c.rename(src_z.ptr, path.ptr) != 0) {
+            const out = c.fopen(path.ptr, "wb") orelse return error.LogOpen;
+            defer _ = c.fclose(out);
+            var buf: [64 * 1024]u8 = undefined;
+            var off: u64 = 0;
+            while (off < bytes) {
+                const n = c.pread(fd, &buf, @min(buf.len, bytes - off), @intCast(off));
+                if (n <= 0) break;
+                _ = c.fwrite(&buf, 1, @intCast(n), out);
+                off += @intCast(n);
+            }
+        }
+        const f = c.fopen(path.ptr, "ab") orelse return error.LogOpen;
+        var st: c.struct_stat = undefined;
+        const size: u64 = if (c.fstat(c.fileno(f), &st) == 0) @intCast(st.st_size) else bytes;
+        return .{ .file = f, .path = path, .bytes = size };
+    }
+
     pub fn write(l: *Log, bytes: []const u8) void {
         l.bytes += c.fwrite(bytes.ptr, 1, bytes.len, l.file);
     }

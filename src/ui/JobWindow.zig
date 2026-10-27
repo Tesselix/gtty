@@ -33,6 +33,7 @@ const Rgb = color.Rgb;
 const Gfx = @import("../render/Gfx.zig");
 const ids = @import("ids.zig");
 const Tee = @import("../core/Tee.zig");
+const Handoff = @import("../core/Handoff.zig");
 const git = @import("../core/git.zig");
 const remote = @import("../core/remote.zig");
 const RemoteLink = @import("../core/RemoteLink.zig");
@@ -363,6 +364,8 @@ pub fn create(gpa: std.mem.Allocator, gfx: *Gfx, uid: ids.Id, serial: u32, spec:
         .rows = w.rows,
         .cwd = spec.cwd,
         .env = spec.env,
+        // Under a keeper: the window can move to another gtty (Handoff).
+        .keeper = true,
     });
     return w;
 }
@@ -381,6 +384,148 @@ pub fn destroy(w: *JobWindow, reaper: *Process.Reaper) void {
     w.out.deinit();
     w.gpa.free(w.title);
     w.gpa.destroy(w);
+}
+
+// ------------------------------------------------------------ moving to another gtty
+
+/// Output replayed into a window moved in from another gtty: at most this
+/// much of its end (the screen keeps only its last rows anyway).
+const replay_max: u64 = 16 * 1024 * 1024;
+
+/// What another gtty needs to show this window as it is (Handoff `move`):
+/// the descriptors in `fds` (the PTY and the keeper's status pipe while
+/// the job runs, the output file), how many; the rest as message lines.
+pub fn handoffCard(w: *JobWindow, m: *Handoff.Writer, fds: *[Handoff.max_fds]c_int) usize {
+    var n: usize = 0;
+    const live = w.proc.running() and w.proc.status_fd >= 0 and w.proc.out_open;
+    m.put("kind", @tagName(w.kind));
+    m.put("title", w.title);
+    m.putInt("serial", w.serial);
+    m.putBool("running", live);
+    m.putInt("exit", w.proc.exit_code);
+    m.putInt("pid", w.proc.pid);
+    m.putBool("colors", w.colors);
+    m.putInt("zoom", @as(i64, @intFromFloat(@round(w.zoom * 1000))));
+    m.putInt("cols", w.cols);
+    m.putInt("rows", w.rows);
+    const now = c.SDL_GetTicks();
+    m.putInt("age", now -| w.started_ms);
+    if (w.ended_ms != 0) m.putInt("ended", now -| w.ended_ms);
+    m.put("cwd", w.cwd_buf[0..w.cwd_len]);
+    m.put("folder", w.folder_now.items);
+    for (w.folders_left.items) |d| m.put("left", d);
+    m.put("ls", w.ls_cmd_buf[0..w.ls_cmd_len]);
+    if (live) {
+        fds[n] = w.proc.out_fd;
+        fds[n + 1] = w.proc.status_fd;
+        n += 2;
+    }
+    if (w.log) |*l| {
+        l.flush();
+        m.put("log", l.path);
+        m.putInt("log_bytes", l.bytes);
+        fds[n] = c.fileno(l.file);
+        n += 1;
+    }
+    return n;
+}
+
+/// The window went to another gtty: its job is that one's now. The PTY
+/// and the status pipe are closed here without hanging up (the keeper is
+/// reaped once the job ends); `destroy` then frees the rest.
+pub fn release(w: *JobWindow, reaper: *Process.Reaper) void {
+    w.endRemote();
+    w.proc.release(reaper);
+}
+
+/// A window moved in from another gtty (Handoff `move`, read by `m`):
+/// its output file is taken over (moved into `log_dir`, else copied) and
+/// replayed into the screen at the size it had there, then the window
+/// gets its place here (the job is told the new size). `fds`: as
+/// `handoffCard` sent them; taken (set to -1) when used.
+pub fn adopt(gpa: std.mem.Allocator, gfx: *Gfx, uid: ids.Id, serial: u32, m: Handoff.Reader, fds: []c_int, rect: Rect, scale: Scale, max_lines: usize, log_dir: ?[]const u8) !*JobWindow {
+    var tb: [512]u8 = undefined;
+    const kind: Kind = if (std.mem.eql(u8, m.get("kind", &tb) orelse "", "shell")) .shell else .command;
+    const title = m.get("title", &tb) orelse "moved";
+    const w = try gpa.create(JobWindow);
+    errdefer gpa.destroy(w);
+    const now = c.SDL_GetTicks();
+    w.* = .{
+        .gpa = gpa,
+        .uid = uid,
+        .serial = serial,
+        .kind = kind,
+        .title = try gpa.dupe(u8, title),
+        .proc = .{},
+        .out = Screen.init(gpa),
+        .rect = rect,
+        .scale = scale,
+        .started_ms = now -| (m.int(u64, "age") orelse 0),
+        .last_activity_ms = now,
+        .colors = !std.mem.eql(u8, m.get("colors", &tb) orelse "1", "0"),
+    };
+    errdefer gpa.free(w.title);
+    w.out.max_lines = max_lines;
+    w.zoom = std.math.clamp(@as(f32, @floatFromInt(m.int(i64, "zoom") orelse 1000)) / 1000, min_zoom, max_zoom);
+    if (m.get("cwd", &w.cwd_buf)) |d| w.cwd_len = d.len;
+    var fb: [4096]u8 = undefined;
+    if (m.get("folder", &fb)) |d| w.folder_now.appendSlice(gpa, d) catch {};
+    var left = m.iterator("left");
+    while (left.next(&fb)) |d| {
+        if (w.folders_left.items.len >= folder_history_max) break;
+        const copy = gpa.dupe(u8, d) catch break;
+        w.folders_left.append(gpa, copy) catch gpa.free(copy);
+    }
+    if (m.get("ls", &w.ls_cmd_buf)) |l| w.ls_cmd_len = l.len;
+    w.branch_len = git.branch(w.cwd_buf[0..w.cwd_len], &w.branch_buf).len;
+
+    var k: usize = 0;
+    const live = m.boolean("running") and fds.len >= 2;
+    var pty: c_int = -1;
+    var status: c_int = -1;
+    if (live) {
+        pty = fds[0];
+        status = fds[1];
+        k = 2;
+    }
+    // The output so far: the file moved (or copied) into this gtty's
+    // folder, its end replayed at the size the job had there.
+    if (m.get("log", &fb)) |src| if (k < fds.len) {
+        if (log_dir) |dir| w.log = Tee.Log.adopt(gpa, dir, serial, src, fds[k], m.int(u64, "log_bytes") orelse 0) catch null;
+        c.gtty_close(fds[k]);
+        fds[k] = -1;
+    };
+    w.out.resize(m.int(u16, "cols") orelse 80, m.int(u16, "rows") orelse 24);
+    if (w.log) |*l| {
+        const from = l.bytes -| replay_max;
+        if (l.readRange(gpa, from, l.bytes) catch null) |bytes| {
+            defer gpa.free(bytes);
+            // Cut in the middle: start at a line.
+            const skip = if (from == 0) 0 else if (std.mem.indexOfScalar(u8, bytes, '\n')) |i| i + 1 else 0;
+            w.out.fed = from + skip;
+            w.out.feed(bytes[skip..]);
+            _ = w.out.takeReplies(); // answered back then
+        }
+    }
+    // What the replay set off has happened already (cd's, listings).
+    w.cmd_seen = w.out.cmd_seq;
+    w.folders_done = w.out.done_seq;
+    w.folder_gen = w.out.osc_cwd_gen;
+    w.folder_reports = w.folder_gen != 0;
+    if (!w.out.done_colored) if (w.out.out_rows) |r| if (r.end) |e| w.colorNames(r.start, e);
+
+    if (live) {
+        w.proc = Process.adopt(gpa, m.int(c_int, "pid") orelse -1, pty, status);
+        fds[0] = -1;
+        fds[1] = -1;
+    } else {
+        w.proc = .{ .exited = true, .exit_code = m.int(i32, "exit") orelse 0 };
+        w.ended_ms = now -| (m.int(u64, "ended") orelse 0);
+    }
+    // Its place here: the screen reflows, the job gets the new size.
+    w.cols = 0;
+    try w.relayout(gfx);
+    return w;
 }
 
 // ------------------------------------------------------------ process I/O

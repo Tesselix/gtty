@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/resource.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <dirent.h>
@@ -46,10 +47,32 @@ static void set_nonblock_cloexec(int fd) {
     if (fdfl >= 0) fcntl(fd, F_SETFD, fdfl | FD_CLOEXEC);
 }
 
+// The keeper's fds: everything but `keep` closed (it doesn't exec, so
+// close-on-exec doesn't help; it must not hold other jobs' PTYs open).
+// Only async-signal-safe calls: it runs after fork in a threaded process.
+static void close_all_but(int keep) {
+    long max = 1024;
+    struct rlimit rl;
+    if (getrlimit(RLIMIT_NOFILE, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY) max = (long)rl.rlim_cur;
+    if (max > 65536) max = 65536;
+    for (int fd = 3; fd < max; fd++)
+        if (fd != keep) close(fd);
+}
+
+static int pipe_cloexec(int fds[2]) {
+    if (pipe(fds) != 0) return -1;
+    for (int i = 0; i < 2; i++) {
+        int fl = fcntl(fds[i], F_GETFD);
+        if (fl >= 0) fcntl(fds[i], F_SETFD, fl | FD_CLOEXEC);
+    }
+    return 0;
+}
+
 int gtty_spawn(const char *const argv[], int split, unsigned short cols,
                unsigned short rows, const char *term, const char *cwd,
                const char *const env[],
-               int *out_master, int *err_master, int *pid_out) {
+               int *out_master, int *err_master, int *pid_out,
+               int *status_fd, int *keeper_pid) {
     struct winsize ws;
     memset(&ws, 0, sizeof ws);
     ws.ws_col = cols ? cols : 80;
@@ -66,7 +89,56 @@ int gtty_spawn(const char *const argv[], int split, unsigned short cols,
         }
     }
 
-    pid_t pid = fork();
+    // With a keeper (status_fd): a small process between gtty and the job
+    // that waits for it and writes its wait status to a pipe. Whoever holds
+    // the pipe learns how the job ended, also a gtty the window was moved
+    // to (it isn't the job's parent, so it can't wait for it itself).
+    int st[2] = {-1, -1};
+    pid_t keeper = 0;
+    if (status_fd) {
+        if (pipe_cloexec(st) != 0) {
+            int e = errno;
+            close(om); close(os);
+            if (split) { close(em); close(es); }
+            return -e;
+        }
+        keeper = fork();
+        if (keeper < 0) {
+            int e = errno;
+            close(st[0]); close(st[1]);
+            close(om); close(os);
+            if (split) { close(em); close(es); }
+            return -e;
+        }
+    }
+    pid_t pid;
+    if (!status_fd) {
+        pid = fork();
+    } else if (keeper > 0) {
+        pid = keeper; // gtty: on to the parent's part
+    } else {
+        // The keeper: start the job, send its pid, wait for it, send how
+        // it ended. It ignores the signals a terminal would send to gtty.
+        signal(SIGHUP, SIG_IGN);
+        signal(SIGINT, SIG_IGN);
+        signal(SIGQUIT, SIG_IGN);
+        signal(SIGTERM, SIG_IGN);
+        signal(SIGPIPE, SIG_IGN);
+        signal(SIGCHLD, SIG_DFL);
+        pid = fork();
+        if (pid != 0) {
+            int sent = pid > 0 ? (int)pid : -1;
+            (void)!write(st[1], &sent, sizeof sent);
+            close_all_but(st[1]);
+            int status = 0;
+            if (pid > 0)
+                while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+                }
+            (void)!write(st[1], &status, sizeof status);
+            _exit(0);
+        }
+        // pid == 0: the job (both pipe ends close at its exec).
+    }
     if (pid < 0) {
         int e = errno;
         close(om); close(os);
@@ -87,10 +159,14 @@ int gtty_spawn(const char *const argv[], int split, unsigned short cols,
         close(om);
         if (split) close(em);
 
+        // Default signals (an ignored one stays ignored across exec; the
+        // keeper ignores SIGHUP / SIGTERM, the job must not).
         signal(SIGPIPE, SIG_DFL);
         signal(SIGINT, SIG_DFL);
         signal(SIGQUIT, SIG_DFL);
         signal(SIGCHLD, SIG_DFL);
+        signal(SIGHUP, SIG_DFL);
+        signal(SIGTERM, SIG_DFL);
 
         setenv("TERM", term ? term : "xterm-256color", 1);
         setenv("COLORTERM", "truecolor", 1);
@@ -109,10 +185,58 @@ int gtty_spawn(const char *const argv[], int split, unsigned short cols,
     set_nonblock_cloexec(om);
     if (split) set_nonblock_cloexec(em);
 
+    if (status_fd) {
+        // The keeper sends the job's pid at once.
+        close(st[1]);
+        int job = -1;
+        ssize_t n;
+        while ((n = read(st[0], &job, sizeof job)) < 0 && errno == EINTR) {
+        }
+        if (n != (ssize_t)sizeof job || job <= 0) {
+            close(st[0]);
+            close(om);
+            if (split) close(em);
+            while (waitpid(keeper, NULL, 0) < 0 && errno == EINTR) {
+            }
+            return -ECHILD;
+        }
+        pid = job;
+        set_nonblock_cloexec(st[0]);
+        *status_fd = st[0];
+        *keeper_pid = (int)keeper;
+    }
+
     *out_master = om;
     *err_master = split ? em : -1;
     *pid_out = (int)pid;
     return 0;
+}
+
+int gtty_read_status(int fd, int keeper, int *code) {
+    if (fd < 0) return 0;
+    int status = 0;
+    ssize_t n;
+    while ((n = read(fd, &status, sizeof status)) < 0 && errno == EINTR) {
+    }
+    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return 0;
+    if (n == (ssize_t)sizeof status) {
+        if (WIFEXITED(status)) *code = WEXITSTATUS(status);
+        else if (WIFSIGNALED(status)) *code = 128 + WTERMSIG(status);
+        else *code = -1;
+    } else {
+        *code = -1; // the keeper went away without a word
+    }
+    // It exits right after writing: reap it (only gtty's own).
+    if (keeper > 0)
+        while (waitpid(keeper, NULL, 0) < 0 && errno == EINTR) {
+        }
+    return 1;
+}
+
+int gtty_reap(int pid) {
+    if (pid <= 0) return 1;
+    pid_t r = waitpid((pid_t)pid, NULL, WNOHANG);
+    return r != 0;
 }
 
 int gtty_resize(int master_fd, unsigned short cols, unsigned short rows) {

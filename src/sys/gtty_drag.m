@@ -101,3 +101,19 @@ bool gtty_drag_files(void *sdl_window, const char *const *paths, int n) {
         return s != nil;
     }
 }
+
+// Window drags between gttys: macOS finds the window under the mouse
+// instead (gtty_window_at); these are Wayland's.
+bool gtty_wdrag_start(void *sdl_window, const char *payload) {
+    (void)sdl_window, (void)payload;
+    return false;
+}
+int gtty_wdrag_result(void) { return GTTY_WDRAG_NONE; }
+bool gtty_wdrag_take_incoming(char *buf, int cap, double *x, double *y) {
+    (void)buf, (void)cap, (void)x, (void)y;
+    return false;
+}
+bool gtty_wdrag_hover(double *x, double *y) {
+    (void)x, (void)y;
+    return false;
+}
