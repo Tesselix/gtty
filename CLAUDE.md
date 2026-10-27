@@ -1099,9 +1099,11 @@ decisions; items marked *open* are undecided.
   `.github/dependabot.yml`; top-level `permissions: contents: read`,
   writes per job; `${{ github.event.* }}` only through `env:`; no
   `pull_request_target` / `workflow_run`): `ci.yml` (PRs to main and
-  pushes to main: `zig build -Dbundled-sdl` only, Linux
-  (ubuntu-24.04) only — macOS and the rest are built only by
-  release.yml; Zig from `minimum_zig_version`; the job **`build-and-test`** (`needs` + `if:
+  pushes to main: `zig build -Dbundled-sdl` on Linux (ubuntu-24.04),
+  plus `release-build` (2026-10-27): `scripts/package.sh` on macos-15
+  as release.yml runs it, without secrets (ad hoc signed, not
+  notarized), so every release target (macOS arm64 dmg, Linux x86_64
+  deb / rpm / tar.gz) must build on each PR; Zig from `minimum_zig_version`; the job **`build-and-test`** (`needs` + `if:
   always()`) is the ruleset's required check: keep its id and name);
   `release.yml` (`release: published`: `TAG` from the release, checked
   against `^v[0-9]+\.[0-9]+\.[0-9]+$`; odd MINOR → `gh release edit
