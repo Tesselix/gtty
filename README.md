@@ -9,7 +9,25 @@ by side or one click away.
 
 ## Install
 
-Download from the **[latest release](https://github.com/gttyterm/gtty/releases/latest)**
+**Linux** (x86_64, glibc 2.31+), the latest stable release in one line:
+
+```sh
+# Debian / Ubuntu
+curl -fLO https://github.com/gttyterm/gtty/releases/latest/download/gtty_amd64.deb && sudo apt install ./gtty_amd64.deb
+
+# Fedora / RHEL (dnf; older systems: yum)
+sudo dnf install https://github.com/gttyterm/gtty/releases/latest/download/gtty.x86_64.rpm
+
+# openSUSE
+sudo zypper install https://github.com/gttyterm/gtty/releases/latest/download/gtty.x86_64.rpm
+
+# Any other rpm-based distro
+sudo rpm -U https://github.com/gttyterm/gtty/releases/latest/download/gtty.x86_64.rpm
+```
+
+Run the same line again to update.
+
+Or download from the **[latest release](https://github.com/gttyterm/gtty/releases/latest)**
 (each release lists its files and a `SHA256SUMS`):
 
 - **macOS** (Apple Silicon, 13+): `gtty-<version>-macos.dmg`; open it and
@@ -18,6 +36,8 @@ Download from the **[latest release](https://github.com/gttyterm/gtty/releases/l
   `sudo apt install ./gtty_*_amd64.deb`
 - **Fedora / RHEL / openSUSE** (x86_64): `gtty-<version>-1.x86_64.rpm`, then
   `sudo dnf install ./gtty-*.x86_64.rpm` (openSUSE: `sudo zypper install …`)
+- **Other Linux:** `gtty-<version>-linux-x86_64.tar.gz`, then `./install.sh`
+  inside it.
 - **From source:** see [HACKING.md](HACKING.md) (Zig 0.16 + SDL3).
 
 To check a download: `shasum -a 256 -c SHA256SUMS --ignore-missing`

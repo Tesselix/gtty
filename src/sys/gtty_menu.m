@@ -108,13 +108,14 @@ bool gtty_menu_install(uint32_t event_type, gtty_menu_enabled_fn enabled, gtty_m
         target = [[GttyMenuTarget alloc] init];
 
         // About gtty: gtty's own box (version, copyright, license, source)
-        // instead of the standard panel.
+        // instead of the standard panel; Check for Updates… right under it.
         for (NSInteger i = 0; i < [app numberOfItems]; i++) {
             NSMenuItem *it = [app itemAtIndex:i];
             if ([it action] == @selector(orderFrontStandardAboutPanel:)) {
                 [it setTarget:target];
                 [it setAction:@selector(pick:)];
                 [it setTag:GTTY_MENU_ABOUT];
+                [app insertItem:item(@"Check for Updates…", GTTY_MENU_CHECK_UPDATES, @"") atIndex:i + 1];
                 break;
             }
         }

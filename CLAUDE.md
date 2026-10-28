@@ -38,6 +38,22 @@ the shell. Users expect it to behave like a shell in a terminal.
   cyan headings, keys per OS) and finishes (green); `Spec.show_top`
   scrolls it to its top once all its output is read. Test:
   `test/help.gt`.
+- **Update line** (2026-10-28; `src/core/Update.zig`, App "updates"
+  section): at start (config `check-updates`, Settings → General; not
+  for a version `Update.Version.parse` rejects, e.g. `0.0.0-dev`; script
+  runs only with `GTTY_UPDATE_REPLY`) and from gtty ▸ **Check for
+  Updates…** (right under About; `GTTY_MENU_CHECK_UPDATES`, `/menu
+  check-updates`; always answers in the status bar) `Update.Check` asks
+  GitHub's `releases/latest` (stable only) with curl on pipes. Newer →
+  the yellow line on top (`update_r`, under the drawn menu bar,
+  `Theme.update`; `layoutUpdate` moves `desktop_r` down): its text opens
+  the release page (`SDL_OpenURL`, `GTTY_SHOW_DRY=1` only says so); on
+  Linux x86_64 from the packages (`/usr/bin/gtty`: dpkg's list → apt,
+  else dnf / zypper / yum / rpm; `installer()`) a button with the install
+  command (`Update.installCommand`): a click copies it (clipboard + paste
+  history, white flash); × closes the line for this run. Tests:
+  `test/update.gt` with `GTTY_UPDATE_REPLY=test/update-reply.json`,
+  `GTTY_UPDATE_VERSION`, `GTTY_UPDATE_INSTALLER`.
 - **Window system:** the **current job window** fills the windows area
   (full height); every other job window is minimized into the **job grid**.
   **A window coming into the windows area joins it** (`setFocus` on a
@@ -955,10 +971,11 @@ decisions; items marked *open* are undecided.
   `dmg-background.swift`),
   `.deb` + `.rpm` (`packaging/linux/nfpm.yaml`: `/usr/bin/gtty`,
   `gtty.desktop`, hicolor icons resized from `src/assets/gtty-icon.png`)
-  and a `.tar.gz` with `install.sh`. Version = `GTTY_VERSION` (releases:
-  the tag; build-bin.sh passes `-Dversion`, default `dev`, into
-  `build_options.version`; package.sh defaults to `0.0.0-dev`, nfpm wants
-  semver); build.zig.zon's `.version` is a placeholder nothing reads. Every package carries `LICENSE` and
+  and a `.tar.gz` with `install.sh`. Version = build.zig.zon's `.version`
+  (→ `build_options.version`; `-Dversion` overrides): `0.0.0-dev` in
+  git; release.yml writes the tag's version there before building,
+  never committed (the version lives only in the tag); package.sh names
+  the packages after it (`GTTY_VERSION` overrides that only). Every package carries `LICENSE` and
   `THIRD_PARTY.md` (gtty.app: `Contents/Resources`; Linux:
   `share/doc/gtty`). gtty.app is signed with
   `packaging/macos/gtty.entitlements` (hardened runtime + `apple-events`,
@@ -1204,7 +1221,7 @@ decisions; items marked *open* are undecided.
   --latest` + environment `release` (the `channel` job's output); macos-15,
   each environment holds the signing secrets: `sign-macos.sh` with
   `GTTY_VERSION=${TAG#v}` (CI path: temporary keychain, API-key
-  notarization) → build-bin.sh (ReleaseSafe, `-Dversion`) + package.sh,
+  notarization), the tag's version into build.zig.zon → build-bin.sh (ReleaseSafe) + package.sh,
   dmg checks (codesign, stapler, spctl), `SHA256SUMS`, `gh release
   upload --clobber`; then slsa-github-generator's generic generator
   (referenced by tag, as it requires) uploads `gtty.intoto.jsonl`);

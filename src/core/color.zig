@@ -113,6 +113,8 @@ pub const Theme = struct {
     link: Rgb = Rgb.hex(0xff5fc8),
     /// Find (⌘F): the matches' background (their text in `bg`).
     find: Rgb = Rgb.hex(0xe5c07b),
+    /// The update line on top (a newer gtty): its background.
+    update: Rgb = Rgb.hex(0xe8c468),
 
     /// Minimum WCAG-style contrast ratio between text and its background.
     min_contrast: f32 = 3.0,

@@ -3,9 +3,11 @@
 
 .{
     .name = .gtty,
-    // Placeholder, read by nothing: the version lives only in git tags
-    // (vMAJOR.MINOR.PATCH) and reaches the build as -Dversion.
-    .version = "0.0.0",
+    // The version gtty reports (build.zig → build_options.version). In
+    // git always 0.0.0-dev (a development build: no update check); the
+    // release workflow writes the tag's version here before it builds,
+    // never committed (the version lives only in the tag).
+    .version = "0.0.0-dev",
     .fingerprint = 0xb6c7a54069045c3b,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{

@@ -40,6 +40,7 @@ const Ai = @import("ai/Ai.zig");
 const Memory = @import("ai/Memory.zig");
 const FocusFolders = @import("core/FocusFolders.zig");
 const Sessions = @import("core/Sessions.zig");
+const Update = @import("core/Update.zig");
 const SessionsWindow = @import("ui/SessionsWindow.zig");
 const remote = @import("core/remote.zig");
 const Handoff = @import("core/Handoff.zig");
@@ -199,6 +200,24 @@ running: bool = true,
 dirty: bool = true,
 /// The About box (gtty menu ▸ About gtty); any click or key closes it.
 about_visible: bool = false,
+/// A newer gtty (src/core/Update.zig; at start, config `check-updates`,
+/// and gtty ▸ Check for Updates…): the check in flight (`manual`: from
+/// the menu, so every outcome is told), the release found, the yellow
+/// update line on top (`update_r`: its text opens the release page, on
+/// Linux the install command's button copies it, × closes the line for
+/// this run).
+update_check: ?*Update.Check = null,
+update_manual: bool = false,
+update_rel: ?Update.Release = null,
+update_closed: bool = false,
+update_cmd_buf: [512]u8 = undefined,
+update_cmd_len: usize = 0,
+update_r: Rect = .{},
+update_text_r: Rect = .{},
+update_cmd_r: Rect = .{},
+update_close_r: Rect = .{},
+update_over: UpdatePart = .none,
+update_flash_ms: u64 = 0,
 /// Mouse pointer shapes: an I-beam over job text, the arrow elsewhere.
 text_cursor: ?*c.SDL_Cursor = null,
 arrow_cursor: ?*c.SDL_Cursor = null,
@@ -528,10 +547,15 @@ pub fn create(gpa: std.mem.Allocator, opts: Options) !*App {
         app.startup = try gpa.dupe(u8, if (trimmed.len > 0) trimmed else "s");
     };
     app.shell_names.refresh(userShell(), &app.reaper);
+    // Is there a newer gtty? Not for a build without a release number
+    // (dev), nor in a test script unless it gives the answer.
+    const script_ok = opts.script == null or c.getenv("GTTY_UPDATE_REPLY") != null;
+    if (opts.cfg.check_updates and script_ok and Update.Version.parse(ownVersion()) != null) app.checkUpdates(false);
     return app;
 }
 
 pub fn destroy(app: *App) void {
+    if (app.update_check) |k| k.destroy();
     if (app.ai_req) |r| r.destroy();
     if (app.ai_plan) |*p| p.deinit();
     app.ai_text.deinit(app.gpa);
@@ -701,6 +725,7 @@ pub fn run(app: *App) void {
         app.tickSessions();
         app.tickRemote();
         app.tickAi();
+        app.tickUpdate();
         app.tickPrompt();
         app.tickFocus();
         app.ensureShell();
@@ -766,7 +791,9 @@ fn relayout(app: *App) void {
             bx += bw;
         }
     }
-    app.desktop_r = .{ .x = 0, .y = bar_h, .w = app.width_px, .h = app.height_px - ph - bar_h };
+    app.layoutUpdate(bar_h);
+    const top_h = bar_h + app.update_r.h;
+    app.desktop_r = .{ .x = 0, .y = top_h, .w = app.width_px, .h = app.height_px - ph - top_h };
 
     // Moving into or out of the windows area is an action on both windows.
     const now_main: ?*JobWindow = if (app.main) |m| app.jobs.items[m] else null;
@@ -822,7 +849,7 @@ fn relayout(app: *App) void {
     }
     app.main_slot = @min(app.main_slot, app.extras.items.len);
     if (app.main) |m| {
-        const top = app.menubar_r.h;
+        const top = app.desktop_r.y;
         const full: Rect = .{ .x = 0, .y = top, .w = app.width_px, .h = app.height_px - top };
         var buf: [64]*JobWindow = undefined;
         const order = app.shownOrder(&buf);
@@ -2466,6 +2493,10 @@ fn menuPick(app: *App, code: i32) void {
             app.about_visible = true;
             app.dirty = true;
         },
+        c.GTTY_MENU_CHECK_UPDATES => {
+            app.closeMenu();
+            app.checkUpdates(true);
+        },
         c.GTTY_MENU_HELP => app.openHelp(),
         c.GTTY_MENU_SNAPSHOT => app.takeSnapshot(),
         c.GTTY_MENU_SESSIONS => app.openSessionsWindow(),
@@ -2704,6 +2735,7 @@ fn barRows(app: *App, which: Menu.Bar, rows: *[Menu.max_rows]Menu.Row, codes: *[
     switch (which) {
         .gtty => {
             Add(rows, codes, &n, .{ .label = "About gtty" }, c.GTTY_MENU_ABOUT);
+            Add(rows, codes, &n, .{ .label = "Check for Updates…" }, c.GTTY_MENU_CHECK_UPDATES);
             Add(rows, codes, &n, .{ .label = "Settings…" }, c.GTTY_MENU_SETTINGS);
             Add(rows, codes, &n, .{ .label = "New Window", .key = Menu.new_window_key }, c.GTTY_MENU_NEW_WINDOW);
             Add(rows, codes, &n, .{ .label = "New Shell", .key = Menu.new_shell_key }, c.GTTY_MENU_NEW_SHELL);
@@ -2813,6 +2845,7 @@ fn applyChange(app: *App, ch: SettingsWindow.Change) void {
         .color_folders => app.setColorFolders(app.cfg.color_folders),
         .refresh_ls => JobWindow.refresh_ls = app.cfg.refresh_ls,
         .quit_on_last_shell => app.quit_on_last_shell = app.cfg.quit_on_last_shell,
+        .check_updates => {}, // read at the next start
         .command => {}, // at the next start
         .ai => {}, // read at each request
         .ai_forget => {
@@ -4462,6 +4495,7 @@ fn execGtty(app: *App, cmd_parsed: commands.Command) void {
             .new_window => c.GTTY_MENU_NEW_WINDOW,
             .sync_typing => c.GTTY_MENU_SYNC_TYPING,
             .about => c.GTTY_MENU_ABOUT,
+            .check_updates => c.GTTY_MENU_CHECK_UPDATES,
             .help => c.GTTY_MENU_HELP,
             .snapshot => c.GTTY_MENU_SNAPSHOT,
             .sessions => c.GTTY_MENU_SESSIONS,
@@ -5206,6 +5240,10 @@ fn onClick(app: *App, x: f32, y: f32, button: u8, clicks: u8) void {
             else => {},
         };
     };
+    if (app.update_r.contains(x, y)) {
+        if (button == c.SDL_BUTTON_LEFT) app.updateClick(app.updatePartAt(x, y));
+        return;
+    }
     // The drawn menu bar: its "gtty" button opens the gtty menu.
     if (app.menubar_r.contains(x, y)) {
         if (button == c.SDL_BUTTON_LEFT) if (app.barButtonAt(x, y)) |i| app.openBarMenu(@enumFromInt(i));
@@ -5346,6 +5384,12 @@ fn onMouseUp(app: *App, x: f32, y: f32) void {
 /// an I-beam pointer over its text.
 fn onMotion(app: *App, x: f32, y: f32) void {
     app.last_point_ms = c.SDL_GetTicks();
+    const over_update = app.updatePartAt(x, y);
+    if (over_update != app.update_over) {
+        app.update_over = over_update;
+        app.dirty = true;
+        app.updateCursor();
+    }
     switch (app.text_drag) {
         .none => {},
         .prompt => {
@@ -5444,7 +5488,7 @@ fn updateCursor(app: *App) void {
     const on_action = for (app.jobs.items) |w| {
         if (w.overAction()) break true;
     } else false;
-    const want: @TypeOf(app.cursor_kind) = if (app.win_drag != null) .move else if (marked or on_action) .hand else if (app.over_text) .text else .arrow;
+    const want: @TypeOf(app.cursor_kind) = if (app.win_drag != null) .move else if (marked or on_action or app.update_over != .none) .hand else if (app.over_text) .text else .arrow;
     if (want == app.cursor_kind) return;
     app.cursor_kind = want;
     if (app.text_cursor == null) app.text_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_TEXT);
@@ -7783,6 +7827,7 @@ fn render(app: *App) void {
     for (app.jobs.items, 0..) |w, i| if (app.isShown(i) and !w.maximized and w.anim_from == null) w.draw(&app.gfx, t);
 
     app.drawMenuBar();
+    app.drawUpdate();
 
     // Prompt
     var label_buf: [96]u8 = undefined;
@@ -7931,6 +7976,229 @@ fn drawAbout(app: *App, f: *Gfx.Face) void {
         y += lh;
     }
 }
+
+// ------------------------------------------------------------ updates
+
+const UpdatePart = enum { none, text, cmd, close };
+
+/// This gtty's version (`GTTY_UPDATE_VERSION`, tests: pretend another).
+fn ownVersion() []const u8 {
+    if (c.getenv("GTTY_UPDATE_VERSION")) |v| return std.mem.span(v);
+    return build_options.version;
+}
+
+/// Ask GitHub for the latest stable release, in the background.
+/// `manual` (the menu): every outcome is told, and a closed update line
+/// comes back. `GTTY_UPDATE_REPLY=<file>` (tests): the file's text is
+/// GitHub's answer, nothing is sent.
+fn checkUpdates(app: *App, manual: bool) void {
+    if (manual) {
+        app.update_manual = true;
+        app.update_closed = false;
+    }
+    if (app.update_check != null) return app.say("checking for updates…", app.theme.dim);
+    if (c.getenv("GTTY_UPDATE_REPLY")) |path| {
+        const text = readSmallFile(app.gpa, std.mem.span(path)) orelse return app.say("GTTY_UPDATE_REPLY: can't read the file", app.theme.stderr_accent);
+        defer app.gpa.free(text);
+        return app.updateResult(Update.parseRelease(app.gpa, text));
+    }
+    app.update_check = Update.Check.start(app.gpa, c.SDL_GetTicks()) catch |e| {
+        if (manual) app.sayFmt("could not check for updates (curl: {s})", .{@errorName(e)}, app.theme.stderr_accent);
+        app.update_manual = false;
+        return;
+    };
+    if (manual) app.say("checking for updates…", app.theme.dim);
+}
+
+fn tickUpdate(app: *App) void {
+    if (app.update_check) |k| if (k.poll(c.SDL_GetTicks())) {
+        const res = k.result();
+        k.destroy();
+        app.update_check = null;
+        app.updateResult(res);
+    };
+    if (app.update_flash_ms != 0) app.dirty = true;
+}
+
+/// GitHub answered: the update line when the release is newer; from the
+/// menu also "up to date" or what went wrong.
+fn updateResult(app: *App, res: Update.Result) void {
+    const manual = app.update_manual;
+    app.update_manual = false;
+    const rel = switch (res) {
+        .err => |e| {
+            if (manual) app.sayFmt("could not check for updates: {s}", .{e}, app.theme.stderr_accent);
+            return;
+        },
+        .release => |r| r,
+    };
+    const own = ownVersion();
+    const mine = Update.Version.parse(own) orelse {
+        if (manual) app.sayFmt("gtty {s} is a development build; the latest release is {s}", .{ own, rel.number() }, app.theme.dim);
+        return;
+    };
+    if (!rel.version.newerThan(mine)) {
+        if (manual) app.sayFmt("gtty {s} is up to date", .{own}, app.theme.ok);
+        return;
+    }
+    app.update_rel = rel;
+    app.update_cmd_len = 0;
+    if (Update.installCommand(&app.update_cmd_buf, installer(), &app.update_rel.?)) |cmd| app.update_cmd_len = cmd.len;
+    if (manual) app.sayFmt("gtty {s} is available", .{rel.number()}, app.theme.ok);
+    app.relayout();
+}
+
+/// What installed this gtty (Linux, x86_64: the packages there are):
+/// the deb or rpm tools when it is /usr/bin/gtty, else none (tar.gz,
+/// source). `GTTY_UPDATE_INSTALLER=apt|dnf|…` (tests) says so.
+fn installer() Update.Installer {
+    if (c.getenv("GTTY_UPDATE_INSTALLER")) |v| return Update.Installer.fromName(std.mem.span(v));
+    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return .none;
+    var buf: [4096]u8 = undefined;
+    const n = c.readlink("/proc/self/exe", &buf, buf.len);
+    if (n <= 0 or !std.mem.eql(u8, buf[0..@intCast(n)], "/usr/bin/gtty")) return .none;
+    if (c.access("/var/lib/dpkg/info/gtty.list", c.F_OK) == 0) return .apt;
+    const tools = [_]struct { path: [:0]const u8, inst: Update.Installer }{
+        .{ .path = "/usr/bin/dnf", .inst = .dnf },
+        .{ .path = "/usr/bin/zypper", .inst = .zypper },
+        .{ .path = "/usr/bin/yum", .inst = .yum },
+        .{ .path = "/usr/bin/rpm", .inst = .rpm },
+    };
+    for (tools) |t| if (c.access(t.path.ptr, c.X_OK) == 0) return t.inst;
+    return .none;
+}
+
+fn updateCmd(app: *const App) []const u8 {
+    return app.update_cmd_buf[0..app.update_cmd_len];
+}
+
+fn updateShown(app: *const App) bool {
+    return app.update_rel != null and !app.update_closed;
+}
+
+/// The update line under the drawn menu bar (none: height 0): the text,
+/// the install command's button (Linux), the ×.
+fn layoutUpdate(app: *App, top: f32) void {
+    const sf = app.statusFace();
+    const ui = app.scale.ui;
+    const h: f32 = if (app.updateShown()) @round(sf.cell_h * 1.8) else 0;
+    app.update_r = .{ .x = 0, .y = top, .w = app.width_px, .h = h };
+    if (h == 0) {
+        app.update_text_r = .{};
+        app.update_cmd_r = .{};
+        app.update_close_r = .{};
+        return;
+    }
+    var buf: [128]u8 = undefined;
+    const pad = @round(10 * ui);
+    const cw = @round(h * 0.9);
+    app.update_close_r = .{ .x = app.width_px - cw - @round(4 * ui), .y = top, .w = cw, .h = h };
+    app.update_text_r = .{ .x = pad, .y = top, .w = Gfx.textWidth(sf, app.updateText(&buf)), .h = h };
+    app.update_cmd_r = .{};
+    if (app.update_cmd_len > 0) {
+        const x = app.update_text_r.x + app.update_text_r.w + @round(16 * ui);
+        const room = app.update_close_r.x - @round(8 * ui) - x;
+        const want = Gfx.textWidth(sf, app.updateCmd()) + @round(16 * ui);
+        const bh = h - @round(6 * ui);
+        if (room > 12 * sf.cell_w) app.update_cmd_r = .{ .x = x, .y = top + @round((h - bh) / 2), .w = @min(want, room), .h = bh };
+    }
+}
+
+fn updateText(app: *const App, buf: []u8) []const u8 {
+    const rel = app.update_rel orelse return "";
+    return std.fmt.bufPrint(buf, "Newer version available: {s}. Your version is {s}.", .{ rel.number(), ownVersion() }) catch "Newer version available.";
+}
+
+fn updatePartAt(app: *const App, x: f32, y: f32) UpdatePart {
+    if (!app.update_r.contains(x, y)) return .none;
+    if (app.update_close_r.contains(x, y)) return .close;
+    if (app.update_cmd_r.w > 0 and app.update_cmd_r.contains(x, y)) return .cmd;
+    if (app.update_text_r.contains(x, y)) return .text;
+    return .none;
+}
+
+fn updateClick(app: *App, part: UpdatePart) void {
+    const rel = app.update_rel orelse return;
+    switch (part) {
+        .none => {},
+        .close => {
+            app.update_closed = true;
+            app.update_over = .none;
+            app.updateCursor();
+            app.relayoutAnimated();
+        },
+        // The release page in the browser.
+        .text => {
+            const z = app.gpa.dupeZ(u8, rel.url()) catch return;
+            defer app.gpa.free(z);
+            if (c.getenv("GTTY_SHOW_DRY") != null) return app.sayFmt("would open {s}", .{rel.url()}, app.theme.dim);
+            if (!c.SDL_OpenURL(z.ptr)) {
+                beep.beep();
+                app.sayFmt("could not open {s}", .{rel.url()}, app.theme.stderr_accent);
+            }
+        },
+        // The install command on the clipboard (and in the paste
+        // history), as the title bar's copy: the user pastes it where
+        // they want to run it.
+        .cmd => {
+            const cmd = app.updateCmd();
+            const z = app.gpa.dupeZ(u8, cmd) catch return;
+            defer app.gpa.free(z);
+            app.pushPasteHistory(cmd);
+            _ = c.SDL_SetClipboardText(z.ptr);
+            app.update_flash_ms = c.SDL_GetTicks();
+            app.say("copied the install command: paste it in a shell", app.theme.ok);
+        },
+    }
+    app.dirty = true;
+}
+
+fn drawUpdate(app: *App) void {
+    const r = app.update_r;
+    if (r.h == 0) return;
+    const t = &app.theme;
+    const sf = app.statusFace();
+    const ui = app.scale.ui;
+    app.gfx.fill(r, t.update);
+    const ty = r.y + @round((r.h - sf.cell_h) / 2);
+    var buf: [128]u8 = undefined;
+    const tr = app.update_text_r;
+    _ = app.gfx.text(sf, tr.x, ty, app.updateText(&buf), t.bg);
+    // A link: underlined under the mouse.
+    if (app.update_over == .text) app.gfx.fill(.{ .x = tr.x, .y = ty + sf.cell_h - @max(@round(ui), 1), .w = tr.w, .h = @max(@round(ui), 1) }, t.bg);
+    const b = app.update_cmd_r;
+    if (b.w > 0) {
+        app.gfx.fill(b, if (app.update_over == .cmd) t.title_bg.mix(t.focus, 0.25) else t.title_bg);
+        app.gfx.outline(b, t.bg, @max(ui, 1));
+        const cmd = app.updateCmd();
+        const inner = b.w - @round(16 * ui);
+        const fits: usize = @intFromFloat(@max(@floor(inner / sf.cell_w), 1));
+        var cut_buf: [520]u8 = undefined;
+        const shown = if (cmd.len <= fits) cmd else std.fmt.bufPrint(&cut_buf, "{s}…", .{cmd[0 .. fits - 1]}) catch cmd;
+        app.gfx.clip(b);
+        _ = app.gfx.text(sf, b.x + @round(8 * ui), b.y + @round((b.h - sf.cell_h) / 2), shown, t.prompt_fg);
+        app.gfx.clip(null);
+        // Copied: a short white flash on the button.
+        if (app.update_flash_ms != 0) {
+            const age = c.SDL_GetTicks() -| app.update_flash_ms;
+            if (age < update_flash_len_ms) {
+                const a: u8 = @intFromFloat(160 * (1 - @as(f32, @floatFromInt(age)) / update_flash_len_ms));
+                app.gfx.fillAlpha(b, .{ .r = 255, .g = 255, .b = 255 }, a);
+            } else app.update_flash_ms = 0;
+        }
+    }
+    // ×
+    const cr = app.update_close_r;
+    if (app.update_over == .close) app.gfx.fill(cr, t.update.mix(t.bg, 0.2));
+    const s = @round(cr.h * 0.22);
+    const cx = cr.x + cr.w / 2;
+    const cy = cr.y + cr.h / 2;
+    const th = @max(@round(1.5 * ui), 1);
+    app.gfx.line(cx - s, cy - s, cx + s, cy + s, t.bg, th);
+    app.gfx.line(cx - s, cy + s, cx + s, cy - s, t.bg, th);
+}
+
+const update_flash_len_ms = 350;
 
 fn saveShot(app: *App, path: []const u8) void {
     const surf = c.SDL_RenderReadPixels(app.renderer, null) orelse {
