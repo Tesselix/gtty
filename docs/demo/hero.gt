@@ -1,9 +1,11 @@
 # SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
 # SPDX-License-Identifier: GPL-3.0-or-later
-# README hero: three commands typed at the gtty prompt open three windows
-# on one screen (finished ones green, the running server blue); one is
-# minimized into the job grid, and 4 s later a click there brings it
-# back in. Recorded by make.sh.
+# README hero, the everyday features: a shell opened from the gtty
+# prompt, two more from the right-click menu's New Shell (three on one
+# screen); one minimized into the job grid and brought back; the last
+# output (5 lines of git log) copied from a title bar and pasted into
+# another window as an echo; sync typing (one ls typed, run in all
+# three). Recorded by make.sh.
 /resize 1200 760
 /wait 800
 /click 600 686
@@ -11,22 +13,67 @@
 /pace 250
 /record start @FRAMES@ 20
 /wait 500
-/slow make
+/slow s
 /key enter
-/wait 700
-/slow git log --oneline
-/key enter
-/wait 700
-/slow python3 -m http.server 8000
-/key enter
-/wait 1200
-# Minimize #2 (git log, bottom left).
-/glide 520 354 600
+/wait 1500
+# New Shell from the right-click menu, twice.
+/glide 500 300 500
+/rclick 500 300
+/wait 600
+/glide 560 550 400
+/wait 200
+/click 560 550
+/wait 1500
+/glide 300 200 500
+/rclick 300 200
+/wait 600
+/glide 360 450 400
+/wait 200
+/click 360 450
+/wait 1500
+# Minimize #2 (bottom left), then bring it back from the job grid.
+/glide 520 354 500
+/wait 200
 /click 520 354
-/wait 4000
-# Bring it back from the job grid.
-/glide 1110 130 600
+/wait 1500
+/glide 1110 130 500
+/wait 200
 /click 1110 130
-/wait 1800
+/wait 1500
+# Copy the last output (title bar of #2, now on top) ...
+/slow git log --oneline --no-decorate -5
+/key enter
+/wait 900
+/glide 50 24 600
+/wait 200
+/click 50 24
+/wait 1000
+# ... and paste it into #1 (bottom right) as an echo.
+/glide 900 500 500
+/click 900 500
+/wait 300
+/slow echo "
+/glide 700 390 300
+/rclick 700 390
+/wait 600
+/glide 760 482 400
+/wait 300
+/click 760 482
+/wait 400
+/slow "
+/key enter
+/wait 2000
+# Sync typing: on in #1, one ls runs in all three, off again.
+/glide 797 354 600
+/wait 200
+/click 797 354
+/wait 700
+/slow ls
+/key enter
+/wait 1500
+/glide 797 354 400
+/wait 200
+/click 797 354
+/wait 1500
 /record stop
 /quit
