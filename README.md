@@ -1,31 +1,69 @@
 # gtty — True Graphic Virtual Terminal
 
+[![Stable release](https://img.shields.io/github/v/release/gttyterm/gtty?sort=semver&label=stable&color=2ea44f)](https://github.com/gttyterm/gtty/releases/latest)
+[![Edge release](https://img.shields.io/github/v/release/gttyterm/gtty?include_prereleases&sort=date&label=edge&color=orange)](https://github.com/gttyterm/gtty/releases)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/gttyterm/gtty/badge)](https://scorecard.dev/viewer/?uri=github.com/gttyterm/gtty)
 
 A multi-window terminal: all your shells and commands on one screen, side
 by side or one click away.
 
-![Three commands open three windows on one screen; one is minimized into the job grid on the right and, a few seconds later, a click brings it back](docs/images/hero.webp)
+![A shell opened from the gtty prompt, two more from the right-click menu's New Shell; one is minimized into the job grid and clicked back; the last output (five lines of git log) is copied from a title bar and pasted into another shell as an echo; with sync typing on, one ls runs in all three](docs/images/hero.webp)
 
 ## Install
 
-**Linux** (x86_64, glibc 2.31+), the latest stable release in one line:
+### macOS
+
+Apple Silicon, macOS 13 or later. Download the latest stable release and
+open it:
 
 ```sh
-# Debian / Ubuntu
+curl -fLO https://github.com/gttyterm/gtty/releases/latest/download/gtty-macos.dmg && open gtty-macos.dmg
+```
+
+1. In the window that opens, drag the **gtty** icon onto the
+   **Applications** folder.
+2. Eject the disk image (the ⏏ next to "gtty" in Finder's sidebar). You
+   can delete `gtty-macos.dmg`.
+3. Open gtty from Applications (or Spotlight: ⌘Space, type `gtty`). The
+   first time, macOS may ask whether to open an app downloaded from the
+   internet: click **Open**. gtty is signed and notarized by Apple.
+4. If macOS still won't open it, go to **System Settings → Privacy &
+   Security**, scroll down to the message about gtty and click **Open
+   Anyway**.
+
+To update, do the same again and let Finder replace the old copy.
+
+### Linux
+
+x86_64, glibc 2.31 or later. The latest stable release in one line.
+
+Debian / Ubuntu:
+
+```sh
 curl -fLO https://github.com/gttyterm/gtty/releases/latest/download/gtty_amd64.deb && sudo apt install ./gtty_amd64.deb
+```
 
-# Fedora / RHEL (dnf; older systems: yum)
+Fedora / RHEL (older systems: `yum` instead of `dnf`):
+
+```sh
 sudo dnf install https://github.com/gttyterm/gtty/releases/latest/download/gtty.x86_64.rpm
+```
 
-# openSUSE
+openSUSE:
+
+```sh
 sudo zypper install https://github.com/gttyterm/gtty/releases/latest/download/gtty.x86_64.rpm
+```
 
-# Any other rpm-based distro
+Any other rpm-based distro:
+
+```sh
 sudo rpm -U https://github.com/gttyterm/gtty/releases/latest/download/gtty.x86_64.rpm
 ```
 
 Run the same line again to update.
+
+### Other ways
 
 Or download from the **[latest release](https://github.com/gttyterm/gtty/releases/latest)**
 (each release lists its files and a `SHA256SUMS`):
