@@ -29,7 +29,19 @@ pub const Zoom = union(enum) {
     set: f32,
 };
 
-pub const MenuPick = enum { run, settings, new_shell, new_window, sync_typing, about, help };
+pub const MenuPick = union(enum) {
+    run,
+    settings,
+    new_shell,
+    new_window,
+    sync_typing,
+    about,
+    help,
+    snapshot,
+    sessions,
+    /// Session ▸ the saved session N (1 = the last used).
+    session: u8,
+};
 
 pub const Command = union(enum) {
     /// No leading `/`: the OS gets the first chance (see above).
@@ -82,16 +94,17 @@ pub const Command = union(enum) {
     drag: [4]f32,
     /// /resize <w> <h> — resize gtty's OS window (window coordinates).
     resize: [2]f32,
-    /// /menu run | settings | new-shell | new-window | sync-typing | about | help — pick a
-    /// menu entry, as the
+    /// /menu run | settings | new-shell | new-window | sync-typing | about | help |
+    /// snapshot | sessions | session-N — pick a menu entry, as the
     /// menu bar would (for scripts: macOS menus can't be clicked).
     menu: MenuPick,
     /// /mods cmd+shift | none — the modifier keys held from now on, as if
     /// pressed (for scripts: hover / click with ⌘ etc.).
     mods: []const u8,
-    /// /target main | settings — which OS window the next /click, /move,
-    /// /drag, /text, /key, /type and /shot go to (for scripts).
-    target: enum { main, settings },
+    /// /target main | settings | sessions — which OS window the next
+    /// /click, /move, /drag, /text, /key, /type and /shot go to (for
+    /// scripts; sessions: the Session Manager).
+    target: enum { main, settings, sessions },
     /// /record start <dir> [fps] | stop — save every frame (window size,
     /// PPM) into dir with their times in `frames.txt`; the script's mouse
     /// pointer is drawn in them (for the README animations, docs/demo).
@@ -310,7 +323,7 @@ pub fn parseGtty(text: []const u8, explicit: bool) Command {
     if (eq(sub, "key")) return if (rest.len > 0) .{ .key = rest } else .{ .bad = "/key ctrl+shift+left" };
     if (eq(sub, "wait")) return .{ .wait = std.fmt.parseInt(u32, rest, 10) catch 500 };
     if (eq(sub, "menu")) {
-        const usage = "/menu run | settings | new-shell | new-window | sync-typing | about | help";
+        const usage = "/menu run | settings | new-shell | new-window | sync-typing | about | help | snapshot | sessions | session-N";
         if (eq(rest, "run")) return .{ .menu = .run };
         if (eq(rest, "settings")) return .{ .menu = .settings };
         if (eq(rest, "new-shell")) return .{ .menu = .new_shell };
@@ -318,13 +331,20 @@ pub fn parseGtty(text: []const u8, explicit: bool) Command {
         if (eq(rest, "sync-typing")) return .{ .menu = .sync_typing };
         if (eq(rest, "about")) return .{ .menu = .about };
         if (eq(rest, "help")) return .{ .menu = .help };
+        if (eq(rest, "snapshot")) return .{ .menu = .snapshot };
+        if (eq(rest, "sessions")) return .{ .menu = .sessions };
+        if (std.mem.startsWith(u8, rest, "session-")) {
+            const n = std.fmt.parseInt(u8, rest["session-".len..], 10) catch return .{ .bad = usage };
+            if (n >= 1) return .{ .menu = .{ .session = n } };
+        }
         return .{ .bad = usage };
     }
     if (eq(sub, "mods")) return if (rest.len > 0) .{ .mods = rest } else .{ .bad = "/mods cmd+shift | none" };
     if (eq(sub, "target")) {
         if (eq(rest, "main")) return .{ .target = .main };
         if (eq(rest, "settings")) return .{ .target = .settings };
-        return .{ .bad = "/target main | settings" };
+        if (eq(rest, "sessions")) return .{ .target = .sessions };
+        return .{ .bad = "/target main | settings | sessions" };
     }
     return .{ .unknown = sub };
 }
@@ -438,6 +458,9 @@ test "parse prompt lines and gtty commands" {
     try t.expect(parseGtty("settings", false) == .settings);
     try t.expect(parse("/menu run").menu == .run);
     try t.expect(parse("/menu help").menu == .help);
+    try t.expect(parse("/menu snapshot").menu == .snapshot);
+    try t.expectEqual(@as(u8, 3), parse("/menu session-3").menu.session);
+    try t.expect(parse("/menu session-x") == .bad);
     try t.expect(parse("/menu sub 0") == .bad);
     try t.expect(parse("/menu x") == .bad);
     try t.expect(parseGtty("menu run", false) == .unknown);

@@ -21,6 +21,12 @@
 //!     current one marked, the newest other one selected; picking one
 //!     cds there as the folder chip's list does.
 //!
+//!   * **Session chip** (`kind` session): hovering or clicking it opens
+//!     the list at once, like the focus chip's: the saved sessions
+//!     (core/Sessions.zig), the last used at the bottom next to the chip
+//!     and selected; picking one asks App to restore it
+//!     (`Action.restore`, `target` = its id).
+//!
 //!   * **Peek:** a plain floating box over the chip, in the normal text
 //!     size: [copy] [expand]  full branch name  [×]. The copy button
 //!     copies the text, which flashes white; a click on the text expands.
@@ -64,6 +70,8 @@ expanded: bool = false,
 /// Local branches (owned) and the ones matching the filter (indexes),
 /// in git's order.
 branches: std.ArrayList([]u8) = .empty,
+/// Session: the id of each entry of `branches` (its name).
+keys: std.ArrayList([]u8) = .empty,
 shown: std.ArrayList(usize) = .empty,
 filter: std.ArrayList(u8) = .empty,
 /// Selected entry of `shown` (keyboard), first visible row, row under
@@ -108,12 +116,12 @@ row_h: f32 = 1,
 rows: usize = 0,
 bar_h: f32 = 3,
 
-pub const Kind = enum { git, folder, focus };
+pub const Kind = enum { git, folder, focus, session };
 pub const State = enum { idle, busy, ok, err };
 pub const Part = enum { none, copy, expand, close };
 
 /// What App should do after an event.
-pub const Action = enum { none, redraw, copy, close, cd };
+pub const Action = enum { none, redraw, copy, close, cd, restore };
 
 /// Mouse away this long: the peek closes (the countdown bar). A setting.
 pub var dismiss_ms: u64 = 5000;
@@ -176,9 +184,42 @@ pub fn openFocus(gpa: std.mem.Allocator, uid: ids.Id, dir: []const u8, folders: 
     return p;
 }
 
-/// The marked entry: the current branch, or the window's folder.
+/// The session chip's list, already expanded: `names` with their `ids`
+/// (the last used last).
+pub fn openSessions(gpa: std.mem.Allocator, uid: ids.Id, names: []const []const u8, keys: []const []const u8, anchor: Rect) !Peek {
+    var p = try open(gpa, uid, "", "sessions", anchor);
+    errdefer p.deinit(undefined);
+    p.kind = .session;
+    p.expanded = true;
+    for (names, keys) |n, k| {
+        try p.branches.ensureUnusedCapacity(gpa, 1);
+        try p.keys.ensureUnusedCapacity(gpa, 1);
+        const name = try gpa.dupe(u8, n);
+        const key_copy = gpa.dupe(u8, k) catch |e| {
+            gpa.free(name);
+            return e;
+        };
+        p.branches.appendAssumeCapacity(name);
+        p.keys.appendAssumeCapacity(key_copy);
+    }
+    p.refilter();
+    return p;
+}
+
+/// A list with only a title over it (focus, session): nothing to copy or
+/// fold.
+fn listOnly(p: *const Peek) bool {
+    return p.kind == .focus or p.kind == .session;
+}
+
+/// The marked entry: the current branch, or the window's folder (a
+/// session list marks none).
 fn currentName(p: *const Peek) []const u8 {
-    return if (p.kind == .git) p.full else p.dir;
+    return switch (p.kind) {
+        .git => p.full,
+        .session => "",
+        else => p.dir,
+    };
 }
 
 /// How a folder of the focus list shows (and is filtered): under home
@@ -204,6 +245,8 @@ pub fn deinit(p: *Peek, reaper: *Process.Reaper) void {
     if (p.switch_run) |*r| r.deinit(p.gpa, reaper);
     for (p.branches.items) |b| p.gpa.free(b);
     p.branches.deinit(p.gpa);
+    for (p.keys.items) |k| p.gpa.free(k);
+    p.keys.deinit(p.gpa);
     p.shown.deinit(p.gpa);
     p.filter.deinit(p.gpa);
     p.err_msg.deinit(p.gpa);
@@ -260,6 +303,11 @@ fn pick(p: *Peek) Action {
     const name = p.branches.items[p.shown.items[p.sel]];
     p.err_msg.clearRetainingCapacity();
     p.gpa.free(p.target);
+    // Session: App restores the one with this id.
+    if (p.kind == .session) {
+        p.target = p.gpa.dupe(u8, p.keys.items[p.shown.items[p.sel]]) catch &.{};
+        return if (p.target.len > 0) .restore else .none;
+    }
     p.target = p.gpa.dupe(u8, name) catch &.{};
     p.state_ms = c.SDL_GetTicks();
     p.already = std.mem.eql(u8, name, p.currentName());
@@ -338,6 +386,7 @@ fn refilter(p: *Peek) void {
     };
     if (p.kind == .folder and p.filter.items.len == 0) p.sel = p.shown.items.len -| 2;
     // Focus: the newest one (bottom) that isn't the current folder.
+    if (p.kind == .session and p.shown.items.len > 0) p.sel = p.shown.items.len - 1;
     if (p.kind == .focus and p.shown.items.len > 0) {
         p.sel = p.shown.items.len - 1;
         if (p.sel > 0 and std.mem.eql(u8, p.branches.items[p.shown.items[p.sel]], p.currentName())) p.sel -= 1;
@@ -562,7 +611,7 @@ pub fn layout(p: *Peek, f: *const Gfx.Face, sf: *const Gfx.Face, ui: f32, bounds
     }
     var tx = p.expand_r.x + icon + 2 * gap;
     // Focus: only a title, nothing to copy or fold.
-    if (p.kind == .focus) {
+    if (p.listOnly()) {
         p.copy_r = .{};
         p.expand_r = .{};
         tx = x + pad + gap;
@@ -588,7 +637,7 @@ pub fn draw(p: *const Peek, gfx: *Gfx, theme: *const Theme, f: *Gfx.Face, sf: *G
     gfx.fill(b, theme.title_bg);
 
     // Header: [copy] [expand]  full text  [×] (folder: no copy)
-    if (p.kind != .focus) {
+    if (!p.listOnly()) {
         if (p.kind == .git) {
             JobWindow.copyIcon(gfx, p.copy_r, theme, ui);
             if (p.over == .copy) gfx.outline(p.copy_r, theme.title_fg, t);
@@ -598,7 +647,7 @@ pub fn draw(p: *const Peek, gfx: *Gfx, theme: *const Theme, f: *Gfx.Face, sf: *G
     JobWindow.closeIcon(gfx, p.close_r, theme, ui);
     gfx.clip(p.text_r);
     const hy = p.text_r.y + @round((p.text_r.h - f.cell_h) / 2);
-    const tend = gfx.text(f, p.text_r.x, hy, p.full, if (p.kind == .focus) theme.title_fg else theme.prompt_fg);
+    const tend = gfx.text(f, p.text_r.x, hy, p.full, if (p.listOnly()) theme.title_fg else theme.prompt_fg);
     if (p.flash_ms != 0 and p.flash_row == null) {
         const ft = now -| p.flash_ms;
         if (ft < flash_len_ms) {
@@ -629,7 +678,7 @@ pub fn draw(p: *const Peek, gfx: *Gfx, theme: *const Theme, f: *Gfx.Face, sf: *G
         const lr = p.list_r;
         gfx.clip(lr);
         if (p.shown.items.len == 0) {
-            const msg = if (p.kind == .focus) (if (p.branches.items.len == 0) "no focus folders yet" else "no folder matches") else if (p.kind == .folder) (if (p.branches.items.len == 0) "no folder above" else "no folder matches") else if (p.list_run != null) "loading branches…" else if (p.branches.items.len == 0) "no local branches" else "no branch matches";
+            const msg = if (p.kind == .session) (if (p.branches.items.len == 0) "no saved sessions" else "no session matches") else if (p.kind == .focus) (if (p.branches.items.len == 0) "no focus folders yet" else "no folder matches") else if (p.kind == .folder) (if (p.branches.items.len == 0) "no folder above" else "no folder matches") else if (p.list_run != null) "loading branches…" else if (p.branches.items.len == 0) "no local branches" else "no branch matches";
             _ = gfx.text(f, lr.x + f.cell_w * 2, lr.y + @round((p.row_h - f.cell_h) / 2), msg, theme.dim);
         }
         var k = p.top;
@@ -704,7 +753,11 @@ pub fn draw(p: *const Peek, gfx: *Gfx, theme: *const Theme, f: *Gfx.Face, sf: *G
 }
 
 fn filterHint(p: *const Peek) []const u8 {
-    return if (p.kind != .git) "filter folders" else "filter branches";
+    return switch (p.kind) {
+        .git => "filter branches",
+        .session => "filter sessions",
+        else => "filter folders",
+    };
 }
 
 /// A chevron: up (grow into the list) while collapsed, down once expanded.
@@ -817,4 +870,20 @@ test "focus peek: opens expanded, starts on the newest other folder, filters wit
         p.text(base);
         try t.expectEqual(@as(usize, 0), p.shown.items.len);
     }
+}
+
+test "session peek: opens expanded on the last used (bottom); a pick restores it by id" {
+    const t = std.testing;
+    var p = try Peek.openSessions(t.allocator, 1, &.{ "older", "newest" }, &.{ "id-1", "id-2" }, .{});
+    var reaper: Process.Reaper = .{ .gpa = t.allocator };
+    defer reaper.deinit();
+    defer p.deinit(&reaper);
+    try t.expect(p.wantsKeys());
+    try t.expectEqual(@as(usize, 1), p.sel);
+    try t.expectEqual(Action.restore, p.key(c.SDLK_RETURN));
+    try t.expectEqualStrings("id-2", p.target);
+    p.text("old");
+    try t.expectEqual(@as(usize, 1), p.shown.items.len);
+    try t.expectEqual(Action.restore, p.key(c.SDLK_RETURN));
+    try t.expectEqualStrings("id-1", p.target);
 }

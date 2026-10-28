@@ -9,16 +9,19 @@ by side or one click away.
 
 ## Install
 
-<!-- TODO: link the downloads once releases are published (codeberg.org/gttyterm/gtty, not created yet). -->
+Download from the **[latest release](https://github.com/gttyterm/gtty/releases/latest)**
+(each release lists its files and a `SHA256SUMS`):
 
-- **macOS** (Apple Silicon, 13+): download `gtty-<version>-macos.dmg` from
-  the releases page *(TODO: link)* and drag gtty to Applications.
-- **Linux** (x86_64): download `gtty-<version>-linux-x86_64.tar.gz` *(TODO:
-  link)*, then `tar xzf gtty-*-linux-x86_64.tar.gz && sudo ./gtty-*/install.sh`
-  (or `PREFIX=~/.local ./gtty-*/install.sh` for just you). `.deb` and
-  `.rpm` packages are built too *(TODO: link)*.
-- **Package managers:** *TODO* (no Homebrew tap or distro package yet).
+- **macOS** (Apple Silicon, 13+): `gtty-<version>-macos.dmg`; open it and
+  drag gtty to Applications.
+- **Debian / Ubuntu** (x86_64): `gtty_<version>_amd64.deb`, then
+  `sudo apt install ./gtty_*_amd64.deb`
+- **Fedora / RHEL / openSUSE** (x86_64): `gtty-<version>-1.x86_64.rpm`, then
+  `sudo dnf install ./gtty-*.x86_64.rpm` (openSUSE: `sudo zypper install …`)
 - **From source:** see [HACKING.md](HACKING.md) (Zig 0.16 + SDL3).
+
+To check a download: `shasum -a 256 -c SHA256SUMS --ignore-missing`
+(Linux: `sha256sum -c SHA256SUMS --ignore-missing`).
 
 ## Features
 
@@ -66,6 +69,20 @@ last seven at most, the newest at the bottom, right above the chip. Just looking
 like leave no trace, so the list stays short and useful. Click it (or
 ⌘3), type a few letters, press Enter, and you're there. Shared by every
 gtty window, kept between sessions.
+
+### Sessions: save your screen, bring it back
+
+![Three shells in shop, api and blog run pwd; Session ▸ Take Snapshot saves them; all closed, one fresh shell; the session chip's list brings the three back in their folders and places, and pwd says so](docs/images/sessions.webp)
+
+**Session ▸ Take Snapshot** saves the shells on your screen: each one's
+folder, where it sat, and for an ssh window the connection and the
+folder on the other side. Later, pick the session from the **session**
+chip (or ⌘4, or the Session menu) and they're all back at once: the
+same shells in the same folders, side by side as before; an ssh window
+connects again (a password is still yours to type) and goes back to its
+folder. **Session Manager…** shows each saved
+session as a picture of its screen. Sessions are shared by every gtty
+on the machine.
 
 ### Chips: folder and git branch
 

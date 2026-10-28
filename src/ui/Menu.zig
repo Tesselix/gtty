@@ -94,8 +94,8 @@ pub const Purpose = union(enum) {
 pub const open_with_other = -1;
 
 /// The drawn menu bar's menus, left to right.
-pub const Bar = enum { gtty, help };
-pub const bar_titles = [_][]const u8{ "gtty", "Help" };
+pub const Bar = enum { gtty, session, help };
+pub const bar_titles = [_][]const u8{ "gtty", "Session", "Help" };
 
 /// The right-click menu's rows, as `codes[i]` (a row's place depends on
 /// which rows the menu has).

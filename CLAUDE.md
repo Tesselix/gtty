@@ -110,8 +110,12 @@ the shell. Users expect it to behave like a shell in a terminal.
   from it. Left = content actions (copy when finished or a running shell, A−/A+ text size, the
   **color** pill: the word in colored letters, struck-through gray when
   off, the **sync** checkbox (box + the word, blue when checked; sync
-  typing, see below), the **files** folder icon), then serial badge `#N`, state dot, title; right =
-  status text, minimize, maximize, gap, red ×. After any close (×,
+  typing, see below), the **files** folder icon), then the **title area** (2026-10-28, `drawTitle`:
+  a slightly lighter band from the serial badge to the window actions or
+  the find box): serial badge `#N` and state dot on its left, the status
+  text on its right, the title (the command) **centered in the band**,
+  pushed aside when it would overlap them, cut when it doesn't fit; right =
+  minimize, maximize, gap, red ×. After any close (×,
   `close`, ⌘W; `App.closeWindow` sets `want_shell`), if no shell window is
   running any more (one being ended doesn't count), gtty opens a new one
   on the next frame (`ensureShell`). A shell that ends by itself (`exit`,
@@ -162,7 +166,7 @@ the shell. Users expect it to behave like a shell in a terminal.
   hidden once the job finished; decided 2026-10-08). The exit-code
   badge of a failed window sits in the strip's right end.
   - **Chip shortcuts** (2026-10-20; `App.chipKey` / `chipShortcut`):
-    ⌘1 folder, ⌘2 git, ⌘3 focus (Linux Ctrl+Shift+1…3; matched by
+    ⌘1 folder, ⌘2 git, ⌘3 focus, ⌘4 session (Linux Ctrl+Shift+1…4; matched by
     scancode, so Shift's `!` still counts) open the chip of the focused
     window, else the current one, **expanded** (`Peek.expand`: the list
     has the keys); the same key again or Esc closes it. Chip missing (or
@@ -228,6 +232,14 @@ the shell. Users expect it to behave like a shell in a terminal.
     uses (`Entry.added`), at start, on opening the list, ≤ every 10 s
     while dirty, at exit; script runs only with `GTTY_FOCUS`. Test:
     `test/focus.gt`.
+  - **Session chip** (2026-10-28; `session_chip_r`, two-windows icon +
+    `session`, after the focus chip, also in a remote session, only
+    while some session is saved, `JobWindow.has_sessions`, and only
+    when it fits in the footer): hover (`chip_hover_ms`) or a click
+    opens its list **already expanded** (`Peek.openSessions`, kind
+    `session`, `App.openSessionPeek`): the last 7 sessions used, the
+    last used at the bottom and selected; a pick = `Action.restore`
+    (`Peek.target` = the id) → `App.restoreSession`. See "gtty-sessions".
   - **Peek** (`src/ui/Peek.zig`, one at a time, `App.peek`): opens after
     0.5 s hover (`chip_hover_ms`) or a click; [copy] [expand ^] full branch
     [×]; grows up from the chip in the normal text size. Mouse away → 5 s
@@ -244,6 +256,60 @@ the shell. Users expect it to behave like a shell in a terminal.
     the default size; the git chip right after it), `/wait 900`; the
     expand icon is ~25 px right of the copy icon. The real mouse over
     gtty's window sends its own events and spoils such runs.
+- **gtty-sessions** (2026-10-28; `src/core/Sessions.zig`, App
+  "sessions" section, `src/ui/SessionsWindow.zig`): a snapshot of this
+  gtty's shell windows (`snapshotable`: running shells, or any window
+  with ssh / mosh in front; finished and command windows left out; the
+  jobs inside a shell are never saved). Per window (`snapWin`): place
+  (`main` / `shown` with its tile as fractions of the windows area, or
+  `grid` in the grid's newest-first order), shell name (the window's
+  title; command windows: the user's shell), uid of the program in
+  front (`gtty_proc_uid`, effective uid: `sudo -s` gives root) + user
+  name, folder (`JobWindow.folder`; another user's shell: its own cwd
+  when readable); ssh / mosh: host (`remote.sessionOf`), remote folder
+  (`remoteCwd` when the link knew it), command line (the front ssh's argv,
+  quoted only when needed, `writeArg`; mosh: `mosh <dest>`), local folder
+  = `link_cwd`. Name: `Sessions.autoName`, the date-time only
+  ("Oct 28 14:05"; renamed in the manager). **File** shared by all gttys:
+  `$GTTY_SESSIONS`, else `$XDG_STATE_HOME/gtty/sessions`, else
+  `~/.local/state/gtty/sessions` (0600; `S` / `W` lines, values
+  escaped); every change = `reload` + change + `save` (temp + rename);
+  `refresh` (stat: mtime + size) once a second (`tickSessions`) →
+  `sessionsChanged` (chip on / off, manager list, an open session peek
+  closes); ≤ 100 kept (least recently used go); script runs only with
+  `GTTY_SESSIONS` (else in memory). **Session menu** (top level, between
+  gtty and Help; `GTTY_MENU_SNAPSHOT` / `_SESSIONS` / `_SESSION_FIRST`
+  + 0…6): Take Snapshot (dimmed with nothing to save), Session
+  Manager…, separator, the last 7 used (macOS: rebuilt in
+  `menuNeedsUpdate:` through `gtty_menu_install`'s `title` callback,
+  `App.menuTitle`; the drawn bar: `barRows(.session)`; both from
+  `fillMenuSessions`, ids kept in `menu_sessions` for the pick).
+  **Restore** (`restoreSession`): **replaces** this gtty's windows (the
+  user's choice); windows still working (`!atPrompt`, named by the
+  program in front, `frontName`) → the modal first (`ModalJob.restore`,
+  Cancel / Restore danger, safe Cancel); `doRestore`: `touch` (last
+  used), every job closed (`closeJob`, no `want_shell`), each window's
+  shell opened in its folder (gone: home, counted in the notice; the
+  user's own shell = the login shell; a shell not there: the user's),
+  `shell_opens` cleared, then `main` / `extras` / `main_slot` set back
+  (capacity permitting; `arranged` when the current window wasn't the
+  first tile), grid order through `last_activity_ms`. **Restore steps**
+  (`RestoreStep`, `tickRestore`): ssh / mosh: the command line typed +
+  run once the shell is at its prompt (no hooks: after 4 s), then `cd --
+  '<remote folder>'` once the window's link is ready and the remote
+  shell idle (≤ 10 min: a password is the user's; link failed: notice);
+  another user (local): `sudo -u <user> -s` typed, **not run**.
+  **Session Manager** (`SessionsWindow`, own OS window like Settings,
+  `App.sessions_win`, events routed by window id): list on the left
+  (last used first; name, windows, last used), the picture on the right
+  (the windows area at the saved aspect + a ninth for the grid column;
+  each tile: command (· user when another), host for ssh, folder; wrapped
+  at the tile's width, clipped; current window's frame blue), hover a
+  tile = every saved field, one line each, unwrapped (`drawDetails`).
+  Enter / double click / Restore → `want_restore` → App; F2 / Rename:
+  inline edit (Enter keeps, Esc drops); Delete / Backspace / the button:
+  twice within 3 s (`Sure?`). Tests: `test/sessions.gt`,
+  `test/sessions-ssh.gt` (stand-in ssh; the restored ssh is the real one).
 - **File actions** (added 2026-10-07; App "file actions" section) on an
   outlined local name (file or folder), or on the names ⌘-clicked
   (Ctrl-click on Linux; `App.file_sel`: window + text range + path,
@@ -393,6 +459,12 @@ the shell. Users expect it to behave like a shell in a terminal.
   prompt after running a command (`JobWindow.lastInput`: the command line
   read back at the hooks' C mark, `Screen.lastCommand`, ≤ 1 KB); copies
   it (`toClipboard`). Test: `test/copyinput.gt`.
+- **Left title-bar actions look clickable** (2026-10-28): each has a
+  lighter gray face than the title bar (`JobWindow.actionBg`); the one
+  under the mouse lights up more with a thin frame and the pointer is a
+  hand (`over_action`, set in `hover` only when `actionLive`: not A− at
+  100%, A+ at the largest, the folder button in a remote session, the
+  locked checkbox; `overAction` → `App.updateCursor`).
 - **Tooltips** on the left title-bar actions (checkbox, copy, A−, A+,
   color, sync, files) after 0.5 s hover (`JobWindow.tip`, `App.updateTip`/`drawTip`).
 - **Text:** mouse selection (drag, double/triple click), ⌘C (Ctrl+Shift+C on
@@ -634,8 +706,9 @@ the shell. Users expect it to behave like a shell in a terminal.
   it would open (`test/show.gt`). Linux side compiles but is untested
   (picker: mimeinfo.cache, `gio launch` / `gtk-launch`).
 - **Menu bar** (mouse; shortcuts could clash with the jobs' keys): menus
-  **gtty** (About gtty, Settings…, New Window, New Shell, Run command, Sync Typing)
-  and **Help** (gtty Help, ⌘? on macOS; see "Help"). **No Edit
+  **gtty** (About gtty, Settings…, New Window, New Shell, Run command, Sync Typing),
+  **Session** (Take Snapshot, Session Manager…, the last 7 sessions; see
+  "gtty-sessions") and **Help** (gtty Help, ⌘? on macOS; see "Help"). **No Edit
   menu** (removed 2026-10-07: with several job windows its Copy / Paste
   were confusing): ⌘C / ⌘V / ⌘A (Linux Ctrl+Shift+C / V / A) are plain
   keys (`copySelection`, `pasteKey`, `selectAll`). **About gtty** (`GTTY_MENU_ABOUT`; macOS: SDL's
@@ -930,9 +1003,10 @@ decisions; items marked *open* are undecided.
   is typed into the prompt; hooks run directly: `/wait ms`, `/shot x.bmp`
   (screenshot; convert with `sips -s format png`), `/type text` (text + Enter
   through the real keyboard path), `/click x y` (real mouse event, window coords), `/dclick x y` (double click), `/down x y` / `/up x y` (left button), `/rclick x y` (right click), `/move x y` (mouse move, no button: hover / tooltips), `/drag x1 y1 x2 y2` (press, move, release), `/text text` (typed, no Enter; each ASCII character's key down first, as a keyboard sends it, `scriptTyping`),
-  `/key ctrl+shift+left` (a key with modifiers: ctrl shift alt cmd + left right up down home end backspace delete enter escape tab c v x insert a n t f period pageup pagedown f2 1 2 3), `/resize w h`
-  (gtty's OS window), `/menu run|settings|new-shell|new-window|sync-typing|about|help` (a menu pick; macOS
-  menus can't be clicked from a script), `/target main|settings` (where
+  `/key ctrl+shift+left` (a key with modifiers: ctrl shift alt cmd + left right up down home end backspace delete enter escape tab c v x insert a n t f period pageup pagedown f2 1 2 3 4), `/resize w h`
+  (gtty's OS window), `/menu run|settings|new-shell|new-window|sync-typing|about|help|snapshot|sessions|session-N` (a menu pick; macOS
+  menus can't be clicked from a script; session-N = the Session menu's
+  Nth session), `/target main|settings|sessions` (where
   the next /click /move /drag /text /key /type /shot go), `/mods
   cmd+shift|none` (modifier keys held, via SDL_SetModState), `/quit`. macOS blocks synthetic keystrokes (osascript), so use
   these. A shell window needs ~1.5 s (`/wait 1500`) before typing into it.
@@ -961,7 +1035,10 @@ decisions; items marked *open* are undecided.
   q 80; `GTTY_DEMO_QUALITY`). Sizes: all 1200×760 (the hero too since 2026-10-28: three windows fit
   on one screen only at that height).
   README order (2026-10-21, the user's): everyday shell work first (edit,
-  copy, files), then the chips (focus first), windows, sync.
+  copy, files), then focus, sessions (2026-10-28: `sessions.gt`, three
+  shells run pwd, snapshot, `/close all`, the session chip's list
+  restores them, pwd again; the session chip ~400,644 in `shop`), the
+  folder / git chips, windows, sync.
   Needs a display (the window shows while it records; keep the mouse off
   it) and overwrites the clipboard. After UI changes, check the
   coordinates in the scripts (1200×760: text rows y 53 + 22 n, columns
@@ -1015,6 +1092,9 @@ decisions; items marked *open* are undecided.
   `src/sys/gtty_finder.{m,c}` — Show in Finder / Get Info (see "Finder
   rows");
   `src/sys/gtty_copy.c` — copying dropped files in the background.
+- `src/core/Sessions.zig` — gtty-sessions: the saved snapshots and their
+  shared file (pure + file, unit-tested); `src/ui/SessionsWindow.zig` —
+  the Session Manager window.
 - `src/ui/SettingsWindow.zig` — the settings window; `src/core/Config.zig`
   — settings file (parse / format unit-tested); `src/sys/gtty_menu.m` / `.c` — native menu (macOS) /
   none.

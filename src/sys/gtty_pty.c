@@ -332,6 +332,33 @@ long gtty_proc_cwd(int pid, char *buf, unsigned long len) {
 // ---------------------------------------------------------------- looking
 // at other processes (remote sessions: the user's ssh, read-only)
 
+long gtty_proc_uid(int pid) {
+    if (pid <= 0) return -1;
+#if defined(__APPLE__)
+    struct kinfo_proc kp;
+    size_t size = sizeof kp;
+    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, pid};
+    if (sysctl(mib, 4, &kp, &size, NULL, 0) != 0 || size != sizeof kp) return -1;
+    return (long)kp.kp_eproc.e_ucred.cr_uid;
+#else
+    char p[64];
+    snprintf(p, sizeof p, "/proc/%d/status", pid);
+    FILE *f = fopen(p, "r");
+    if (!f) return -1;
+    char line[256];
+    long uid = -1;
+    while (fgets(line, sizeof line, f)) {
+        unsigned long real, eff;
+        if (sscanf(line, "Uid: %lu %lu", &real, &eff) == 2) {
+            uid = (long)eff;
+            break;
+        }
+    }
+    fclose(f);
+    return uid;
+#endif
+}
+
 int gtty_fg_pid(int master) {
     if (master < 0) return -1;
     pid_t pg = tcgetpgrp(master);

@@ -1,0 +1,53 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# gtty-sessions with an ssh window and the job grid, restored while a job
+# still works (the question first), with the stand-in ssh (the "remote
+# machine" is this one). Run from a scratch folder (macOS, 1x display):
+#   cc -o $REPO/test/fake-ssh/bin/ssh $REPO/test/fake-ssh/ssh.c
+#   S=$(mktemp -d); mkdir -p $S/home/alpha $S/home/beta $S/home/gamma
+#   sed "s|@REPO@|$REPO|" $REPO/test/sessions-ssh.gt > $S/t.gt
+#   cd $S && HOME=$S/home GTTY_SESSIONS=$S/sessions gtty --script t.gt
+#   pkill -f "sshd: $USER@"     # the stand-in sshd processes it left
+# Shots: 1 the snapshot's chip, 2 the manager (gamma in the grid column,
+# the ssh tile with its host), 3 the restore question (#1 runs sleep),
+# 4 restored: the ssh command typed and run again (the restored shell
+# has no stand-in on its PATH: the real ssh can't find `box`), gamma in
+# the grid.
+/s bash
+/wait 1500
+/type cd ~/alpha
+/s bash
+/wait 1500
+/type export PATH=@REPO@/test/fake-ssh/bin:$PATH; clear
+/wait 500
+/type ssh -p 2222 me@box
+/wait 1500
+/type cd ~/beta
+/wait 3500
+/s bash
+/wait 1500
+/type cd ~/gamma
+/wait 500
+/click 1026 22
+/wait 800
+/menu snapshot
+/wait 800
+/shot ssh1-chip.bmp
+/menu sessions
+/wait 800
+/target sessions
+/shot ssh2-manager.bmp
+/key escape
+/target main
+/wait 400
+/focus 1
+/wait 300
+/type sleep 100
+/wait 400
+/menu session-1
+/wait 600
+/shot ssh3-question.bmp
+/key enter
+/wait 8000
+/shot ssh4-restored.bmp
+/quit

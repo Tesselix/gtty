@@ -39,6 +39,9 @@ const tiling = @import("ui/tiling.zig");
 const Ai = @import("ai/Ai.zig");
 const Memory = @import("ai/Memory.zig");
 const FocusFolders = @import("core/FocusFolders.zig");
+const Sessions = @import("core/Sessions.zig");
+const SessionsWindow = @import("ui/SessionsWindow.zig");
+const remote = @import("core/remote.zig");
 const Handoff = @import("core/Handoff.zig");
 
 const App = @This();
@@ -244,7 +247,7 @@ script: std.ArrayList([]u8) = .empty,
 script_pos: usize = 0,
 script_next: u64 = 0,
 /// `/target`: the OS window script hooks act on.
-script_target: enum { main, settings } = .main,
+script_target: enum { main, settings, sessions } = .main,
 /// `/pace`: the gap between script lines.
 script_gap_ms: u64 = 400,
 /// Where the script's mouse is (window pixels), the button it holds and
@@ -399,6 +402,19 @@ memory_saved_ms: u64 = 0,
 focus_folders: FocusFolders,
 focus_file: bool = false,
 focus_synced_ms: u64 = 0,
+/// The saved gtty-sessions (Session menu, session chip, Session
+/// Manager), from the file shared by all gtty processes (read again when
+/// it changed, `tickSessions`); kept only in memory in test scripts
+/// unless GTTY_SESSIONS says where.
+sessions: Sessions,
+sessions_checked_ms: u64 = 0,
+/// The Session Manager, while open.
+sessions_win: ?*SessionsWindow = null,
+/// The sessions the menus show (`fillMenuSessions`).
+menu_sessions: [Sessions.shown_max]MenuSession = @splat(.{}),
+menu_sessions_n: usize = 0,
+/// A restore's windows waiting to be typed into (ssh, sudo, remote cd).
+restore_steps: std.ArrayList(RestoreStep) = .empty,
 /// New Window: the new gtty's process, yielded the front to until this
 /// time (`tickFront`); in the new gtty, asking for the front until
 /// `front_until` (0: done).
@@ -444,7 +460,7 @@ pub fn create(gpa: std.mem.Allocator, opts: Options) !*App {
     // The gtty menu: in the system menu bar (macOS), else drawn by gtty.
     // GTTY_MENU_BAR=1 draws it on macOS too (to test the Linux look).
     const menu_event = c.SDL_RegisterEvents(1);
-    const native_menu = menu_event != 0 and c.getenv("GTTY_MENU_BAR") == null and c.gtty_menu_install(menu_event, menuEnabled, menuChecked);
+    const native_menu = menu_event != 0 and c.getenv("GTTY_MENU_BAR") == null and c.gtty_menu_install(menu_event, menuEnabled, menuChecked, menuTitle);
 
     const app = try gpa.create(App);
     app.* = .{
@@ -471,10 +487,16 @@ pub fn create(gpa: std.mem.Allocator, opts: Options) !*App {
         .memory_file = opts.save_config or c.getenv("GTTY_AI_MEMORY") != null,
         .focus_folders = .init(gpa),
         .focus_file = opts.save_config or c.getenv("GTTY_FOCUS") != null,
+        .sessions = .init(gpa),
         .quit_on_last_shell = opts.cfg.quit_on_last_shell and (opts.script == null or opts.save_config),
     };
     if (app.memory_file) app.memory.load();
     if (app.focus_file) app.focus_folders.sync();
+    if (opts.save_config or c.getenv("GTTY_SESSIONS") != null) {
+        var pbuf: [4096]u8 = undefined;
+        if (Sessions.path(&pbuf)) |sp| app.sessions.open(sp);
+    }
+    JobWindow.has_sessions = app.sessions.list.items.len > 0;
     app.prompt.pinned = opts.cfg.prompt_pinned;
     menu_app = app;
     JobWindow.sync_hook = .{ .ctx = app, .f = syncMirror };
@@ -518,6 +540,10 @@ pub fn destroy(app: *App) void {
     if (app.focus_file and app.focus_folders.dirty) app.focus_folders.sync();
     app.focus_folders.deinit();
     if (app.settings) |sw| sw.close();
+    if (app.sessions_win) |sw| sw.close();
+    for (app.restore_steps.items) |st| st.free(app.gpa);
+    app.restore_steps.deinit(app.gpa);
+    app.sessions.deinit();
     if (app.fetch) |*f| f.job.deinit(app.gpa);
     for (app.jobs.items) |w| w.destroy(&app.reaper);
     app.jobs.deinit(app.gpa);
@@ -672,6 +698,7 @@ pub fn run(app: *App) void {
             app.dirty = true;
         }
         app.tickSettings();
+        app.tickSessions();
         app.tickRemote();
         app.tickAi();
         app.tickPrompt();
@@ -2440,7 +2467,12 @@ fn menuPick(app: *App, code: i32) void {
             app.dirty = true;
         },
         c.GTTY_MENU_HELP => app.openHelp(),
-        else => {},
+        c.GTTY_MENU_SNAPSHOT => app.takeSnapshot(),
+        c.GTTY_MENU_SESSIONS => app.openSessionsWindow(),
+        else => if (code >= c.GTTY_MENU_SESSION_FIRST and code < c.GTTY_MENU_SESSION_FIRST + c.GTTY_MENU_SESSION_MAX) {
+            app.closeMenu();
+            app.pickMenuSession(@intCast(code - c.GTTY_MENU_SESSION_FIRST));
+        },
     }
 }
 
@@ -2462,6 +2494,7 @@ fn menuChecked(code: c_int) callconv(.c) bool {
 fn menuRowEnabled(app: *App, code: c_int) bool {
     return switch (code) {
         c.GTTY_MENU_SYNC_TYPING => app.sync_src != null or app.canSync(app.currentJob()),
+        c.GTTY_MENU_SNAPSHOT => app.snapshotCount() > 0,
         else => true,
     };
 }
@@ -2479,7 +2512,7 @@ fn menuOwnsKey(app: *App, key: c.SDL_Keycode, mod: c.SDL_Keymod) bool {
     return app.menuRowEnabled(code);
 }
 
-/// A chip shortcut: ⌘1…3 on macOS, Ctrl+Shift+1…3 elsewhere (the number
+/// A chip shortcut: ⌘1…4 on macOS, Ctrl+Shift+1…4 elsewhere (the number
 /// row's key, whatever Shift makes of it); the chip's number.
 fn chipKey(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?u8 {
     const cmd = mod & c.SDL_KMOD_GUI != 0;
@@ -2492,6 +2525,7 @@ fn chipKey(key: c.SDL_Keycode, mod: c.SDL_Keymod) ?u8 {
         c.SDL_SCANCODE_1 => 1,
         c.SDL_SCANCODE_2 => 2,
         c.SDL_SCANCODE_3 => 3,
+        c.SDL_SCANCODE_4 => 4,
         else => null,
     };
 }
@@ -2573,7 +2607,7 @@ fn findBoxKey(app: *App, w: *JobWindow, key: c.SDL_Keycode, ctrl: bool, cmd: boo
     return true;
 }
 
-/// Open chip `n` (1 folder, 2 git, 3 focus) of the focused window, else
+/// Open chip `n` (1 folder, 2 git, 3 focus, 4 session) of the focused window, else
 /// the current one, expanded (the keyboard goes to its list; Esc gives it
 /// back); its peek already open: closed. A chip not there: beep + why.
 fn chipShortcut(app: *App, n: u8) void {
@@ -2585,13 +2619,15 @@ fn chipShortcut(app: *App, n: u8) void {
     const kind: Peek.Kind = switch (n) {
         1 => .folder,
         2 => .git,
-        else => .focus,
+        3 => .focus,
+        else => .session,
     };
     if (app.peek) |pk| if (pk.uid == w.uid and pk.kind == kind) return app.closePeek();
     const r = switch (kind) {
         .folder => w.folder_chip_r,
         .git => w.git_chip_r,
         .focus => w.focus_chip_r,
+        .session => w.session_chip_r,
     };
     if (r.w == 0 or (kind == .git and w.branch() == null)) {
         beep.beep();
@@ -2599,12 +2635,14 @@ fn chipShortcut(app: *App, n: u8) void {
             .folder => "no folder chip here",
             .git => "not in a git repository",
             .focus => "no focus chip here",
+            .session => "no saved sessions (Session ▸ Take Snapshot)",
         }, app.theme.dim);
     }
     switch (kind) {
         .folder => app.openFolderPeek(i),
         .git => app.openGitPeek(i),
         .focus => app.openFocusPeek(i),
+        .session => app.openSessionPeek(i),
     }
     if (app.peek) |*pk| if (pk.uid == w.uid) {
         pk.expand();
@@ -2671,6 +2709,15 @@ fn barRows(app: *App, which: Menu.Bar, rows: *[Menu.max_rows]Menu.Row, codes: *[
             Add(rows, codes, &n, .{ .label = "New Shell", .key = Menu.new_shell_key }, c.GTTY_MENU_NEW_SHELL);
             Add(rows, codes, &n, .{ .label = "Run command" }, c.GTTY_MENU_RUN);
             Add(rows, codes, &n, .{ .label = "Sync typing", .key = if (app.sync_src != null) "✓" else "", .enabled = app.menuRowEnabled(c.GTTY_MENU_SYNC_TYPING) }, c.GTTY_MENU_SYNC_TYPING);
+        },
+        .session => {
+            Add(rows, codes, &n, .{ .label = "Take Snapshot", .enabled = app.menuRowEnabled(c.GTTY_MENU_SNAPSHOT) }, c.GTTY_MENU_SNAPSHOT);
+            Add(rows, codes, &n, .{ .label = "Session Manager…" }, c.GTTY_MENU_SESSIONS);
+            Add(rows, codes, &n, Menu.separator, 0);
+            app.fillMenuSessions();
+            if (app.menu_sessions_n == 0) Add(rows, codes, &n, .{ .label = "No saved sessions", .enabled = false }, 0);
+            for (app.menu_sessions[0..app.menu_sessions_n], 0..) |*m, k|
+                Add(rows, codes, &n, .{ .label = m.name[0..m.name_len] }, c.GTTY_MENU_SESSION_FIRST + @as(i32, @intCast(k)));
         },
         .help => Add(rows, codes, &n, .{ .label = "gtty Help" }, c.GTTY_MENU_HELP),
     }
@@ -3118,6 +3165,7 @@ fn peekChip(w: *const JobWindow, kind: Peek.Kind) Gfx.Rect {
         .git => w.git_chip_r,
         .folder => w.folder_chip_r,
         .focus => w.focus_chip_r,
+        .session => w.session_chip_r,
     };
 }
 
@@ -3180,6 +3228,567 @@ fn tickFocus(app: *App) void {
     }
 }
 
+// ------------------------------------------------------------ sessions
+
+/// A step of a restore that waits for its window: `text` is typed once
+/// the shell waits at its prompt (`enter`: and run); then, with `rdir`,
+/// `cd` to it is typed into the remote shell once gtty's own connection
+/// sees that shell waiting for a command.
+const RestoreStep = struct {
+    window: ids_mod.Id,
+    text: []u8,
+    enter: bool,
+    rdir: []u8,
+    state: enum { prompt, remote } = .prompt,
+    since: u64,
+    until: u64,
+
+    fn free(st: RestoreStep, gpa: std.mem.Allocator) void {
+        gpa.free(st.text);
+        gpa.free(st.rdir);
+    }
+};
+/// A restored shell has this long to come to its prompt.
+const restore_prompt_ms = 20_000;
+/// A shell without gtty's hooks never says it is at its prompt: typed
+/// into after this long.
+const restore_nohooks_ms = 4_000;
+/// The ssh login (a password, a slow network) has this long.
+const restore_remote_ms = 600_000;
+
+/// The session menu's list as last shown (the system menu asks the rows
+/// one by one; a pick names its row): ids and names.
+const MenuSession = struct {
+    id: [64]u8 = undefined,
+    id_len: usize = 0,
+    name: [160]u8 = undefined,
+    name_len: usize = 0,
+};
+
+/// A window that goes into a snapshot: a running shell, or a running
+/// window with an ssh / mosh session in front. Finished windows and
+/// command windows are left out (a session keeps shells, not jobs).
+fn snapshotable(w: *JobWindow) bool {
+    if (!w.running() or w.ending()) return false;
+    if (w.kind == .shell) return true;
+    var buf: [4096]u8 = undefined;
+    return w.remoteNow(&buf) != null;
+}
+
+fn snapshotCount(app: *App) usize {
+    var n: usize = 0;
+    for (app.jobs.items) |w| {
+        if (snapshotable(w)) n += 1;
+    }
+    return n;
+}
+
+/// An argument for a POSIX shell: as it is when it is plain, else quoted.
+fn writeArg(out: *std.Io.Writer, a: []const u8) !void {
+    const plain = a.len > 0 and for (a) |ch| {
+        if (!(std.ascii.isAlphanumeric(ch) or std.mem.indexOfScalar(u8, "@%+=:,./_-", ch) != null)) break false;
+    } else true;
+    if (plain) return out.writeAll(a);
+    try remote.shQuote(out, a);
+}
+
+/// The program in front in window `w` (its name: "sleep", "ssh"), else
+/// the window's title. Valid until the next call.
+fn frontName(w: *JobWindow) []const u8 {
+    const S = struct {
+        var buf: [4096]u8 = undefined;
+    };
+    const n = c.gtty_fg_args(w.proc.out_fd, &S.buf, S.buf.len);
+    if (n <= 0) return w.title;
+    const first = std.mem.sliceTo(S.buf[0..@intCast(n)], 0);
+    return if (first.len > 0) std.fs.path.basename(first) else w.title;
+}
+
+/// What a snapshot keeps of window `w` (strings in `a`): its shell, the
+/// folder, the user the program in front runs as; an ssh / mosh session:
+/// the command line, the host, the folder over there.
+fn snapWin(app: *App, a: std.mem.Allocator, w: *JobWindow, place: Sessions.Place, tile: [4]f32) ?Sessions.WinSpec {
+    _ = app;
+    var abuf: [16384]u8 = undefined;
+    const na = c.gtty_fg_args(w.proc.out_fd, &abuf, abuf.len);
+    const fg = if (na > 0) abuf[0..@intCast(na)] else "";
+    const sess = if (fg.len > 0) remote.sessionOfNul(fg) else remote.sessionOfLine(w.title);
+    const fg_pid = c.gtty_fg_pid(w.proc.out_fd);
+    const uid_l = c.gtty_proc_uid(if (fg_pid > 0) fg_pid else w.proc.pid);
+    const uid: u32 = if (uid_l >= 0) @intCast(uid_l) else c.getuid();
+    const user: []const u8 = if (c.getpwuid(uid)) |pw| std.mem.span(pw.*.pw_name) else "";
+    var spec: Sessions.WinSpec = .{
+        .place = place,
+        .x = std.math.clamp(tile[0], 0, 1),
+        .y = std.math.clamp(tile[1], 0, 1),
+        .w = std.math.clamp(tile[2], 0, 1),
+        .h = std.math.clamp(tile[3], 0, 1),
+        .shell = a.dupe(u8, if (w.kind == .shell) w.title else std.fs.path.basename(userShell())) catch return null,
+        .uid = uid,
+        .user = a.dupe(u8, user) catch return null,
+        .folder = "",
+    };
+    var fbuf: [4096]u8 = undefined;
+    var folder = w.folder(&fbuf);
+    // Another user's shell (sudo -s): its own folder when it can be read.
+    if (uid != c.getuid() and fg_pid > 0) {
+        var ubuf: [4096]u8 = undefined;
+        const n = c.gtty_proc_cwd(fg_pid, &ubuf, ubuf.len);
+        if (n > 0) folder = a.dupe(u8, ubuf[0..@intCast(n)]) catch folder;
+    }
+    if (sess) |s| {
+        spec.kind = if (s.kind == .mosh) .mosh else .ssh;
+        spec.host = a.dupe(u8, s.dest) catch return null;
+        if (w.link_cwd.len > 0) folder = w.link_cwd;
+        if (std.mem.eql(u8, w.remoteDest(), s.dest)) spec.rfolder = a.dupe(u8, w.remoteCwd()) catch "";
+        var aw: std.Io.Writer.Allocating = .init(a);
+        if (s.kind == .mosh or fg.len == 0) {
+            if (fg.len == 0) {
+                aw.writer.writeAll(w.title) catch return null;
+            } else {
+                aw.writer.writeAll("mosh ") catch return null;
+                writeArg(&aw.writer, s.dest) catch return null;
+            }
+        } else {
+            var argv: [64][]const u8 = undefined;
+            for (remote.splitNul(fg, &argv), 0..) |arg, k| {
+                if (k > 0) aw.writer.writeByte(' ') catch return null;
+                writeArg(&aw.writer, arg) catch return null;
+            }
+        }
+        spec.cmd = aw.written();
+    }
+    spec.folder = a.dupe(u8, folder) catch return null;
+    return spec;
+}
+
+/// Session ▸ Take Snapshot: every shell window of this gtty (in the
+/// windows area and in the job grid), saved as a new session in the file
+/// all gttys share.
+fn takeSnapshot(app: *App) void {
+    app.closeMenu();
+    var arena = std.heap.ArenaAllocator.init(app.gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var specs: std.ArrayList(Sessions.WinSpec) = .empty;
+    const area = app.layoutFor(app.gridCount()).main;
+    const main_w: ?*JobWindow = if (app.main) |m| app.jobs.items[m] else null;
+    var obuf: [64]*JobWindow = undefined;
+    for (app.shownOrder(&obuf)) |w| {
+        if (!snapshotable(w)) continue;
+        const r = w.rect;
+        const tile = [4]f32{ (r.x - area.x) / area.w, (r.y - area.y) / area.h, r.w / area.w, r.h / area.h };
+        const s = app.snapWin(a, w, if (w == main_w) .main else .shown, tile) orelse continue;
+        specs.append(a, s) catch return;
+    }
+    // The job grid, newest first.
+    var gbuf: [64]usize = undefined;
+    const grid, _ = app.gridJobs(&gbuf);
+    if (app.grid_oldest_first) std.mem.reverse(usize, grid);
+    for (grid) |i| {
+        const w = app.jobs.items[i];
+        if (!snapshotable(w)) continue;
+        const s = app.snapWin(a, w, .grid, .{ 0, 0, 0, 0 }) orelse continue;
+        specs.append(a, s) catch return;
+    }
+    if (specs.items.len == 0) {
+        beep.beep();
+        return app.say("snapshot: no shell window to save", app.theme.stderr_accent);
+    }
+    // The current window left out (finished): the first shown one is it.
+    const has_main = for (specs.items) |s| {
+        if (s.place == .main) break true;
+    } else false;
+    if (!has_main) for (specs.items) |*s| if (s.place == .shown) {
+        s.place = .main;
+        break;
+    };
+    var nbuf: [200]u8 = undefined;
+    const name = Sessions.autoName(&nbuf, Sessions.now());
+    var ibuf: [64]u8 = undefined;
+    const id = app.sessions.newId(&ibuf);
+    app.sessions.reload();
+    _ = app.sessions.add(id, name, area.w / @max(area.h, 1), specs.items) catch {
+        beep.beep();
+        return app.say("snapshot: out of memory", app.theme.stderr_accent);
+    };
+    app.saveSessions();
+    app.sessionsChanged();
+    app.sayFmt("session saved: {s} ({d} window{s})", .{ name, specs.items.len, if (specs.items.len == 1) "" else "s" }, app.theme.ok);
+}
+
+fn saveSessions(app: *App) void {
+    if (!app.sessions.save()) app.say("could not save the sessions file", app.theme.stderr_accent);
+}
+
+/// The sessions changed (here, in the manager, or in another gtty): the
+/// session chip shows while there are some; the manager's list and an
+/// open session list follow.
+fn sessionsChanged(app: *App) void {
+    const has = app.sessions.list.items.len > 0;
+    if (has != JobWindow.has_sessions) {
+        JobWindow.has_sessions = has;
+        for (app.jobs.items) |w| w.layoutChips(&app.gfx);
+    }
+    if (app.sessions_win) |sw| sw.listChanged();
+    if (app.peek) |pk| if (pk.kind == .session) app.closePeek();
+    app.dirty = true;
+}
+
+/// Restore session `id` (the menu, the chip's list, the manager): it
+/// replaces this gtty's windows. Jobs still working there (a command, a
+/// shell running one, an ssh session) are named in a question first.
+fn restoreSession(app: *App, id: []const u8) void {
+    app.closeMenu();
+    app.closePeek();
+    app.sessions.reload();
+    const x = app.sessions.find(id) orelse {
+        beep.beep();
+        return app.say("that session is gone (deleted in another gtty?)", app.theme.stderr_accent);
+    };
+    var busy: usize = 0;
+    var lbuf: [400]u8 = undefined;
+    var list: std.Io.Writer = .fixed(&lbuf);
+    for (app.jobs.items) |w| if (w.running() and !w.ending() and !w.atPrompt()) {
+        busy += 1;
+        if (busy <= 4) list.print("{s}#{d} {s}", .{ if (busy > 1) ", " else "", w.serial, frontName(w) }) catch {};
+    };
+    if (busy == 0) return app.doRestore(id);
+    if (busy > 4) list.print(", +{d}", .{busy - 4}) catch {};
+    var tbuf: [240]u8 = undefined;
+    const title = std.fmt.bufPrint(&tbuf, "Restore {s}?", .{x.name}) catch "Restore the session?";
+    var bbuf: [700]u8 = undefined;
+    const body = std.fmt.bufPrint(&bbuf, "It replaces this gtty's {d} window{s}.\n{d} still working will be ended: {s}", .{ app.jobs.items.len, if (app.jobs.items.len == 1) "" else "s", busy, list.buffered() }) catch "It replaces this gtty's windows.";
+    const copy = app.gpa.dupe(u8, id) catch return;
+    app.openModal(.{
+        .title = title,
+        .body = body,
+        .buttons = &.{ .{ .label = "Cancel" }, .{ .label = "Restore", .kind = .danger } },
+        .default = 1,
+        .safe = 0,
+    }, .{ .restore = .{ .id = copy, .window = 0 } });
+}
+
+/// Replace every window with session `id`'s: each window's shell opens in
+/// its folder (gone: home); the windows go back where they were (the
+/// windows area's tiles as far as they fit, the job grid in its order).
+/// ssh / mosh: the command line runs once the shell is at its prompt,
+/// then `cd` to the remote folder (`tickRestore`). Another user: `sudo -u
+/// <user> -s` typed, not run.
+fn doRestore(app: *App, id: []const u8) void {
+    app.sessions.reload();
+    const x = app.sessions.find(id) orelse return app.say("that session is gone", app.theme.stderr_accent);
+    _ = app.sessions.touch(id);
+    app.saveSessions();
+    var nbuf: [160]u8 = undefined;
+    const name = nbuf[0..@min(x.name.len, nbuf.len)];
+    @memcpy(name, x.name[0..name.len]);
+
+    for (app.restore_steps.items) |st| st.free(app.gpa);
+    app.restore_steps.clearRetainingCapacity();
+    app.closeMenu();
+    app.closePeek();
+    while (app.jobs.items.len > 0) app.closeJob(app.jobs.items.len - 1);
+    app.want_shell = false;
+    app.arranged = false;
+    app.main_slot = 0;
+
+    var opened: [64]?*JobWindow = @splat(null);
+    var missing: usize = 0;
+    const wins = x.wins.items[0..@min(x.wins.items.len, opened.len)];
+    for (wins, 0..) |*win, k| opened[k] = app.restoreWin(win, &missing);
+    // Opening them must not count as shells that keep exiting.
+    @memset(&app.shell_opens, 0);
+
+    // Back where they were: the current window and the shown ones in
+    // their tile order, the job grid newest first.
+    app.extras.clearRetainingCapacity();
+    const now = c.SDL_GetTicks();
+    var main: ?*JobWindow = null;
+    var slot: usize = 0;
+    var shown: usize = 0;
+    var in_grid: u64 = 0;
+    for (wins, 0..) |win, k| {
+        const w = opened[k] orelse continue;
+        w.maximized = false;
+        w.focused = false;
+        switch (win.place) {
+            .main => if (main == null) {
+                main = w;
+                slot = shown;
+                shown += 1;
+                w.last_activity_ms = now;
+            } else {
+                app.extras.append(app.gpa, w) catch {};
+                shown += 1;
+            },
+            .shown => {
+                w.last_activity_ms = now -| (1 + shown);
+                app.extras.append(app.gpa, w) catch {};
+                shown += 1;
+            },
+            .grid => {
+                in_grid += 1;
+                w.last_activity_ms = now -| (1000 + in_grid);
+            },
+        }
+    }
+    if (main == null and app.extras.items.len > 0) main = app.extras.orderedRemove(0);
+    if (main == null) for (opened[0..wins.len]) |o| if (o) |w| {
+        main = w;
+        break;
+    };
+    app.focus = null;
+    app.main = if (main) |m| app.indexOfWindow(m) else null;
+    while (app.extras.items.len > 0 and app.extras.items.len + 1 > app.capacityWith(app.gridCount())) {
+        app.unshow(app.extras.pop().?);
+    }
+    app.main_slot = @min(slot, app.extras.items.len);
+    app.arranged = app.main_slot != 0;
+    if (app.main) |m| app.setFocus(m);
+    app.relayoutAnimated();
+    if (app.jobs.items.len == 0) {
+        app.want_shell = true;
+        beep.beep();
+        return app.sayFmt("{s}: no window could be opened", .{name}, app.theme.stderr_accent);
+    }
+    app.sessionsChanged();
+    if (missing > 0)
+        app.sayFmt("restored {s}: {d} folder{s} gone, opened in home", .{ name, missing, if (missing == 1) "" else "s" }, app.theme.stderr_accent)
+    else
+        app.sayFmt("restored {s} ({d} window{s})", .{ name, app.jobs.items.len, if (app.jobs.items.len == 1) "" else "s" }, app.theme.ok);
+}
+
+/// One window of a session: its shell in its folder (home when the
+/// folder is gone, counted in `missing`), with the steps it waits for.
+fn restoreWin(app: *App, win: *const Sessions.Win, missing: *usize) ?*JobWindow {
+    var zbuf: [4097]u8 = undefined;
+    var dir: ?[:0]const u8 = null;
+    if (win.folder.len > 0) if (std.fmt.bufPrintZ(&zbuf, "{s}", .{win.folder}) catch null) |z| {
+        if (isDir(z)) dir = z;
+    };
+    if (dir == null) {
+        missing.* += 1;
+        if (c.getenv("HOME")) |h| dir = std.mem.span(h);
+    }
+    // The user's own shell is the login shell, as `s` opens it.
+    const mine = std.fs.path.basename(userShell());
+    const program: ?[]const u8 = if (win.shell.len == 0 or std.mem.eql(u8, win.shell, mine)) null else win.shell;
+    var before = app.jobs.items.len;
+    app.openShellIn(program, dir);
+    // That shell isn't here (any more): the user's own.
+    if (app.jobs.items.len == before and program != null) {
+        before = app.jobs.items.len;
+        app.openShellIn(null, dir);
+    }
+    if (app.jobs.items.len == before) return null;
+    const w = app.jobs.items[app.jobs.items.len - 1];
+    const now = c.SDL_GetTicks();
+    var tbuf: [400]u8 = undefined;
+    const step: ?struct { []const u8, bool, []const u8 } = switch (win.kind) {
+        .local => if (win.uid != c.getuid() and win.user.len > 0)
+            .{ std.fmt.bufPrint(&tbuf, "sudo -u {s} -s", .{win.user}) catch return w, false, "" }
+        else
+            null,
+        .ssh, .mosh => if (win.cmd.len > 0) .{ win.cmd, true, win.rfolder } else null,
+    };
+    if (step) |s| {
+        const text = app.gpa.dupe(u8, s[0]) catch return w;
+        const rdir = app.gpa.dupe(u8, s[2]) catch {
+            app.gpa.free(text);
+            return w;
+        };
+        app.restore_steps.append(app.gpa, .{ .window = w.uid, .text = text, .enter = s[1], .rdir = rdir, .since = now, .until = now + restore_prompt_ms }) catch {
+            app.gpa.free(text);
+            app.gpa.free(rdir);
+        };
+    }
+    return w;
+}
+
+/// Each frame: the restore steps whose windows are ready.
+fn tickRestore(app: *App) void {
+    if (app.restore_steps.items.len == 0) return;
+    const now = c.SDL_GetTicks();
+    var i: usize = 0;
+    while (i < app.restore_steps.items.len) {
+        if (app.restoreStep(&app.restore_steps.items[i], now)) {
+            app.restore_steps.orderedRemove(i).free(app.gpa);
+        } else i += 1;
+    }
+}
+
+/// One restore step: true when it is done (or given up).
+fn restoreStep(app: *App, st: *RestoreStep, now: u64) bool {
+    const w = app.jobByUid(st.window) orelse return true;
+    if (!w.running()) return true;
+    switch (st.state) {
+        .prompt => {
+            // gtty's hooks say when the shell waits at its prompt; a shell
+            // without them (never a prompt mark) gets the text after a while.
+            const ready = w.atPrompt() or (w.out.prompt_row == null and now -| st.since >= restore_nohooks_ms);
+            if (!ready) {
+                if (now < st.until) return false;
+                app.sayFmt("#{d}: the shell didn't come to its prompt: {s} not typed", .{ w.serial, st.text }, app.theme.stderr_accent);
+                return true;
+            }
+            var buf: [8300]u8 = undefined;
+            const bytes = std.fmt.bufPrint(&buf, "\x15{s}{s}", .{ st.text, if (st.enter) "\r" else "" }) catch return true;
+            w.typeBytes(bytes);
+            if (st.rdir.len == 0) return true;
+            st.state = .remote;
+            st.until = now + restore_remote_ms;
+            return false;
+        },
+        .remote => {
+            if (now > st.until) return true;
+            // Not logged in yet (a password, a slow network).
+            if (w.remoteDest().len == 0) return false;
+            if (w.linkFailed()) {
+                app.sayFmt("#{d}: no cd to {s} on {s}: gtty can't connect there", .{ w.serial, st.rdir, w.remoteDest() }, app.theme.stderr_accent);
+                return true;
+            }
+            if (w.linkReady() == null or !w.remote_idle or w.remote_away) return false;
+            var buf: [8300]u8 = undefined;
+            var out: std.Io.Writer = .fixed(&buf);
+            out.writeAll("\x15cd -- ") catch return true;
+            remote.shQuote(&out, st.rdir) catch return true;
+            out.writeAll("\r") catch return true;
+            w.typeBytes(out.buffered());
+            return true;
+        },
+    }
+}
+
+/// The session list of the menus (system menu bar and drawn bar), the
+/// last used first, as of now.
+fn fillMenuSessions(app: *App) void {
+    _ = app.sessions.refresh();
+    var buf: [Sessions.shown_max]*Sessions.Session = undefined;
+    const list = app.sessions.recent(&buf);
+    app.menu_sessions_n = list.len;
+    for (list, 0..) |x, k| {
+        const m = &app.menu_sessions[k];
+        m.id_len = @min(x.id.len, m.id.len);
+        @memcpy(m.id[0..m.id_len], x.id[0..m.id_len]);
+        m.name_len = @min(x.name.len, m.name.len);
+        while (m.name_len > 0 and m.name_len < x.name.len and x.name[m.name_len] & 0xC0 == 0x80) m.name_len -= 1;
+        @memcpy(m.name[0..m.name_len], x.name[0..m.name_len]);
+    }
+}
+
+/// The system menu asks for its session rows when it opens (the first
+/// row reads the list).
+fn menuTitle(code: c_int, buf: [*c]u8, len: c_int) callconv(.c) bool {
+    const app = menu_app orelse return false;
+    const k = code - c.GTTY_MENU_SESSION_FIRST;
+    if (k < 0 or k >= c.GTTY_MENU_SESSION_MAX or len < 1) return false;
+    if (k == 0) app.fillMenuSessions();
+    const i: usize = @intCast(k);
+    if (i >= app.menu_sessions_n) return false;
+    const name = app.menu_sessions[i].name[0..app.menu_sessions[i].name_len];
+    const n = @min(name.len, @as(usize, @intCast(len - 1)));
+    @memcpy(buf[0..n], name[0..n]);
+    buf[n] = 0;
+    return true;
+}
+
+/// Session ▸ a session row (k: its place on the menu, the last used
+/// first).
+fn pickMenuSession(app: *App, k: usize) void {
+    if (k >= app.menu_sessions_n) return;
+    const m = &app.menu_sessions[k];
+    var ibuf: [64]u8 = undefined;
+    const id = ibuf[0..m.id_len];
+    @memcpy(id, m.id[0..m.id_len]);
+    app.restoreSession(id);
+}
+
+/// Open the list of the session chip of window `i`, expanded at once:
+/// the sessions used last, the last used at the bottom (by the chip).
+fn openSessionPeek(app: *App, i: usize) void {
+    const w = app.jobs.items[i];
+    if (app.peek) |pk| if (pk.uid == w.uid and pk.kind == .session) return;
+    app.closePeek();
+    app.hideTip();
+    app.chip_hover = null;
+    _ = app.sessions.refresh();
+    var buf: [Sessions.shown_max]*Sessions.Session = undefined;
+    const list = app.sessions.recent(&buf);
+    var names: [Sessions.shown_max][]const u8 = undefined;
+    var keys: [Sessions.shown_max][]const u8 = undefined;
+    for (list, 0..) |x, k| {
+        names[list.len - 1 - k] = x.name;
+        keys[list.len - 1 - k] = x.id;
+    }
+    app.peek = Peek.openSessions(app.gpa, w.uid, names[0..list.len], keys[0..list.len], w.session_chip_r) catch return;
+    w.session_peek_open = true;
+    app.layoutPeek();
+    app.dirty = true;
+}
+
+/// Session ▸ Session Manager… (or bring it to the front).
+fn openSessionsWindow(app: *App) void {
+    app.closeMenu();
+    if (app.sessions_win) |sw| return sw.raise();
+    _ = app.sessions.refresh();
+    app.sessions_win = SessionsWindow.open(app.gpa, &app.sessions) catch |e| {
+        beep.beep();
+        return app.sayFmt("sessions: could not open the window ({s})", .{@errorName(e)}, app.theme.stderr_accent);
+    };
+}
+
+/// Each frame: the file read again when another gtty changed it (at most
+/// once a second), the manager's requests and drawing, the restore steps.
+fn tickSessions(app: *App) void {
+    const now = c.SDL_GetTicks();
+    if (now -| app.sessions_checked_ms >= 1000) {
+        app.sessions_checked_ms = now;
+        if (app.sessions.refresh()) app.sessionsChanged();
+    }
+    if (app.sessions_win) |sw| {
+        if (sw.want_close) {
+            sw.close();
+            app.sessions_win = null;
+            if (app.script_target == .sessions) app.script_target = .main;
+            _ = c.SDL_RaiseWindow(app.window);
+        } else {
+            if (sw.changed) {
+                sw.changed = false;
+                app.sessionsChanged();
+            }
+            if (sw.takeRestore()) |id| {
+                defer app.gpa.free(id);
+                _ = c.SDL_RaiseWindow(app.window);
+                app.restoreSession(id);
+            }
+            if (app.sessions_win) |s| {
+                s.render(&app.theme);
+                if (s.shot_ok) |ok| {
+                    s.shot_ok = null;
+                    if (ok) app.say("saved the session manager's picture", app.theme.ok) else app.say("screenshot failed", app.theme.stderr_accent);
+                }
+            }
+        }
+    }
+    app.tickRestore();
+}
+
+/// The Session Manager, when script hooks go to it (`/target sessions`).
+fn scriptSessions(app: *App) ?*SessionsWindow {
+    return if (app.script_target == .sessions) app.sessions_win else null;
+}
+
+test "an ssh argument quoted only when it needs it" {
+    const t = std.testing;
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try writeArg(&w, "me@box");
+    try w.writeByte(' ');
+    try writeArg(&w, "-oProxyCommand=nc %h 22");
+    try t.expectEqualStrings("me@box '-oProxyCommand=nc %h 22'", w.buffered());
+}
+
 /// Open the peek of window `i`'s git chip (closing any other peek).
 fn openGitPeek(app: *App, i: usize) void {
     const w = app.jobs.items[i];
@@ -3203,6 +3812,7 @@ fn closePeek(app: *App) void {
         w.git_peek_open = false;
         w.folder_peek_open = false;
         w.focus_peek_open = false;
+        w.session_peek_open = false;
     };
     pk.deinit(&app.reaper);
     app.peek = null;
@@ -3241,6 +3851,14 @@ fn peekAction(app: *App, a: Peek.Action) void {
                 beep.beep();
             }
         },
+        // A session picked in the session chip's list.
+        .restore => {
+            var ibuf: [64]u8 = undefined;
+            const n = @min(pk.target.len, ibuf.len);
+            @memcpy(ibuf[0..n], pk.target[0..n]);
+            app.closePeek();
+            return app.restoreSession(ibuf[0..n]);
+        },
     }
     app.layoutPeek();
     app.dirty = true;
@@ -3253,7 +3871,11 @@ fn tickPeek(app: *App) void {
     if (app.chip_hover) |h| if (now -| h.since >= app.chip_hover_ms) {
         app.chip_hover = null;
         for (app.jobs.items, 0..) |w, i| if (w.uid == h.uid) {
-            if (h.hit == .folder_chip) app.openFolderPeek(i) else app.openGitPeek(i);
+            switch (h.hit) {
+                .folder_chip => app.openFolderPeek(i),
+                .session_chip => app.openSessionPeek(i),
+                else => app.openGitPeek(i),
+            }
         };
     };
     if (app.peek == null) return;
@@ -3269,6 +3891,7 @@ fn tickPeek(app: *App) void {
         // The shell went elsewhere (not by this peek): its list is stale.
         .folder => if (pk.state == .idle and !std.mem.eql(u8, w.cwd(), pk.full)) return app.closePeek(),
         .focus => if (pk.state == .idle and !std.mem.eql(u8, w.cwd(), pk.dir)) return app.closePeek(),
+        .session => {},
     }
     switch (pk.tick(now, &app.reaper)) {
         .none => {},
@@ -3840,6 +4463,12 @@ fn execGtty(app: *App, cmd_parsed: commands.Command) void {
             .sync_typing => c.GTTY_MENU_SYNC_TYPING,
             .about => c.GTTY_MENU_ABOUT,
             .help => c.GTTY_MENU_HELP,
+            .snapshot => c.GTTY_MENU_SNAPSHOT,
+            .sessions => c.GTTY_MENU_SESSIONS,
+            .session => |k| blk: {
+                app.fillMenuSessions();
+                break :blk c.GTTY_MENU_SESSION_FIRST + @as(i32, k) - 1;
+            },
         }),
         .mods => |spec| {
             var mod: c.SDL_Keymod = 0;
@@ -3859,9 +4488,12 @@ fn execGtty(app: *App, cmd_parsed: commands.Command) void {
         .target => |t| app.script_target = switch (t) {
             .main => .main,
             .settings => .settings,
+            .sessions => .sessions,
         },
         .quit => app.running = false,
         .shot => |path| if (app.scriptSettings()) |sw| {
+            sw.takeShot(path);
+        } else if (app.scriptSessions()) |sw| {
             sw.takeShot(path);
         } else {
             if (app.pending_shot) |p| app.gpa.free(p);
@@ -3871,13 +4503,16 @@ fn execGtty(app: *App, cmd_parsed: commands.Command) void {
         .type => |text| if (app.scriptSettings()) |sw| {
             sw.onText(text);
             sw.onKey(c.SDLK_RETURN, 0);
+        } else if (app.scriptSessions()) |sw| {
+            sw.onText(text);
+            sw.onKey(c.SDLK_RETURN, 0);
         } else {
             app.onText(text);
             app.onKey(c.SDLK_RETURN, 0);
         },
-        .text => |text| if (app.scriptSettings()) |sw| sw.onText(text) else app.scriptTyping(text),
+        .text => |text| if (app.scriptSettings()) |sw| sw.onText(text) else if (app.scriptSessions()) |sw| sw.onText(text) else app.scriptTyping(text),
         .key => |spec| if (keySpec(spec)) |k| {
-            if (app.scriptSettings()) |sw| sw.onKey(k.key, k.mod) else app.onKey(k.key, k.mod);
+            if (app.scriptSettings()) |sw| sw.onKey(k.key, k.mod) else if (app.scriptSessions()) |sw| sw.onKey(k.key, k.mod) else app.onKey(k.key, k.mod);
         } else app.sayFmt("/key: unknown key {s}", .{spec}, app.theme.stderr_accent),
         // Real mouse events (window coordinates, like SDL), to the
         // `/target` window.
@@ -3987,7 +4622,8 @@ fn keySpec(spec: []const u8) ?struct { key: c.SDL_Keycode, mod: c.SDL_Keymod } {
         .{ .name = "pageup", .v = c.SDLK_PAGEUP },       .{ .name = "pagedown", .v = c.SDLK_PAGEDOWN },
         .{ .name = "x", .v = c.SDLK_X },                 .{ .name = "f2", .v = c.SDLK_F2 },
         .{ .name = "1", .v = c.SDLK_1 },                 .{ .name = "2", .v = c.SDLK_2 },
-        .{ .name = "3", .v = c.SDLK_3 },                 .{ .name = "f", .v = c.SDLK_F },
+        .{ .name = "3", .v = c.SDLK_3 },                 .{ .name = "4", .v = c.SDLK_4 },
+        .{ .name = "f", .v = c.SDLK_F },
     };
     var mod: c.SDL_Keymod = 0;
     var it = std.mem.splitScalar(u8, spec, '+');
@@ -4012,6 +4648,7 @@ fn scriptSettings(app: *App) ?*SettingsWindow {
 /// The OS window id script mouse events go to (0: gtty's own).
 fn scriptWindow(app: *App) c.SDL_WindowID {
     if (app.scriptSettings()) |sw| return sw.id;
+    if (app.scriptSessions()) |sw| return sw.id;
     return 0;
 }
 
@@ -4103,6 +4740,7 @@ fn handle(app: *App, ev: *const c.SDL_Event) void {
     if (ev.type == c.SDL_EVENT_KEY_DOWN and ev.key.repeat and clipboardKey(ev.key.key, ev.key.mod)) return;
     // Events of the settings window go to it.
     if (app.settings) |sw| if (eventWindow(ev) == sw.id) return sw.handle(ev);
+    if (app.sessions_win) |sw| if (eventWindow(ev) == sw.id) return sw.handle(ev);
     switch (ev.type) {
         c.SDL_EVENT_QUIT => app.running = false,
         // Closing gtty's own window ends gtty (with the settings window
@@ -4659,6 +5297,8 @@ fn clickJob(app: *App, i: usize, x: f32, y: f32, button: u8, clicks: u8) void {
         .folder_chip => app.openFolderPeek(i),
         // The focus chip: its list, expanded at once.
         .focus_chip => app.openFocusPeek(i),
+        // The session chip: the saved sessions, expanded at once.
+        .session_chip => app.openSessionPeek(i),
         .minimize => app.minimizeJob(i),
         .maximize => app.toggleMaximize(i),
         // Anywhere else: the job becomes (or stays) the current job window.
@@ -4796,11 +5436,15 @@ fn onMotion(app: *App, x: f32, y: f32) void {
     app.sendHover(); // sets the pointer shape too
 }
 
-/// Pointer: a hand over an outlined file name, the text beam over text,
-/// else the arrow.
+/// Pointer: a hand over an outlined file name or a title-bar action, the
+/// text beam over text, else the arrow.
 fn updateCursor(app: *App) void {
     const marked = if (app.hoverWindow()) |w| w.opener.mark != null else false;
-    const want: @TypeOf(app.cursor_kind) = if (app.win_drag != null) .move else if (marked) .hand else if (app.over_text) .text else .arrow;
+    // A title-bar action that can be clicked: the hand, as on a link.
+    const on_action = for (app.jobs.items) |w| {
+        if (w.overAction()) break true;
+    } else false;
+    const want: @TypeOf(app.cursor_kind) = if (app.win_drag != null) .move else if (marked or on_action) .hand else if (app.over_text) .text else .arrow;
     if (want == app.cursor_kind) return;
     app.cursor_kind = want;
     if (app.text_cursor == null) app.text_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_TEXT);
@@ -5626,6 +6270,9 @@ const ModalJob = union(enum) {
     delete: struct { paths: [][:0]u8, window: ids_mod.Id },
     /// Rename `path` to the field's text? 0 Cancel, 1 Rename.
     rename: struct { path: [:0]u8, window: ids_mod.Id },
+    /// Restore session `id`, ending the jobs still working? 0 Cancel,
+    /// 1 Restore (`window` 0: centered on gtty's window).
+    restore: struct { id: []u8, window: ids_mod.Id },
 
     /// The window it is about.
     fn window(j: ModalJob) ?ids_mod.Id {
@@ -5646,6 +6293,7 @@ fn freeModalJob(app: *App, job: ModalJob) void {
         },
         .delete => |d| app.freePaths(d.paths),
         .rename => |d| app.gpa.free(d.path),
+        .restore => |d| app.gpa.free(d.id),
     }
 }
 
@@ -5679,6 +6327,10 @@ fn resolveModal(app: *App, pick: usize, how: ModalHow) void {
     defer app.freeModalJob(job);
     switch (job) {
         .none, .rename => {},
+        .restore => |d| {
+            if (pick != 1) return app.say(if (how == .timeout) "no answer: restore cancelled" else "restore cancelled", app.theme.dim);
+            app.doRestore(d.id);
+        },
         .delete => |d| {
             if (pick != 1) return app.cancelled("delete", how);
             app.clearFileSel();
@@ -6706,8 +7358,13 @@ fn hoverChip(app: *App, pt: ?[2]f32) void {
         const i = app.windowAt(p[0], p[1]) orelse break :blk null;
         const w = app.jobs.items[i];
         const part = w.hit(p[0], p[1]);
-        if (part != .git_chip and part != .folder_chip) break :blk null;
-        const kind: Peek.Kind = if (part == .folder_chip) .folder else .git;
+        const kind: Peek.Kind = switch (part) {
+            .git_chip => .git,
+            .folder_chip => .folder,
+            // Its list opens expanded at once.
+            .session_chip => .session,
+            else => break :blk null,
+        };
         if (app.peek) |pk| if (pk.uid == w.uid and pk.kind == kind) break :blk null;
         break :blk .{ .uid = w.uid, .hit = part, .since = c.SDL_GetTicks() };
     };
@@ -7154,7 +7811,11 @@ fn render(app: *App) void {
     const peek_keys = if (app.peek) |pk| pk.wantsKeys() else false;
     const find_w = app.findTarget();
     if (peek_keys) {
-        label = if (app.peek.?.kind != .git) "typing goes to the folder filter — Esc closes it" else "typing goes to the branch filter — Esc closes it";
+        label = switch (app.peek.?.kind) {
+            .git => "typing goes to the branch filter — Esc closes it",
+            .session => "typing goes to the session filter — Enter restores — Esc closes it",
+            else => "typing goes to the folder filter — Esc closes it",
+        };
     } else if (find_w) |w| {
         label = std.fmt.bufPrint(&label_buf, "typing goes to find in #{d} — Enter: done, Esc closes it", .{w.serial}) catch "›";
     } else if (job) |w| {
