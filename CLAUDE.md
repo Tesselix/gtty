@@ -1224,7 +1224,15 @@ decisions; items marked *open* are undecided.
   notarization), the tag's version into build.zig.zon → build-bin.sh (ReleaseSafe) + package.sh,
   dmg checks (codesign, stapler, spctl), `SHA256SUMS`, `gh release
   upload --clobber`; then slsa-github-generator's generic generator
-  (referenced by tag, as it requires) uploads `gtty.intoto.jsonl`);
+  (referenced by tag, as it requires) uploads `gtty.intoto.jsonl`; job
+  `edge-badge` writes the last published pre-release's tag as a
+  shields.io endpoint file `edge.json` (only when published after the
+  latest stable release, by date: edge keeps its own lower MINOR; else
+  an empty transparent badge, so none shows), the only file on the orphan branch `badges`
+  (one commit, replaced each release through the git API; the README's
+  edge badge reads it from raw.githubusercontent.com: shields refuses
+  github.com release assets; the `main` ruleset covers only the default
+  branch));
   `deps.yml` (2026-10-22; called by ci.yml as job `deps`, part of
   `build-and-test`; also weekly and by hand): `zig build --fetch=all`,
   then `scripts/check-deps.py` against **`.github/deps.toml`** (every
