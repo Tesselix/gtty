@@ -36,6 +36,7 @@ pub const MenuPick = union(enum) {
     new_window,
     sync_typing,
     about,
+    check_updates,
     help,
     snapshot,
     sessions,
@@ -94,7 +95,7 @@ pub const Command = union(enum) {
     drag: [4]f32,
     /// /resize <w> <h> — resize gtty's OS window (window coordinates).
     resize: [2]f32,
-    /// /menu run | settings | new-shell | new-window | sync-typing | about | help |
+    /// /menu run | settings | new-shell | new-window | sync-typing | about | check-updates | help |
     /// snapshot | sessions | session-N — pick a menu entry, as the
     /// menu bar would (for scripts: macOS menus can't be clicked).
     menu: MenuPick,
@@ -323,13 +324,14 @@ pub fn parseGtty(text: []const u8, explicit: bool) Command {
     if (eq(sub, "key")) return if (rest.len > 0) .{ .key = rest } else .{ .bad = "/key ctrl+shift+left" };
     if (eq(sub, "wait")) return .{ .wait = std.fmt.parseInt(u32, rest, 10) catch 500 };
     if (eq(sub, "menu")) {
-        const usage = "/menu run | settings | new-shell | new-window | sync-typing | about | help | snapshot | sessions | session-N";
+        const usage = "/menu run | settings | new-shell | new-window | sync-typing | about | check-updates | help | snapshot | sessions | session-N";
         if (eq(rest, "run")) return .{ .menu = .run };
         if (eq(rest, "settings")) return .{ .menu = .settings };
         if (eq(rest, "new-shell")) return .{ .menu = .new_shell };
         if (eq(rest, "new-window")) return .{ .menu = .new_window };
         if (eq(rest, "sync-typing")) return .{ .menu = .sync_typing };
         if (eq(rest, "about")) return .{ .menu = .about };
+        if (eq(rest, "check-updates")) return .{ .menu = .check_updates };
         if (eq(rest, "help")) return .{ .menu = .help };
         if (eq(rest, "snapshot")) return .{ .menu = .snapshot };
         if (eq(rest, "sessions")) return .{ .menu = .sessions };

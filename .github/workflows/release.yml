@@ -7,8 +7,8 @@
 # dmg (scripts/sign-macos.sh), the .deb / .rpm / .tar.gz, SHA256SUMS and
 # SLSA build provenance (*.intoto.jsonl).
 #
-# The tag is the version (-Dversion, GTTY_VERSION); nothing in the repo
-# holds one. Its MINOR picks the kind of release:
+# The tag is the version (written into build.zig.zon before the build, not
+# committed); nothing in the repo holds one. Its MINOR picks the kind of release:
 #   odd  (v1.3.0, v0.5.2)  a pre-release, built in the environment "edge";
 #   even (v1.4.0, v0.6.1)  a stable release, marked latest, built in the
 #                          environment "release".
@@ -90,7 +90,15 @@ jobs:
       - name: Install packaging tools
         run: brew install nfpm
 
-      # build-bin.sh (macOS + Linux binaries, ReleaseSafe, -Dversion),
+      # The tag's version into build.zig.zon (never committed): the binary
+      # reports it, package.sh names the packages after it.
+      - name: Version into build.zig.zon
+        run: |
+          v=${TAG#v}
+          sed -i '' "s/^\( *\.version = \)\"[^\"]*\"/\1\"$v\"/" build.zig.zon
+          grep -q "^ *\.version = \"$v\"," build.zig.zon || { echo "could not set the version in build.zig.zon" >&2; exit 1; }
+
+      # build-bin.sh (macOS + Linux binaries, ReleaseSafe),
       # package.sh (dmg, deb, rpm, tar.gz), signing in a temporary
       # keychain, notarization + staple.
       - name: Build, sign and notarize
@@ -103,7 +111,6 @@ jobs:
           APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          export GTTY_VERSION="${TAG#v}"
           scripts/sign-macos.sh
 
       # stapler and spctl ask Apple's servers, which drop the connection
@@ -128,6 +135,17 @@ jobs:
           retry 5 spctl --assess --type execute --verbose "$mnt/gtty.app"
           hdiutil detach -quiet "$mnt"
 
+      # Copies of the Linux packages without the version in their names, so
+      # releases/latest/download/<name> (the README's install lines) always
+      # finds the newest stable one.
+      - name: Fixed-name copies
+        run: |
+          v=${TAG#v}
+          cd dist
+          cp "gtty_${v}_amd64.deb" gtty_amd64.deb
+          cp "gtty-$v-1.x86_64.rpm" gtty.x86_64.rpm
+          cp "gtty-$v-linux-x86_64.tar.gz" gtty-linux-x86_64.tar.gz
+
       # SHA256SUMS for users; the same lines, base64, are the provenance's
       # subjects.
       - name: Checksums
@@ -136,7 +154,8 @@ jobs:
           v=${TAG#v}
           cd dist
           shasum -a 256 "gtty-$v-macos.dmg" "gtty_${v}_amd64.deb" \
-            "gtty-$v-1.x86_64.rpm" "gtty-$v-linux-x86_64.tar.gz" > SHA256SUMS
+            "gtty-$v-1.x86_64.rpm" "gtty-$v-linux-x86_64.tar.gz" \
+            gtty_amd64.deb gtty.x86_64.rpm gtty-linux-x86_64.tar.gz > SHA256SUMS
           cat SHA256SUMS
           echo "hashes=$(base64 < SHA256SUMS | tr -d '\n')" >> "$GITHUB_OUTPUT"
 
@@ -148,7 +167,8 @@ jobs:
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
             "dist/gtty-$v-macos.dmg" "dist/gtty_${v}_amd64.deb" \
             "dist/gtty-$v-1.x86_64.rpm" "dist/gtty-$v-linux-x86_64.tar.gz" \
-            dist/SHA256SUMS
+            dist/gtty_amd64.deb dist/gtty.x86_64.rpm \
+            dist/gtty-linux-x86_64.tar.gz dist/SHA256SUMS
 
   # SLSA build provenance for the Signed-Releases check, uploaded to the
   # release as gtty.intoto.jsonl. The generator must be referenced by tag,

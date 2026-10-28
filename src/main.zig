@@ -115,4 +115,5 @@ test {
     _ = @import("ai/Memory.zig");
     _ = @import("core/FocusFolders.zig");
     _ = @import("core/Sessions.zig");
+    _ = @import("core/Update.zig");
 }

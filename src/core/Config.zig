@@ -105,6 +105,9 @@ refresh_ls: bool = true,
 /// The last shell window closed or exited (and no other job running):
 /// gtty quits instead of opening a new shell.
 quit_on_last_shell: bool = true,
+/// At start: ask GitHub whether a newer gtty was released (the update
+/// line on top when there is).
+check_updates: bool = true,
 /// The prompt always open (pinned); off: it hides when the keyboard
 /// leaves it or the AI is done (its pin button).
 prompt_pinned: bool = true,
@@ -273,6 +276,8 @@ pub fn parseLine(cfg: *Config, line_in: []const u8) void {
         if (parseBool(val)) |b| cfg.color_folders = b;
     } else if (std.mem.eql(u8, key, "quit-on-last-shell")) {
         if (parseBool(val)) |b| cfg.quit_on_last_shell = b;
+    } else if (std.mem.eql(u8, key, "check-updates")) {
+        if (parseBool(val)) |b| cfg.check_updates = b;
     } else if (std.mem.eql(u8, key, "prompt-pinned")) {
         if (parseBool(val)) |b| cfg.prompt_pinned = b;
     } else {
@@ -309,6 +314,7 @@ pub fn format(cfg: *const Config, w: *std.Io.Writer) !void {
     try w.print("color-folders = {s}\n", .{if (cfg.color_folders) "on" else "off"});
     try w.print("refresh-ls = {s}\n", .{if (cfg.refresh_ls) "on" else "off"});
     try w.print("quit-on-last-shell = {s}\n", .{if (cfg.quit_on_last_shell) "on" else "off"});
+    try w.print("check-updates = {s}\n", .{if (cfg.check_updates) "on" else "off"});
     try w.print("prompt-pinned = {s}\n\n", .{if (cfg.prompt_pinned) "on" else "off"});
     for (color_keys, 0..) |k, i| {
         const rgb = cfg.colorAt(i);
@@ -393,6 +399,7 @@ test "config: parse, clamp, skip bad lines, round trip" {
         \\sub.nope = off
         \\marks = off
         \\quit-on-last-shell = off
+        \\check-updates = off
         \\prompt-pinned = off
         \\mark-input = #00ff00
         \\ai = anthropic
@@ -417,6 +424,7 @@ test "config: parse, clamp, skip bad lines, round trip" {
     try t.expect(cfg.palette[2].eql((color.Theme{}).palette[2]));
     try t.expect(!cfg.file_opener);
     try t.expect(!cfg.quit_on_last_shell);
+    try t.expect(!cfg.check_updates);
     try t.expect(!cfg.prompt_pinned);
 
     cfg.setCommand("");
@@ -432,6 +440,7 @@ test "config: parse, clamp, skip bad lines, round trip" {
     try t.expect(!back.colors);
     try t.expect(!back.marks);
     try t.expect(!back.quit_on_last_shell);
+    try t.expect(!back.check_updates);
     try t.expect(!back.prompt_pinned);
     try t.expect(back.mark_input.eql(Rgb.hex(0x00ff00)));
     try t.expectEqual(AiProvider.anthropic, back.ai_provider);

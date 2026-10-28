@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# update: the update line on top (a newer gtty on GitHub) and gtty ▸ Check
+# for Updates….
+# Run: zig build && GTTY_UPDATE_REPLY=test/update-reply.json \
+#   GTTY_UPDATE_VERSION=0.2.1 GTTY_UPDATE_INSTALLER=apt GTTY_SHOW_DRY=1 \
+#   zig-out/bin/gtty --script test/update.gt
+# Expect: update-1: the yellow line "Newer version available: 0.4.0. Your
+# version is 0.2.1." with the apt command's button; update-2: the button
+# flashed, "copied the install command" (the clipboard has it); update-3:
+# "would open https://github.com/gttyterm/gtty/releases/tag/v0.4.0";
+# update-4: the line closed (×), the window back to the top; update-5:
+# the menu's check brought it back, "gtty 0.4.0 is available".
+s
+/wait 1500
+/shot update-1.bmp
+/click 600 13
+/wait 100
+/shot update-2.bmp
+/click 100 13
+/wait 300
+/shot update-3.bmp
+/click 1083 13
+/wait 600
+/shot update-4.bmp
+/menu check-updates
+/wait 600
+/shot update-5.bmp
+/quit

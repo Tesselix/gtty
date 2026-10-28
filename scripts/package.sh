@@ -7,8 +7,9 @@
 # - gtty_<v>_amd64.deb        Ubuntu / Debian      } /usr/bin/gtty, a launcher and
 # - gtty-<v>-1.x86_64.rpm     Fedora               } icons (src/assets/gtty-icon.png)
 # - gtty-<v>-linux-x86_64.tar.gz  the same files, for any other distro
-# The version is GTTY_VERSION (default 0.0.0-dev: nfpm wants semver;
-# releases set it from the tag), also passed to build-bin.sh.
+# The version is build.zig.zon's .version (0.0.0-dev in git; releases
+# write the tag's there first), the one the binary reports; GTTY_VERSION
+# overrides the packages' version only.
 # Needs nfpm (brew install nfpm).
 #
 # Signing (macOS), optional:
@@ -24,7 +25,8 @@
 set -eu
 cd "$(dirname "$0")/.."
 
-GTTY_VERSION=${GTTY_VERSION:-0.0.0-dev}
+GTTY_VERSION=${GTTY_VERSION:-$(sed -n 's/^ *\.version = "\(.*\)",.*/\1/p' build.zig.zon)}
+[ -n "$GTTY_VERSION" ] || { echo "no .version in build.zig.zon" >&2; exit 1; }
 export GTTY_VERSION
 VERSION=$GTTY_VERSION
 command -v nfpm >/dev/null || { echo "nfpm not found: brew install nfpm" >&2; exit 1; }

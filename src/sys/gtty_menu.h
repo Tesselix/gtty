@@ -29,6 +29,7 @@ enum {
     GTTY_MENU_HELP = 10,      // Help ▸ gtty Help (⌘?): the prompt's commands in a job window
     GTTY_MENU_SNAPSHOT = 11,  // Session ▸ Take Snapshot: save this gtty's windows as a session
     GTTY_MENU_SESSIONS = 12,  // Session ▸ Session Manager…
+    GTTY_MENU_CHECK_UPDATES = 13, // gtty ▸ Check for Updates… (right under About)
     // Session ▸ the saved sessions, the last used first: FIRST + 0 … + MAX-1.
     GTTY_MENU_SESSION_FIRST = 100,
     GTTY_MENU_SESSION_MAX = 7,

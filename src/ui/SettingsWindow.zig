@@ -39,6 +39,7 @@ pub const Change = union(enum) {
     color_folders,
     refresh_ls,
     quit_on_last_shell,
+    check_updates,
     /// An AI setting (read at each request).
     ai,
     /// "Forget": empty the AI's local memory.
@@ -70,6 +71,7 @@ const Ctl = union(enum) {
     color_folders,
     refresh_ls,
     quit_on_last_shell,
+    check_updates,
     ai_provider,
     ai_memory,
     ai_forget,
@@ -295,6 +297,10 @@ pub fn onClick(s: *SettingsWindow, x: f32, y: f32) void {
             s.cfg.quit_on_last_shell = !s.cfg.quit_on_last_shell;
             s.changed(.quit_on_last_shell);
         },
+        .check_updates => {
+            s.cfg.check_updates = !s.cfg.check_updates;
+            s.changed(.check_updates);
+        },
         .ai_provider => {
             const n = Config.AiProvider.names.len;
             s.cfg.ai_provider = @enumFromInt((@intFromEnum(s.cfg.ai_provider) + 1) % n);
@@ -432,6 +438,7 @@ pub fn render(s: *SettingsWindow, theme: *const Theme) void {
             y = s.checkRow(f, theme, y, row_h, label_x, ctl_x, "Folder names in blue (output without colors)", s.cfg.color_folders, .color_folders);
             y = s.checkRow(f, theme, y, row_h, label_x, ctl_x, "Run ls again after a file action in gtty", s.cfg.refresh_ls, .refresh_ls);
             y = s.checkRow(f, theme, y, row_h, label_x, ctl_x, "Quit gtty when the last shell closes", s.cfg.quit_on_last_shell, .quit_on_last_shell);
+            y = s.checkRow(f, theme, y, row_h, label_x, ctl_x, "Check for a newer gtty at start", s.cfg.check_updates, .check_updates);
             y += @round(row_h * 0.3);
             _ = g.text(f, label_x, y + @round((row_h - f.cell_h) / 2), "Start-up command", theme.title_fg);
             const fw = @min(W - ctl_x - pad, 30 * f.cell_w);

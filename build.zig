@@ -27,10 +27,10 @@ pub fn build(b: *std.Build) void {
         .strip = strip,
     });
     configure(b, mod, target, optimize, sdl);
-    // The version for --version and SDL's app metadata. Releases pass the
-    // tag's (-Dversion=1.4.0, scripts/build-bin.sh); build.zig.zon's
-    // .version is a placeholder.
-    const version = b.option([]const u8, "version", "Version string reported by gtty (default: dev)") orelse "dev";
+    // The version for --version, SDL's app metadata and the update check:
+    // build.zig.zon's .version (releases write the tag's there first);
+    // -Dversion overrides it.
+    const version = b.option([]const u8, "version", "Version string reported by gtty (default: build.zig.zon's .version)") orelse @import("build.zig.zon").version;
     const options = b.addOptions();
     options.addOption([]const u8, "version", version);
     mod.addOptions("build_options", options);
