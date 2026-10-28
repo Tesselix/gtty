@@ -1,29 +1,33 @@
 // SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The folders the user worked in lately (the recent chip): a folder
+//! The folders the user worked in lately (the focus chip): a folder
 //! under home (not home itself) counts a use each time a command that
 //! does something is run there (`countsAsUse`: not cd, ls, find, pwd, …).
-//! Kept: what was used within `window_s` (3 days) of the newest use, so
-//! a week away doesn't empty it. Shown: the `shown_max` most used there
-//! (ties: the most recent).
+//! Kept: what was used within `keep_s` (90 days) of the newest use, so
+//! time away doesn't empty it. Shown: the history window, the span back
+//! from the newest use that holds `shown_max` folders (a busy day: a few
+//! hours; a quiet month: weeks), oldest first, so the newest sit at the
+//! bottom of the list, next to the chip. A person picks quickly among
+//! about 4 items, each one more costs some half a second: 7 at most.
 //!
 //! The file, shared by every gtty process (New Window is another one):
-//! `$GTTY_RECENT`, else `$XDG_STATE_HOME/gtty/recent-folders`, else
-//! `~/.local/state/gtty/recent-folders`; one line per folder,
-//! tab-separated `<uses> <last, unix s> <path>`. Each process counts its
-//! own new uses (`added`) and `sync` merges them into what is on disk.
+//! `$GTTY_FOCUS`, else `$XDG_STATE_HOME/gtty/focus-folders`, else
+//! `~/.local/state/gtty/focus-folders` (an older `recent-folders` next
+//! to it is moved there); one line per folder, tab-separated `<uses>
+//! <last, unix s> <path>`. Each process counts its own new uses
+//! (`added`) and `sync` merges them into what is on disk.
 
 const std = @import("std");
 const c = @import("../c.zig").c;
 
-const RecentFolders = @This();
+const FocusFolders = @This();
 
 /// Uses older than this before the newest one are forgotten.
-pub const window_s: i64 = 3 * 24 * 3600;
+pub const keep_s: i64 = 90 * 24 * 3600;
 /// Folders on the chip's list.
 pub const shown_max = 7;
-/// Folders kept at most (the least used go).
+/// Folders kept at most (the least recently used go).
 const keep_max = 200;
 
 pub const Entry = struct {
@@ -39,11 +43,11 @@ entries: std.ArrayList(Entry) = .empty,
 /// Changed since the last `sync`.
 dirty: bool = false,
 
-pub fn init(gpa: std.mem.Allocator) RecentFolders {
+pub fn init(gpa: std.mem.Allocator) FocusFolders {
     return .{ .gpa = gpa };
 }
 
-pub fn deinit(r: *RecentFolders) void {
+pub fn deinit(r: *FocusFolders) void {
     for (r.entries.items) |e| r.gpa.free(e.path);
     r.entries.deinit(r.gpa);
 }
@@ -54,12 +58,12 @@ fn now() i64 {
 
 /// A command was run in `dir`: count a use, when `dir` is a folder under
 /// `home` (home itself is easy to get to).
-pub fn use(r: *RecentFolders, dir: []const u8, home: []const u8) void {
+pub fn use(r: *FocusFolders, dir: []const u8, home: []const u8) void {
     if (!underHome(dir, home)) return;
     r.useAt(dir, now());
 }
 
-pub fn useAt(r: *RecentFolders, dir: []const u8, at: i64) void {
+pub fn useAt(r: *FocusFolders, dir: []const u8, at: i64) void {
     r.dirty = true;
     defer r.prune();
     for (r.entries.items) |*e| if (std.mem.eql(u8, e.path, dir)) {
@@ -79,14 +83,14 @@ pub fn underHome(dir: []const u8, home: []const u8) bool {
     return dir.len > h.len + 1 and std.mem.startsWith(u8, dir, h) and dir[h.len] == '/';
 }
 
-/// Forget what was last used more than `window_s` before the newest use,
-/// then the least used beyond `keep_max`.
-fn prune(r: *RecentFolders) void {
+/// Forget what was last used more than `keep_s` before the newest use,
+/// then the least recently used beyond `keep_max`.
+fn prune(r: *FocusFolders) void {
     var newest: i64 = 0;
     for (r.entries.items) |e| newest = @max(newest, e.last);
     var i: usize = 0;
     while (i < r.entries.items.len) {
-        if (r.entries.items[i].last < newest - window_s) {
+        if (r.entries.items[i].last < newest - keep_s) {
             r.gpa.free(r.entries.swapRemove(i).path);
         } else i += 1;
     }
@@ -97,16 +101,17 @@ fn prune(r: *RecentFolders) void {
     }
 }
 
-/// More used first; ties: the more recent.
+/// More recent first; ties: the more used.
 fn better(_: void, a: Entry, b: Entry) bool {
-    if (a.uses != b.uses) return a.uses > b.uses;
-    return a.last > b.last;
+    if (a.last != b.last) return a.last > b.last;
+    return a.uses > b.uses;
 }
 
-/// The chip's list: up to `out.len` folders, most used first, that still
-/// exist and are under `home`. The slices point into the entries (valid
-/// until the next change).
-pub fn top(r: *RecentFolders, home: []const u8, out: [][]const u8) []const []const u8 {
+/// The chip's list, the history window: the `out.len` folders used last
+/// that still exist and are under `home`, oldest first (the newest
+/// last). The slices point into the entries (valid until the next
+/// change).
+pub fn top(r: *FocusFolders, home: []const u8, out: [][]const u8) []const []const u8 {
     std.mem.sort(Entry, r.entries.items, {}, better);
     var n: usize = 0;
     for (r.entries.items) |e| {
@@ -115,13 +120,14 @@ pub fn top(r: *RecentFolders, home: []const u8, out: [][]const u8) []const []con
         out[n] = e.path;
         n += 1;
     }
+    std.mem.reverse([]const u8, out[0..n]);
     return out[0..n];
 }
 
 /// Forget the folders that are gone (removed, renamed, or no longer a
 /// folder); one that can't be looked at (no permission) stays. Returns
 /// how many went.
-pub fn dropMissing(r: *RecentFolders) usize {
+pub fn dropMissing(r: *FocusFolders) usize {
     var n: usize = 0;
     var i: usize = 0;
     while (i < r.entries.items.len) {
@@ -152,8 +158,10 @@ fn isDir(gpa: std.mem.Allocator, p: []const u8) bool {
 // ------------------------------------------------------------ commands
 
 /// A command line that does something in its folder (a use): its first
-/// word (after `VAR=value`s) is not a folder look-up or shell bookkeeping
-/// (cd, ls, find, pwd, echo, …). Empty lines don't count.
+/// word (after `VAR=value`s) is not a folder look-up, a report on the
+/// file system or shell bookkeeping (cd, ls, find, pwd, df, file, echo,
+/// …), nor the read-only form of a tool that can also change things
+/// (`diskutil list`, `xattr -l`). Empty lines don't count.
 pub fn countsAsUse(cmd: []const u8) bool {
     var it = std.mem.tokenizeAny(u8, cmd, " \t");
     const first = while (it.next()) |w| {
@@ -163,41 +171,106 @@ pub fn countsAsUse(cmd: []const u8) bool {
     // `\ls`, `command ls`: the word itself.
     const name = std.mem.trimStart(u8, first, "\\");
     for (lookups) |l| if (std.mem.eql(u8, name, l)) return false;
+    const rest = it.rest();
+    for (lookup_forms) |form| {
+        var fw = std.mem.tokenizeScalar(u8, form, ' ');
+        if (!std.mem.eql(u8, name, fw.next().?)) continue;
+        var args = std.mem.tokenizeAny(u8, rest, " \t");
+        const match = while (fw.next()) |want| {
+            if (!std.mem.eql(u8, args.next() orelse break false, want)) break false;
+        } else true;
+        if (match) return false;
+    }
+    // xattr only prints unless told to write, delete or clear.
+    if (std.mem.eql(u8, name, "xattr")) {
+        var args = std.mem.tokenizeAny(u8, rest, " \t");
+        while (args.next()) |a| {
+            if (a.len > 1 and a[0] == '-' and std.mem.indexOfAny(u8, a[1..], "wdc") != null) return true;
+        }
+        return false;
+    }
     return true;
 }
 
+/// Tools that can change things too: these forms (the first words) only
+/// report (macOS disks, disk images, Spotlight, Time Machine).
+const lookup_forms = [_][]const u8{
+    "diskutil list",
+    "diskutil info",
+    "diskutil activity",
+    "diskutil apfs list",
+    "diskutil cs list",
+    "diskutil ar list",
+    "hdiutil info",
+    "hdiutil imageinfo",
+    "mdutil -s",
+    "tmutil listbackups",
+    "tmutil latestbackup",
+    "tmutil destinationinfo",
+    "tmutil machinedirectory",
+    "tmutil isexcluded",
+    "tmutil listlocalsnapshots",
+    "tmutil listlocalsnapshotdates",
+    "tmutil compare",
+    "tmutil calculatedrift",
+    "tmutil uniquesize",
+};
+
 const lookups = [_][]const u8{
     // moving around
-    "cd",    "pushd",  "popd",    "dirs",   "z",     "zi",   "j",      "autojump", "zoxide",   "..",       "...",      "-",
+    "cd",       "pushd",  "popd",   "dirs",    "z",           "zi",      "j",        "autojump",        "zoxide",   "..",       "...",       "-",
     // listing / finding / asking about the folder
-    "ls",    "ll",     "la",      "l",      "lsd",   "exa",  "eza",    "tree",     "dir",      "vdir",     "gls",      "find",
-    "fd",    "fdfind", "locate",  "pwd",    "du",    "df",   "stat",   "file",     "realpath", "readlink", "basename", "dirname",
-    "which", "whence", "where",   "type",   "hash",
+    "ls",       "ll",     "la",     "l",       "lsd",         "exa",     "eza",      "tree",            "dir",      "vdir",     "gls",       "find",
+    "fd",       "fdfind", "locate", "pwd",     "du",          "df",      "stat",     "file",            "realpath", "readlink", "basename",  "dirname",
+    "which",    "whence", "where",  "type",    "hash",        "whereis", "plocate",  "mlocate",         "gfind",    "gstat",    "grealpath", "greadlink",
+    // disk use and disks: sizes, free space, mounts (reports only)
+    "ncdu",     "gdu",    "dust",   "dua",     "duf",         "gdf",     "lsblk",    "findmnt",         "blkid",
+    // what a file is: attributes, permissions, metadata
+       "namei",    "lsattr",    "getfacl",
+    "getfattr", "mdls",   "mdfind", "lsof",
+    // macOS: Finder info, file systems, storage, file activity
+       "GetFileInfo", "lsvfs",   "fs_usage", "system_profiler", "quota",
     // shell bookkeeping
-     "echo", "printf", "clear",    "reset",    "exit",     "logout",   "history",
-    "fc",    "alias",  "unalias", "export", "unset", "set",  "setopt", "unsetopt", "source",   ".",        "true",     "false",
-    ":",     "jobs",   "fg",      "bg",     "wait",  "read", "let",    "declare",  "typeset",  "local",    "rehash",
+       "echo",     "printf",    "clear",
+    "reset",    "exit",   "logout", "history", "fc",          "alias",   "unalias",  "export",          "unset",    "set",      "setopt",    "unsetopt",
+    "source",   ".",      "true",   "false",   ":",           "jobs",    "fg",       "bg",              "wait",     "read",     "let",       "declare",
+    "typeset",  "local",  "rehash",
 };
 
 // ------------------------------------------------------------ file
 
 /// Where the file is; null: no home.
 pub fn path(buf: []u8) ?[:0]const u8 {
-    if (c.getenv("GTTY_RECENT")) |p| return std.fmt.bufPrintSentinel(buf, "{s}", .{std.mem.span(p)}, 0) catch null;
+    if (c.getenv("GTTY_FOCUS")) |p| return std.fmt.bufPrintSentinel(buf, "{s}", .{std.mem.span(p)}, 0) catch null;
+    return stateFile(buf, "focus-folders");
+}
+
+/// `name` in gtty's state folder; null: no home.
+fn stateFile(buf: []u8, name: []const u8) ?[:0]const u8 {
     if (c.getenv("XDG_STATE_HOME")) |x| if (x[0] != 0)
-        return std.fmt.bufPrintSentinel(buf, "{s}/gtty/recent-folders", .{std.mem.span(x)}, 0) catch null;
+        return std.fmt.bufPrintSentinel(buf, "{s}/gtty/{s}", .{ std.mem.span(x), name }, 0) catch null;
     const home = c.getenv("HOME") orelse return null;
-    return std.fmt.bufPrintSentinel(buf, "{s}/.local/state/gtty/recent-folders", .{std.mem.span(home)}, 0) catch null;
+    return std.fmt.bufPrintSentinel(buf, "{s}/.local/state/gtty/{s}", .{ std.mem.span(home), name }, 0) catch null;
+}
+
+/// The file from before the chip was named focus (`recent-folders`)
+/// becomes the new one while there is none yet (not with `$GTTY_FOCUS`).
+fn migrate(p: [:0]const u8) void {
+    if (c.getenv("GTTY_FOCUS") != null or c.access(p.ptr, c.F_OK) == 0) return;
+    var obuf: [4096]u8 = undefined;
+    const old = stateFile(&obuf, "recent-folders") orelse return;
+    _ = c.rename(old.ptr, p.ptr);
 }
 
 /// Read the file again and fold in this process's new uses, minus the
 /// folders that are gone (`dropMissing`); write it back when anything
 /// changed. The list is then the file's (other gtty processes' uses
 /// included).
-pub fn sync(r: *RecentFolders) void {
+pub fn sync(r: *FocusFolders) void {
     var pbuf: [4096]u8 = undefined;
     const p = path(&pbuf) orelse return;
-    var disk = RecentFolders.init(r.gpa);
+    migrate(p);
+    var disk = FocusFolders.init(r.gpa);
     defer disk.deinit();
     disk.load(p);
     r.mergeInto(&disk);
@@ -208,7 +281,7 @@ pub fn sync(r: *RecentFolders) void {
 }
 
 /// Add this process's new uses to `disk` (theirs stay).
-fn mergeInto(r: *RecentFolders, disk: *RecentFolders) void {
+fn mergeInto(r: *FocusFolders, disk: *FocusFolders) void {
     for (r.entries.items) |*e| {
         if (e.added == 0) continue;
         const found = for (disk.entries.items) |*d| {
@@ -226,14 +299,14 @@ fn mergeInto(r: *RecentFolders, disk: *RecentFolders) void {
     disk.prune();
 }
 
-fn load(r: *RecentFolders, p: [:0]const u8) void {
+fn load(r: *FocusFolders, p: [:0]const u8) void {
     const fp = c.fopen(p.ptr, "r") orelse return;
     defer _ = c.fclose(fp);
     var buf: [4200]u8 = undefined;
     while (c.fgets(&buf, buf.len, fp) != null) r.parseLine(std.mem.trimEnd(u8, std.mem.sliceTo(&buf, 0), "\r\n"));
 }
 
-pub fn parseLine(r: *RecentFolders, line: []const u8) void {
+pub fn parseLine(r: *FocusFolders, line: []const u8) void {
     if (line.len == 0 or line[0] == '#') return;
     var it = std.mem.splitScalar(u8, line, '\t');
     const uses = std.fmt.parseInt(u32, it.next() orelse return, 10) catch return;
@@ -244,13 +317,13 @@ pub fn parseLine(r: *RecentFolders, line: []const u8) void {
     r.entries.append(r.gpa, .{ .path = copy, .uses = uses, .last = last }) catch r.gpa.free(copy);
 }
 
-pub fn format(r: *const RecentFolders, w: *std.Io.Writer) !void {
-    try w.writeAll("# gtty recent folders (the recent chip): uses, last use (unix s), folder\n");
+pub fn format(r: *const FocusFolders, w: *std.Io.Writer) !void {
+    try w.writeAll("# gtty focus folders (the focus chip): uses, last use (unix s), folder\n");
     for (r.entries.items) |e| try w.print("{d}\t{d}\t{s}\n", .{ e.uses, e.last, e.path });
 }
 
 /// Temp file + rename, private.
-fn save(r: *const RecentFolders, p: [:0]const u8) void {
+fn save(r: *const FocusFolders, p: [:0]const u8) void {
     if (std.mem.lastIndexOfScalar(u8, p, '/')) |slash| mkdirs(p[0..slash]);
     var aw: std.Io.Writer.Allocating = .init(r.gpa);
     defer aw.deinit();
@@ -291,6 +364,28 @@ test "commands that count as a use" {
     try t.expect(!countsAsUse("cd src"));
     try t.expect(!countsAsUse("find . -name x"));
     try t.expect(!countsAsUse("pwd"));
+    try t.expect(!countsAsUse("df -h"));
+    try t.expect(!countsAsUse("du -sh *"));
+    try t.expect(!countsAsUse("file notes.md"));
+    try t.expect(!countsAsUse("ncdu"));
+    try t.expect(!countsAsUse("mdls x.pdf"));
+    try t.expect(!countsAsUse("GetFileInfo x.pdf"));
+    try t.expect(!countsAsUse("system_profiler SPStorageDataType"));
+    try t.expect(!countsAsUse("diskutil list"));
+    try t.expect(!countsAsUse("diskutil apfs list"));
+    try t.expect(countsAsUse("diskutil eraseDisk APFS x disk4"));
+    try t.expect(countsAsUse("diskutil apfs deleteVolume disk3s5"));
+    try t.expect(!countsAsUse("hdiutil imageinfo x.dmg"));
+    try t.expect(countsAsUse("hdiutil create -size 1g x.dmg"));
+    try t.expect(!countsAsUse("tmutil listbackups"));
+    try t.expect(countsAsUse("tmutil startbackup"));
+    try t.expect(!countsAsUse("mdutil -s /"));
+    try t.expect(countsAsUse("mdutil -i off /"));
+    try t.expect(!countsAsUse("xattr x.pdf"));
+    try t.expect(!countsAsUse("xattr -l -r ."));
+    try t.expect(!countsAsUse("xattr -p com.apple.quarantine x.pdf"));
+    try t.expect(countsAsUse("xattr -d com.apple.quarantine x.pdf"));
+    try t.expect(countsAsUse("xattr -rc ."));
     try t.expect(!countsAsUse("FOO=1"));
     try t.expect(!countsAsUse("   "));
 }
@@ -306,27 +401,44 @@ test "under home only, not home itself" {
     try t.expect(!underHome("/Users/me/src", ""));
 }
 
-test "kept: 3 days before the newest use; most used first" {
+test "kept: 90 days before the newest use" {
     const t = std.testing;
-    var r = RecentFolders.init(t.allocator);
+    var r = FocusFolders.init(t.allocator);
     defer r.deinit();
     const day = 24 * 3600;
     r.useAt("/h/old", 1000);
     r.useAt("/h/a", 9 * day);
     r.useAt("/h/b", 10 * day + 5);
-    r.useAt("/h/b", 10 * day + 6);
-    // 13 days: /h/a (4 days before) goes, /h/b (under 3) stays; /h/old
-    // went already.
-    r.useAt("/h/c", 13 * day);
+    // 100 days: /h/a (91 days before) goes, /h/b (90 days less 5 s)
+    // stays; /h/old went already.
+    r.useAt("/h/c", 100 * day);
     try t.expectEqual(@as(usize, 2), r.entries.items.len);
     std.mem.sort(Entry, r.entries.items, {}, better);
-    try t.expectEqualStrings("/h/b", r.entries.items[0].path);
-    try t.expectEqualStrings("/h/c", r.entries.items[1].path);
+    try t.expectEqualStrings("/h/c", r.entries.items[0].path);
+    try t.expectEqualStrings("/h/b", r.entries.items[1].path);
+}
+
+test "the list: the folders used last, oldest first" {
+    const t = std.testing;
+    var r = FocusFolders.init(t.allocator);
+    defer r.deinit();
+    // Real folders (`top` skips missing ones), home = /usr.
+    r.useAt("/usr/bin", 300);
+    r.useAt("/usr/lib", 100);
+    r.useAt("/usr/lib", 110);
+    r.useAt("/usr/lib", 120); // used most, but not lately
+    r.useAt("/usr/share", 200);
+    r.useAt("/usr/no-such-folder-gtty-test", 400);
+    var buf: [2][]const u8 = undefined;
+    const list = r.top("/usr", &buf);
+    try t.expectEqual(@as(usize, 2), list.len);
+    try t.expectEqualStrings("/usr/share", list[0]);
+    try t.expectEqualStrings("/usr/bin", list[1]);
 }
 
 test "folders that are gone are dropped" {
     const t = std.testing;
-    var r = RecentFolders.init(t.allocator);
+    var r = FocusFolders.init(t.allocator);
     defer r.deinit();
     r.useAt("/", 100);
     r.useAt("/no/such/folder/gtty-test", 100);
@@ -338,9 +450,9 @@ test "folders that are gone are dropped" {
 
 test "merge adds only this process's new uses" {
     const t = std.testing;
-    var mine = RecentFolders.init(t.allocator);
+    var mine = FocusFolders.init(t.allocator);
     defer mine.deinit();
-    var disk = RecentFolders.init(t.allocator);
+    var disk = FocusFolders.init(t.allocator);
     defer disk.deinit();
     disk.parseLine("5\t100\t/h/a");
     disk.parseLine("2\t90\t/h/b");

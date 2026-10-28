@@ -38,7 +38,7 @@ const commands = @import("ui/commands.zig");
 const tiling = @import("ui/tiling.zig");
 const Ai = @import("ai/Ai.zig");
 const Memory = @import("ai/Memory.zig");
-const RecentFolders = @import("core/RecentFolders.zig");
+const FocusFolders = @import("core/FocusFolders.zig");
 const Handoff = @import("core/Handoff.zig");
 
 const App = @This();
@@ -392,13 +392,13 @@ ai_return: ?ids_mod.Id = null,
 memory: Memory,
 memory_file: bool = false,
 memory_saved_ms: u64 = 0,
-/// The folders used lately (the recent chip): every job window's
+/// The folders used lately (the focus chip): every job window's
 /// counted commands (`JobWindow.use_seq`); merged with the file shared by
-/// all gtty processes (`RecentFolders.sync`) only when `recent_file`
-/// (not in test scripts unless GTTY_RECENT says where).
-recent: RecentFolders,
-recent_file: bool = false,
-recent_synced_ms: u64 = 0,
+/// all gtty processes (`FocusFolders.sync`) only when `focus_file`
+/// (not in test scripts unless GTTY_FOCUS says where).
+focus_folders: FocusFolders,
+focus_file: bool = false,
+focus_synced_ms: u64 = 0,
 /// New Window: the new gtty's process, yielded the front to until this
 /// time (`tickFront`); in the new gtty, asking for the front until
 /// `front_until` (0: done).
@@ -469,12 +469,12 @@ pub fn create(gpa: std.mem.Allocator, opts: Options) !*App {
         .chip_hover_ms = opts.cfg.chip_hover_ms,
         .memory = .init(gpa),
         .memory_file = opts.save_config or c.getenv("GTTY_AI_MEMORY") != null,
-        .recent = .init(gpa),
-        .recent_file = opts.save_config or c.getenv("GTTY_RECENT") != null,
+        .focus_folders = .init(gpa),
+        .focus_file = opts.save_config or c.getenv("GTTY_FOCUS") != null,
         .quit_on_last_shell = opts.cfg.quit_on_last_shell and (opts.script == null or opts.save_config),
     };
     if (app.memory_file) app.memory.load();
-    if (app.recent_file) app.recent.sync();
+    if (app.focus_file) app.focus_folders.sync();
     app.prompt.pinned = opts.cfg.prompt_pinned;
     menu_app = app;
     JobWindow.sync_hook = .{ .ctx = app, .f = syncMirror };
@@ -515,8 +515,8 @@ pub fn destroy(app: *App) void {
     app.ai_text.deinit(app.gpa);
     if (app.memory_file) app.memory.save();
     app.memory.deinit();
-    if (app.recent_file and app.recent.dirty) app.recent.sync();
-    app.recent.deinit();
+    if (app.focus_file and app.focus_folders.dirty) app.focus_folders.sync();
+    app.focus_folders.deinit();
     if (app.settings) |sw| sw.close();
     if (app.fetch) |*f| f.job.deinit(app.gpa);
     for (app.jobs.items) |w| w.destroy(&app.reaper);
@@ -675,7 +675,7 @@ pub fn run(app: *App) void {
         app.tickRemote();
         app.tickAi();
         app.tickPrompt();
-        app.tickRecent();
+        app.tickFocus();
         app.ensureShell();
         if (app.rec) |r| if (c.SDL_GetTicks() >= r.next) {
             app.dirty = true;
@@ -2573,7 +2573,7 @@ fn findBoxKey(app: *App, w: *JobWindow, key: c.SDL_Keycode, ctrl: bool, cmd: boo
     return true;
 }
 
-/// Open chip `n` (1 folder, 2 git, 3 recent) of the focused window, else
+/// Open chip `n` (1 folder, 2 git, 3 focus) of the focused window, else
 /// the current one, expanded (the keyboard goes to its list; Esc gives it
 /// back); its peek already open: closed. A chip not there: beep + why.
 fn chipShortcut(app: *App, n: u8) void {
@@ -2585,26 +2585,26 @@ fn chipShortcut(app: *App, n: u8) void {
     const kind: Peek.Kind = switch (n) {
         1 => .folder,
         2 => .git,
-        else => .recent,
+        else => .focus,
     };
     if (app.peek) |pk| if (pk.uid == w.uid and pk.kind == kind) return app.closePeek();
     const r = switch (kind) {
         .folder => w.folder_chip_r,
         .git => w.git_chip_r,
-        .recent => w.recent_chip_r,
+        .focus => w.focus_chip_r,
     };
     if (r.w == 0 or (kind == .git and w.branch() == null)) {
         beep.beep();
         return app.say(switch (kind) {
             .folder => "no folder chip here",
             .git => "not in a git repository",
-            .recent => "no recent chip here",
+            .focus => "no focus chip here",
         }, app.theme.dim);
     }
     switch (kind) {
         .folder => app.openFolderPeek(i),
         .git => app.openGitPeek(i),
-        .recent => app.openRecentPeek(i),
+        .focus => app.openFocusPeek(i),
     }
     if (app.peek) |*pk| if (pk.uid == w.uid) {
         pk.expand();
@@ -3117,7 +3117,7 @@ fn peekChip(w: *const JobWindow, kind: Peek.Kind) Gfx.Rect {
     return switch (kind) {
         .git => w.git_chip_r,
         .folder => w.folder_chip_r,
-        .recent => w.recent_chip_r,
+        .focus => w.focus_chip_r,
     };
 }
 
@@ -3140,43 +3140,43 @@ fn openFolderPeek(app: *App, i: usize) void {
     app.dirty = true;
 }
 
-/// Open the list of window `i`'s recent chip, expanded at once (closing
-/// any other peek): the folders used lately, newest file first (other
+/// Open the list of window `i`'s focus chip, expanded at once (closing
+/// any other peek): the history window, the newest at the bottom (other
 /// gtty processes' uses come in with `sync`).
-fn openRecentPeek(app: *App, i: usize) void {
+fn openFocusPeek(app: *App, i: usize) void {
     const w = app.jobs.items[i];
-    if (app.peek) |pk| if (pk.uid == w.uid and pk.kind == .recent) return;
+    if (app.peek) |pk| if (pk.uid == w.uid and pk.kind == .focus) return;
     app.closePeek();
     app.hideTip();
     app.chip_hover = null;
     // A quick look first: folders removed since are forgotten (`sync`
     // takes them out of the file too).
-    if (app.recent_file) {
-        app.recent.sync();
-        app.recent_synced_ms = c.SDL_GetTicks();
-    } else _ = app.recent.dropMissing();
+    if (app.focus_file) {
+        app.focus_folders.sync();
+        app.focus_synced_ms = c.SDL_GetTicks();
+    } else _ = app.focus_folders.dropMissing();
     const home = if (c.getenv("HOME")) |h| std.mem.span(h) else "";
-    var buf: [RecentFolders.shown_max][]const u8 = undefined;
-    const list = app.recent.top(home, &buf);
-    app.peek = Peek.openRecent(app.gpa, w.uid, w.cwd(), list, w.recent_chip_r) catch return;
-    w.recent_peek_open = true;
+    var buf: [FocusFolders.shown_max][]const u8 = undefined;
+    const list = app.focus_folders.top(home, &buf);
+    app.peek = Peek.openFocus(app.gpa, w.uid, w.cwd(), list, w.focus_chip_r) catch return;
+    w.focus_peek_open = true;
     app.layoutPeek();
     app.dirty = true;
 }
 
 /// Each frame: a command that counts as a use (`JobWindow.use_seq`, not
-/// in a remote session) goes to the recent folders; the file is synced
+/// in a remote session) goes to the focus folders; the file is synced
 /// at most every 10 s.
-fn tickRecent(app: *App) void {
+fn tickFocus(app: *App) void {
     const home = if (c.getenv("HOME")) |h| std.mem.span(h) else "";
     for (app.jobs.items) |w| if (w.use_seq != w.use_seen) {
         w.use_seen = w.use_seq;
-        if (w.remoteDest().len == 0) app.recent.use(w.use_dir.items, home);
+        if (w.remoteDest().len == 0) app.focus_folders.use(w.use_dir.items, home);
     };
     const now = c.SDL_GetTicks();
-    if (app.recent_file and app.recent.dirty and now -| app.recent_synced_ms > 10_000) {
-        app.recent_synced_ms = now;
-        app.recent.sync();
+    if (app.focus_file and app.focus_folders.dirty and now -| app.focus_synced_ms > 10_000) {
+        app.focus_synced_ms = now;
+        app.focus_folders.sync();
     }
 }
 
@@ -3202,7 +3202,7 @@ fn closePeek(app: *App) void {
     for (app.jobs.items) |w| if (w.uid == pk.uid) {
         w.git_peek_open = false;
         w.folder_peek_open = false;
-        w.recent_peek_open = false;
+        w.focus_peek_open = false;
     };
     pk.deinit(&app.reaper);
     app.peek = null;
@@ -3268,7 +3268,7 @@ fn tickPeek(app: *App) void {
         .git => if (pk.state != .busy) if (w.branch()) |b| pk.setFull(b) else return app.closePeek(),
         // The shell went elsewhere (not by this peek): its list is stale.
         .folder => if (pk.state == .idle and !std.mem.eql(u8, w.cwd(), pk.full)) return app.closePeek(),
-        .recent => if (pk.state == .idle and !std.mem.eql(u8, w.cwd(), pk.dir)) return app.closePeek(),
+        .focus => if (pk.state == .idle and !std.mem.eql(u8, w.cwd(), pk.dir)) return app.closePeek(),
     }
     switch (pk.tick(now, &app.reaper)) {
         .none => {},
@@ -4233,7 +4233,7 @@ fn onKey(app: *App, key: c.SDL_Keycode, mod: c.SDL_Keymod) void {
     // Esc closes any open peek (folded or expanded) back to its chip and
     // goes no further: the keyboard is the focused job's again.
     if (app.peek != null and key == c.SDLK_ESCAPE) return app.closePeek();
-    // The current window's chips: ⌘1 folder, ⌘2 git, ⌘3 recent
+    // The current window's chips: ⌘1 folder, ⌘2 git, ⌘3 focus
     // (Ctrl+Shift+1… on Linux), the number shown on each chip.
     if (chipKey(key, mod)) |n| return app.chipShortcut(n);
     // Find: ⌘F (Ctrl+Shift+F on Linux) opens the window's find box; while
@@ -4657,8 +4657,8 @@ fn clickJob(app: *App, i: usize, x: f32, y: f32, button: u8, clicks: u8) void {
         .git_chip => app.openGitPeek(i),
         // The folder chip: the folders above, at once.
         .folder_chip => app.openFolderPeek(i),
-        // The recent chip: its list, expanded at once.
-        .recent_chip => app.openRecentPeek(i),
+        // The focus chip: its list, expanded at once.
+        .focus_chip => app.openFocusPeek(i),
         .minimize => app.minimizeJob(i),
         .maximize => app.toggleMaximize(i),
         // Anywhere else: the job becomes (or stays) the current job window.

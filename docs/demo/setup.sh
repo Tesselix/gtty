@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Builds the demo world the README animations are recorded in: a neutral
 # home (zsh prompt "folder %") holding a small git project with a few
-# branches (shop), a few other projects and Downloads, and a recent-folders
-# file (the recent chip) as if the user had worked in them lately.
+# branches (shop), a few other projects and Downloads, and a focus-folders
+# file (the focus chip) as if the user had worked in them lately.
 # Everything lives under $GTTY_DEMO_ROOT (default /tmp/gtty-demo), which
 # is wiped first. Used by make.sh.
 set -eu
@@ -79,8 +79,8 @@ printf 'package main\n' > "$H/api/main.go"
 printf 'package handlers\n' > "$H/api/handlers/orders.go"
 printf 'set -o vi\n' > "$H/dotfiles/bashrc"
 
-# Where the user "worked" lately (uses, last use, folder): the recent
-# chip lists them, most used first.
+# Where the user "worked" lately (uses, last use, folder): the focus
+# chip lists them, the newest at the bottom.
 now=$(date +%s)
 {
     printf '14\t%s\t%s\n' "$((now - 600))" "$H/api"
@@ -88,5 +88,5 @@ now=$(date +%s)
     printf '6\t%s\t%s\n' "$((now - 7200))" "$H/api/handlers"
     printf '4\t%s\t%s\n' "$((now - 90000))" "$H/dotfiles"
     printf '2\t%s\t%s\n' "$((now - 100000))" "$H/blog/posts"
-} > "$ROOT/recent"
-chmod 600 "$ROOT/recent"
+} > "$ROOT/focus"
+chmod 600 "$ROOT/focus"

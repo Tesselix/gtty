@@ -162,7 +162,7 @@ the shell. Users expect it to behave like a shell in a terminal.
   hidden once the job finished; decided 2026-10-08). The exit-code
   badge of a failed window sits in the strip's right end.
   - **Chip shortcuts** (2026-10-20; `App.chipKey` / `chipShortcut`):
-    ⌘1 folder, ⌘2 git, ⌘3 recent (Linux Ctrl+Shift+1…3; matched by
+    ⌘1 folder, ⌘2 git, ⌘3 focus (Linux Ctrl+Shift+1…3; matched by
     scancode, so Shift's `!` still counts) open the chip of the focused
     window, else the current one, **expanded** (`Peek.expand`: the list
     has the keys); the same key again or Esc closes it. Chip missing (or
@@ -192,30 +192,42 @@ the shell. Users expect it to behave like a shell in a terminal.
     `App.openFolder`, as the title bar's folder button) / Get Folder Info
     (`Menu.chip_info`, `App.folderInfo`; see "Finder rows"). Test:
     `test/folderchip.gt`.
-  - **Recent chip** (added 2026-10-10; `recent_chip_r`, clock icon +
-    `recent`, after the git chip, hidden in a remote session): a click
-    opens its peek **already expanded** (`Peek.openRecent`, kind
-    `recent`, `App.openRecentPeek`; no hover peek, no copy / expand
-    buttons): up to 7 folders (`RecentFolders.shown_max`), most used
-    first (ties: newer), shown as `~/…`, the current one green, the
-    selection on the first other one; a pick = `Action.cd` as the folder
-    peek. **Use** = a command started in the folder (`Screen.cmd_seq` →
+  - **Focus chip** (added 2026-10-10 as "recent", renamed 2026-10-28;
+    `focus_chip_r`, clock icon + `focus`, after the git chip, hidden in
+    a remote session; code says `focus_folders` / `FocusFolders`, never
+    bare `focus`: that is the keyboard focus / the `focus N` command): a
+    click opens its peek **already expanded** (`Peek.openFocus`, kind
+    `focus`, `App.openFocusPeek`; no hover peek, no copy / expand
+    buttons): the **history window** = the 7 folders used last
+    (`FocusFolders.shown_max`, `top`; the span back from the newest use
+    that holds 7 folders; 7 at most: ~4 items are taken in at a glance,
+    each one more costs ~0.5 s, the user's rule), **oldest first, the
+    newest at the bottom** next to the chip (ties: more uses), shown as
+    `~/…`, the current one green, the selection on the newest other one
+    (bottom); a pick = `Action.cd` as the folder peek. **Use** = a command started in the folder (`Screen.cmd_seq` →
     `JobWindow.use_seq` / `use_dir`, the folder reported at that prompt)
-    that isn't a look-up or bookkeeping (`RecentFolders.countsAsUse`:
-    not cd, ls family, find, pwd, du, echo, …); only folders strictly
+    that isn't a look-up or bookkeeping (`FocusFolders.countsAsUse`:
+    not cd, ls family, find, pwd, echo, nor what only reports on the
+    file system: du, df, file, stat, ncdu, lsblk, mdls, GetFileInfo, …,
+    and the read-only forms of macOS tools that can also change things,
+    `lookup_forms`: `diskutil list`, `hdiutil info`, `tmutil listbackups`,
+    `mdutil -s`, `xattr` without -w / -d / -c; the user's rule
+    2026-10-28); only folders strictly
     under `$HOME` (`underHome`), none from ssh / mosh windows
-    (`App.tickRecent`). Kept: uses within 3 days of the newest use
-    (`window_s`, relative, so time away doesn't empty it), ≤ 200;
+    (`App.tickFocus`). Kept: uses within 90 days of the newest use
+    (`keep_s`, relative, so time away doesn't empty it), ≤ 200 (the
+    least recently used go);
     folders that are gone (stat: ENOENT / ENOTDIR / not a folder; no
     permission stays) are forgotten on every `sync` and on opening the
     list (`dropMissing`, 2026-10-20), out of the file too.
-    **File** (shared by all gtty processes): `$GTTY_RECENT`, else
-    `$XDG_STATE_HOME/gtty/recent-folders`, else
-    `~/.local/state/gtty/recent-folders` (0600, lines `uses\tlast\tpath`);
-    `RecentFolders.sync` re-reads it and adds only this process's new
+    **File** (shared by all gtty processes): `$GTTY_FOCUS`, else
+    `$XDG_STATE_HOME/gtty/focus-folders`, else
+    `~/.local/state/gtty/focus-folders` (0600, lines `uses\tlast\tpath`;
+    an old `recent-folders` there is renamed to it, `migrate`);
+    `FocusFolders.sync` re-reads it and adds only this process's new
     uses (`Entry.added`), at start, on opening the list, ≤ every 10 s
-    while dirty, at exit; script runs only with `GTTY_RECENT`. Test:
-    `test/recent.gt`.
+    while dirty, at exit; script runs only with `GTTY_FOCUS`. Test:
+    `test/focus.gt`.
   - **Peek** (`src/ui/Peek.zig`, one at a time, `App.peek`): opens after
     0.5 s hover (`chip_hover_ms`) or a click; [copy] [expand ^] full branch
     [×]; grows up from the chip in the normal text size. Mouse away → 5 s
@@ -940,21 +952,22 @@ decisions; items marked *open* are undecided.
   `docs/demo/setup.sh` (`$GTTY_DEMO_ROOT`, default /tmp/gtty-demo: a home
   with a neutral zsh prompt holding the `shop` git project with branches,
   `api` / `blog` / `dotfiles`, `Downloads/` for drops, and
-  `$ROOT/recent`, a seeded recent-folders file: the recent chip lists
+  `$ROOT/focus`, a seeded focus-folders file: the focus chip lists
   only folders under `$HOME`), runs gtty from `home/shop` with `HOME` /
-  `ZDOTDIR` there, `GTTY_RECENT`, `GTTY_FONT_SIZE=16`, `GIT_PAGER=cat`,
+  `ZDOTDIR` there, `GTTY_FOCUS`, `GTTY_FONT_SIZE=16`, `GIT_PAGER=cat`,
   `GTTY_SHOW_DRY=1`, `GTTY_DRAG_DRY=1`, fills `@FRAMES@` / `@HOME@` in
   the script, merges
   identical frames, holds the last 1.5 s, encodes with img2webp (lossy,
-  q 80; `GTTY_DEMO_QUALITY`). Sizes: hero 1200×520, the rest 1200×760.
+  q 80; `GTTY_DEMO_QUALITY`). Sizes: all 1200×760 (the hero too since 2026-10-28: three windows fit
+  on one screen only at that height).
   README order (2026-10-21, the user's): everyday shell work first (edit,
-  copy, files), then the chips (recent first), windows, sync.
+  copy, files), then the chips (focus first), windows, sync.
   Needs a display (the window shows while it records; keep the mouse off
   it) and overwrites the clipboard. After UI changes, check the
   coordinates in the scripts (1200×760: text rows y 53 + 22 n, columns
   x 23 + 10 k; title-bar copy ~25,24; chips y ~644: the folder chip ~45
   (hovering it expands its peek), the git chip ~150 with its peek's
-  expand ~148,638 in `src`, the recent chip ~275 in `shop`; the chips
+  expand ~148,638 in `src`, the focus chip ~275 in `shop`; the chips
   move right when the folder name is longer). The README shows no AI (not ready).
 - Color test lines: use `\033`, not `\e` — macOS `/bin/bash` is 3.2 and its
   `echo -e` doesn't know `\e`. E.g. `/s bash` then

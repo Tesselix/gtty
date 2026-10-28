@@ -1,15 +1,15 @@
 # SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Chip shortcuts: ⌘1 folder, ⌘2 git, ⌘3 recent (Ctrl+Shift+1… on Linux)
+# Chip shortcuts: ⌘1 folder, ⌘2 git, ⌘3 focus (Ctrl+Shift+1… on Linux)
 # open the current window's chip expanded (the number on each chip's
 # key-cap); the same key again or Esc closes it, the keyboard back to the
 # window. Run from a git repo under a scratch home:
 #   S=$(mktemp -d); mkdir -p $S/home/alpha $S/home/beta; echo "PROMPT='%1~ %# '" > $S/home/.zshrc
 #   cd $S/home/alpha && git init -q && git commit -q --allow-empty -m x && git branch feature
-#   printf '4\t%s\t%s\n' $(date +%s) $S/home/beta > $S/recent
-#   HOME=$S/home ZDOTDIR=$S/home GTTY_RECENT=$S/recent gtty --script $REPO/test/chipkeys.gt
+#   printf '4\t%s\t%s\n' $(date +%s) $S/home/beta > $S/focus
+#   HOME=$S/home ZDOTDIR=$S/home GTTY_FOCUS=$S/focus gtty --script $REPO/test/chipkeys.gt
 # Expected: keys0 the chips with 1 2 3; keys1 the folders list; keys2 the
-# branches; keys3 the recent list; keys4 none, "alpha % ok" typed.
+# branches; keys3 the focus list; keys4 none, "alpha % ok" typed.
 /s zsh
 /wait 1500
 /shot keys0-chips.bmp
@@ -23,7 +23,7 @@
 /key cmd+2
 /key cmd+3
 /wait 400
-/shot keys3-recent.bmp
+/shot keys3-focus.bmp
 /key cmd+3
 /wait 300
 /text ok

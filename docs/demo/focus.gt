@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
 # SPDX-License-Identifier: GPL-3.0-or-later
-# The recent chip: folders where the user ran commands lately, most used
-# first (setup.sh seeds them). Only looking around (cd, ls) doesn't
+# The focus chip: folders where the user ran commands lately, the newest
+# at the bottom (setup.sh seeds them). Only looking around (cd, ls) doesn't
 # count: ~/Downloads doesn't show up. Typing filters; Enter cds there.
 /resize 1200 760
 /s
@@ -19,8 +19,8 @@
 /slow ls
 /key enter
 /wait 700
-/glide 310 644 600
-/click 310 644
+/glide 300 644 600
+/click 300 644
 /wait 1500
 /slow han
 /wait 800

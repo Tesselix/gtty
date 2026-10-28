@@ -5,7 +5,7 @@
 A multi-window terminal: all your shells and commands on one screen, side
 by side or one click away.
 
-![Several terminal windows on one screen: finished ones turn green, a failed one red, the rest wait in the grid on the right](docs/images/hero.webp)
+![Three commands open three windows on one screen; one is minimized into the job grid on the right and, a few seconds later, a click brings it back](docs/images/hero.webp)
 
 ## Install
 
@@ -56,13 +56,13 @@ the GNOME / KDE file manager. Hover a name and it gets an outline:
   them into its folder.
 - **History ▸** in the right-click menu `cd`s back to the folders you left.
 
-### Recent: the folders you actually work in
+### Focus: the folders you actually work in
 
-![After cd and ls in Downloads, the recent chip lists only folders where commands were run; typing filters the list and Enter cds there](docs/images/recent.webp)
+![After cd and ls in Downloads, the focus chip lists only folders where commands were run; typing filters the list and Enter cds there](docs/images/focus.webp)
 
-The **recent** chip at the bottom of every window lists the folders you
-did real work in lately (ran a build, git, an editor, a script), most
-used first. Just looking around doesn't count: `cd`, `ls`, `pwd` and the
+The **focus** chip at the bottom of every window lists the folders you
+did real work in lately (ran a build, git, an editor, a script): the
+last seven at most, the newest at the bottom, right above the chip. Just looking around doesn't count: `cd`, `ls`, `pwd` and the
 like leave no trace, so the list stays short and useful. Click it (or
 ⌘3), type a few letters, press Enter, and you're there. Shared by every
 gtty window, kept between sessions.

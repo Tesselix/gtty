@@ -68,7 +68,7 @@ in (not in an ssh session).
   the shell is busy.
 
 **From the keyboard:** each chip shows a number. **⌘1** opens the folder
-chip's list, **⌘2** the branches, **⌘3** the recent folders (Linux:
+chip's list, **⌘2** the branches, **⌘3** the focus folders (Linux:
 **Ctrl+Shift+1**, **2**, **3**), for the window you're typing in, already
 expanded so you can type to filter and press Enter. The same key again, or
 **Esc**, closes it and the keyboard is back in the window.

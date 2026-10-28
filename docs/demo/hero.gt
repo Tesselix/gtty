@@ -1,30 +1,32 @@
 # SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
 # SPDX-License-Identifier: GPL-3.0-or-later
-# README hero: commands typed at the gtty prompt each open their own job
-# window; a finished one turns green, a failed one red with its exit
-# code; older windows move into the job grid. Recorded by make.sh.
-/resize 1200 520
-/s
-/wait 1800
-/type ls
-/wait 300
-/click 600 448
-/move 700 470
+# README hero: three commands typed at the gtty prompt open three windows
+# on one screen (finished ones green, the running server blue); one is
+# minimized into the job grid, and 4 s later a click there brings it
+# back in. Recorded by make.sh.
+/resize 1200 760
+/wait 800
+/click 600 686
+/move 700 720
 /pace 250
 /record start @FRAMES@ 20
-/wait 350
+/wait 500
 /slow make
 /key enter
-/wait 650
-/slow python3 -m http.server 8000
-/key enter
-/wait 650
-/glide 500 448 350
-/click 500 448
-/slow cat nosuch.txt
+/wait 700
+/slow git log --oneline
 /key enter
 /wait 700
-/glide 700 470 300
-/wait 300
+/slow python3 -m http.server 8000
+/key enter
+/wait 1200
+# Minimize #2 (git log, bottom left).
+/glide 520 354 600
+/click 520 354
+/wait 4000
+# Bring it back from the job grid.
+/glide 1110 130 600
+/click 1110 130
+/wait 1800
 /record stop
 /quit
