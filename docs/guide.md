@@ -68,10 +68,46 @@ in (not in an ssh session).
   the shell is busy.
 
 **From the keyboard:** each chip shows a number. **⌘1** opens the folder
-chip's list, **⌘2** the branches, **⌘3** the recent folders (Linux:
-**Ctrl+Shift+1**, **2**, **3**), for the window you're typing in, already
+chip's list, **⌘2** the branches, **⌘3** the focus folders, **⌘4** the
+saved sessions (Linux: **Ctrl+Shift+1**, **2**, **3**, **4**), for the
+window you're typing in, already
 expanded so you can type to filter and press Enter. The same key again, or
 **Esc**, closes it and the keyboard is back in the window.
+
+### Sessions
+
+A **session** is a snapshot of a gtty screen: every shell window in it (in
+the middle and in the job grid), each with the folder it is in and the
+user it runs as. A window in an **ssh** (or mosh) session also keeps its
+`ssh …` command line, the host and the folder over there. What runs
+inside a shell (a build, an editor) is not saved: only the shell.
+Sessions are shared by every gtty on the machine.
+
+- **Session ▸ Take Snapshot** saves this gtty's windows as a new session,
+  named after the time it was taken ("Oct 28 14:05"; rename it in the
+  Session Manager).
+- **Session ▸** the last 7 sessions used: pick one to restore it.
+- The **session chip** (after the focus chip, while any session is saved):
+  hover or click it and its list opens at once, the last used at the
+  bottom. Type to filter, **Enter** restores.
+- **Session ▸ Session Manager…** opens a window with every saved session
+  on the left and, on the right, a picture of the selected one's screen:
+  each window where it was, with its command (zsh, bash, ssh), the host
+  for an ssh session, and its folder. Hover a window for all it saved.
+  **Restore** (or Enter, or a double click), **Rename** (F2), **Delete**
+  (click it, or press Delete, twice).
+
+**Restoring replaces this gtty's windows.** If some window is still
+working (a command, an ssh session), gtty asks first and names them.
+Each shell then opens in its folder (home if the folder is gone), in the
+same place: the windows side by side as they were, the rest in the job
+grid. An ssh window runs its `ssh …` again, and once you're logged in
+(a password is up to you) gtty types `cd` to the folder you were in over
+there. A window that ran as another user (`sudo -s`) gets `sudo -u
+<user> -s` typed but not run: press Enter if you want it.
+
+The file is `~/.local/state/gtty/sessions` (`$XDG_STATE_HOME/gtty/sessions`,
+or `$GTTY_SESSIONS`).
 
 Every window has a number (`#4`) so you can tell them apart. Click any window
 in either grid to bring it into the middle; the one that was there moves to
@@ -241,6 +277,8 @@ Linux gtty shows a thin menu bar at the top of its window:
   Ctrl+Shift+N: another gtty), **New Shell** (⌘T; Linux Ctrl+Shift+T:
   your shell in the current window's folder) and **Run
   command** (back to the prompt, ready to type).
+- **Session** → **Take Snapshot**, **Session Manager…** and the last
+  sessions used (see "Sessions").
 
 Copy, paste and select all are keys, not menu rows (with several job
 windows a menu's Copy didn't say which one): ⌘C, ⌘V, ⌘A (Linux

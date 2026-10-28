@@ -56,11 +56,11 @@ for name in $names; do
     rm -rf "$WORK/$name"
     mkdir -p "$WORK/$name"
     sed -e "s#@FRAMES@#$WORK/$name#g" -e "s#@HOME@#$ROOT/home#g" "$script" > "$WORK/$name.gt"
-    # A neutral world: the demo's own home, zsh config and recent
+    # A neutral world: the demo's own home, zsh config and focus
     # folders, the project as gtty's folder; open / drag only say what
     # they'd do.
     (cd "$ROOT/home/shop" && env HOME="$ROOT/home" ZDOTDIR="$ROOT/home" SHELL=/bin/zsh \
-        GTTY_RECENT="$ROOT/recent" \
+        GTTY_FOCUS="$ROOT/focus" \
         GIT_PAGER=cat PAGER=cat GTTY_FONT_SIZE=16 GTTY_ANIM_MS=260 GTTY_SHOW_DRY=1 GTTY_DRAG_DRY=1 \
         "$GTTY" --script "$WORK/$name.gt")
     encode "$WORK/$name" "$OUT/$name.webp"

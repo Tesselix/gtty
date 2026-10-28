@@ -4,7 +4,7 @@
 # doesn't reach the job, and typing goes to the focused window again.
 # Run from a folder under a scratch home with a neutral prompt:
 #   S=$(mktemp -d); mkdir -p $S/home/alpha; echo "PROMPT='%1~ %# '" > $S/home/.zshrc
-#   cd $S/home/alpha && HOME=$S/home ZDOTDIR=$S/home GTTY_RECENT=$S/recent gtty --script $REPO/test/peek-esc.gt
+#   cd $S/home/alpha && HOME=$S/home ZDOTDIR=$S/home GTTY_FOCUS=$S/focus gtty --script $REPO/test/peek-esc.gt
 # Expected: esc1 / esc2 show no peek, esc3 the prompt line "alpha % helloworld".
 /s zsh
 /wait 1500
@@ -17,7 +17,7 @@
 /shot esc1-closed.bmp
 /text hello
 /wait 300
-# The recent chip: its list, expanded at once.
+# The focus chip: its list, expanded at once.
 /click 200 620
 /wait 400
 /key escape

@@ -113,5 +113,6 @@ test {
     _ = @import("core/ShellNames.zig");
     _ = @import("ai/Ai.zig");
     _ = @import("ai/Memory.zig");
-    _ = @import("core/RecentFolders.zig");
+    _ = @import("core/FocusFolders.zig");
+    _ = @import("core/Sessions.zig");
 }

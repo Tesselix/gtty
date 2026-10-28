@@ -38,9 +38,9 @@
 /glide 648 462 400
 /click 648 462
 /wait 500
-/glide 760 462 300
+/glide 760 498 300
 /wait 400
-/click 760 462
+/click 760 498
 /wait 1500
 /record stop
 /quit

@@ -15,10 +15,17 @@
 //!     selected). Picking one asks App to `cd` there (`Action.cd`, the
 //!     shell at its prompt only).
 //!
-//!   * **Recent chip** (`kind` recent): a click opens the list at once
+//!   * **Focus chip** (`kind` focus): a click opens the list at once
 //!     (no copy / expand buttons): the folders under home used lately,
-//!     most used first (`RecentFolders`), the current one marked; picking
-//!     one cds there as the folder chip's list does.
+//!     the newest at the bottom next to the chip (`FocusFolders`), the
+//!     current one marked, the newest other one selected; picking one
+//!     cds there as the folder chip's list does.
+//!
+//!   * **Session chip** (`kind` session): hovering or clicking it opens
+//!     the list at once, like the focus chip's: the saved sessions
+//!     (core/Sessions.zig), the last used at the bottom next to the chip
+//!     and selected; picking one asks App to restore it
+//!     (`Action.restore`, `target` = its id).
 //!
 //!   * **Peek:** a plain floating box over the chip, in the normal text
 //!     size: [copy] [expand]  full branch name  [×]. The copy button
@@ -63,6 +70,8 @@ expanded: bool = false,
 /// Local branches (owned) and the ones matching the filter (indexes),
 /// in git's order.
 branches: std.ArrayList([]u8) = .empty,
+/// Session: the id of each entry of `branches` (its name).
+keys: std.ArrayList([]u8) = .empty,
 shown: std.ArrayList(usize) = .empty,
 filter: std.ArrayList(u8) = .empty,
 /// Selected entry of `shown` (keyboard), first visible row, row under
@@ -107,12 +116,12 @@ row_h: f32 = 1,
 rows: usize = 0,
 bar_h: f32 = 3,
 
-pub const Kind = enum { git, folder, recent };
+pub const Kind = enum { git, folder, focus, session };
 pub const State = enum { idle, busy, ok, err };
 pub const Part = enum { none, copy, expand, close };
 
 /// What App should do after an event.
-pub const Action = enum { none, redraw, copy, close, cd };
+pub const Action = enum { none, redraw, copy, close, cd, restore };
 
 /// Mouse away this long: the peek closes (the countdown bar). A setting.
 pub var dismiss_ms: u64 = 5000;
@@ -157,12 +166,12 @@ pub fn openFolder(gpa: std.mem.Allocator, uid: ids.Id, dir: []const u8, anchor: 
     return p;
 }
 
-/// The recent chip's list, already expanded: `folders` (most used
-/// first), `dir` (the window's folder) marked when among them.
-pub fn openRecent(gpa: std.mem.Allocator, uid: ids.Id, dir: []const u8, folders: []const []const u8, anchor: Rect) !Peek {
-    var p = try open(gpa, uid, dir, "recent folders", anchor);
+/// The focus chip's list, already expanded: `folders` (oldest first,
+/// the newest last), `dir` (the window's folder) marked when among them.
+pub fn openFocus(gpa: std.mem.Allocator, uid: ids.Id, dir: []const u8, folders: []const []const u8, anchor: Rect) !Peek {
+    var p = try open(gpa, uid, dir, "focus folders", anchor);
     errdefer p.deinit(undefined);
-    p.kind = .recent;
+    p.kind = .focus;
     p.expanded = true;
     for (folders) |f| {
         const copy = try gpa.dupe(u8, f);
@@ -175,15 +184,48 @@ pub fn openRecent(gpa: std.mem.Allocator, uid: ids.Id, dir: []const u8, folders:
     return p;
 }
 
-/// The marked entry: the current branch, or the window's folder.
-fn currentName(p: *const Peek) []const u8 {
-    return if (p.kind == .git) p.full else p.dir;
+/// The session chip's list, already expanded: `names` with their `ids`
+/// (the last used last).
+pub fn openSessions(gpa: std.mem.Allocator, uid: ids.Id, names: []const []const u8, keys: []const []const u8, anchor: Rect) !Peek {
+    var p = try open(gpa, uid, "", "sessions", anchor);
+    errdefer p.deinit(undefined);
+    p.kind = .session;
+    p.expanded = true;
+    for (names, keys) |n, k| {
+        try p.branches.ensureUnusedCapacity(gpa, 1);
+        try p.keys.ensureUnusedCapacity(gpa, 1);
+        const name = try gpa.dupe(u8, n);
+        const key_copy = gpa.dupe(u8, k) catch |e| {
+            gpa.free(name);
+            return e;
+        };
+        p.branches.appendAssumeCapacity(name);
+        p.keys.appendAssumeCapacity(key_copy);
+    }
+    p.refilter();
+    return p;
 }
 
-/// How a folder of the recent list shows (and is filtered): under home
+/// A list with only a title over it (focus, session): nothing to copy or
+/// fold.
+fn listOnly(p: *const Peek) bool {
+    return p.kind == .focus or p.kind == .session;
+}
+
+/// The marked entry: the current branch, or the window's folder (a
+/// session list marks none).
+fn currentName(p: *const Peek) []const u8 {
+    return switch (p.kind) {
+        .git => p.full,
+        .session => "",
+        else => p.dir,
+    };
+}
+
+/// How a folder of the focus list shows (and is filtered): under home
 /// without it (drawn after a `~`); others as they are.
 fn homeRel(p: *const Peek, name: []const u8) ?[]const u8 {
-    if (p.kind != .recent) return null;
+    if (p.kind != .focus) return null;
     const home = std.mem.trimEnd(u8, std.mem.span(c.getenv("HOME") orelse return null), "/");
     if (home.len == 0 or !std.mem.startsWith(u8, name, home) or name.len <= home.len or name[home.len] != '/') return null;
     return name[home.len..];
@@ -203,6 +245,8 @@ pub fn deinit(p: *Peek, reaper: *Process.Reaper) void {
     if (p.switch_run) |*r| r.deinit(p.gpa, reaper);
     for (p.branches.items) |b| p.gpa.free(b);
     p.branches.deinit(p.gpa);
+    for (p.keys.items) |k| p.gpa.free(k);
+    p.keys.deinit(p.gpa);
     p.shown.deinit(p.gpa);
     p.filter.deinit(p.gpa);
     p.err_msg.deinit(p.gpa);
@@ -259,6 +303,11 @@ fn pick(p: *Peek) Action {
     const name = p.branches.items[p.shown.items[p.sel]];
     p.err_msg.clearRetainingCapacity();
     p.gpa.free(p.target);
+    // Session: App restores the one with this id.
+    if (p.kind == .session) {
+        p.target = p.gpa.dupe(u8, p.keys.items[p.shown.items[p.sel]]) catch &.{};
+        return if (p.target.len > 0) .restore else .none;
+    }
     p.target = p.gpa.dupe(u8, name) catch &.{};
     p.state_ms = c.SDL_GetTicks();
     p.already = std.mem.eql(u8, name, p.currentName());
@@ -336,8 +385,12 @@ fn refilter(p: *Peek) void {
         if (std.mem.eql(u8, p.branches.items[i], p.full)) p.sel = k;
     };
     if (p.kind == .folder and p.filter.items.len == 0) p.sel = p.shown.items.len -| 2;
-    // Recent: the first one that isn't the current folder.
-    if (p.kind == .recent and p.shown.items.len > 1 and std.mem.eql(u8, p.branches.items[p.shown.items[0]], p.currentName())) p.sel = 1;
+    // Focus: the newest one (bottom) that isn't the current folder.
+    if (p.kind == .session and p.shown.items.len > 0) p.sel = p.shown.items.len - 1;
+    if (p.kind == .focus and p.shown.items.len > 0) {
+        p.sel = p.shown.items.len - 1;
+        if (p.sel > 0 and std.mem.eql(u8, p.branches.items[p.shown.items[p.sel]], p.currentName())) p.sel -= 1;
+    }
     p.keepSelVisible();
 }
 
@@ -557,8 +610,8 @@ pub fn layout(p: *Peek, f: *const Gfx.Face, sf: *const Gfx.Face, ui: f32, bounds
         p.expand_r.x = x + pad;
     }
     var tx = p.expand_r.x + icon + 2 * gap;
-    // Recent: only a title, nothing to copy or fold.
-    if (p.kind == .recent) {
+    // Focus: only a title, nothing to copy or fold.
+    if (p.listOnly()) {
         p.copy_r = .{};
         p.expand_r = .{};
         tx = x + pad + gap;
@@ -584,7 +637,7 @@ pub fn draw(p: *const Peek, gfx: *Gfx, theme: *const Theme, f: *Gfx.Face, sf: *G
     gfx.fill(b, theme.title_bg);
 
     // Header: [copy] [expand]  full text  [×] (folder: no copy)
-    if (p.kind != .recent) {
+    if (!p.listOnly()) {
         if (p.kind == .git) {
             JobWindow.copyIcon(gfx, p.copy_r, theme, ui);
             if (p.over == .copy) gfx.outline(p.copy_r, theme.title_fg, t);
@@ -594,7 +647,7 @@ pub fn draw(p: *const Peek, gfx: *Gfx, theme: *const Theme, f: *Gfx.Face, sf: *G
     JobWindow.closeIcon(gfx, p.close_r, theme, ui);
     gfx.clip(p.text_r);
     const hy = p.text_r.y + @round((p.text_r.h - f.cell_h) / 2);
-    const tend = gfx.text(f, p.text_r.x, hy, p.full, if (p.kind == .recent) theme.title_fg else theme.prompt_fg);
+    const tend = gfx.text(f, p.text_r.x, hy, p.full, if (p.listOnly()) theme.title_fg else theme.prompt_fg);
     if (p.flash_ms != 0 and p.flash_row == null) {
         const ft = now -| p.flash_ms;
         if (ft < flash_len_ms) {
@@ -625,7 +678,7 @@ pub fn draw(p: *const Peek, gfx: *Gfx, theme: *const Theme, f: *Gfx.Face, sf: *G
         const lr = p.list_r;
         gfx.clip(lr);
         if (p.shown.items.len == 0) {
-            const msg = if (p.kind == .recent) (if (p.branches.items.len == 0) "no recent folders yet" else "no folder matches") else if (p.kind == .folder) (if (p.branches.items.len == 0) "no folder above" else "no folder matches") else if (p.list_run != null) "loading branches…" else if (p.branches.items.len == 0) "no local branches" else "no branch matches";
+            const msg = if (p.kind == .session) (if (p.branches.items.len == 0) "no saved sessions" else "no session matches") else if (p.kind == .focus) (if (p.branches.items.len == 0) "no focus folders yet" else "no folder matches") else if (p.kind == .folder) (if (p.branches.items.len == 0) "no folder above" else "no folder matches") else if (p.list_run != null) "loading branches…" else if (p.branches.items.len == 0) "no local branches" else "no branch matches";
             _ = gfx.text(f, lr.x + f.cell_w * 2, lr.y + @round((p.row_h - f.cell_h) / 2), msg, theme.dim);
         }
         var k = p.top;
@@ -700,7 +753,11 @@ pub fn draw(p: *const Peek, gfx: *Gfx, theme: *const Theme, f: *Gfx.Face, sf: *G
 }
 
 fn filterHint(p: *const Peek) []const u8 {
-    return if (p.kind != .git) "filter folders" else "filter branches";
+    return switch (p.kind) {
+        .git => "filter branches",
+        .session => "filter sessions",
+        else => "filter folders",
+    };
 }
 
 /// A chevron: up (grow into the list) while collapsed, down once expanded.
@@ -792,19 +849,19 @@ test "folder peek: a click on the path copies, resting on it or the expand butto
     try t.expect(p.expanded);
 }
 
-test "recent peek: opens expanded, starts past the current folder, filters without home" {
+test "focus peek: opens expanded, starts on the newest other folder, filters without home" {
     const t = std.testing;
     const home = std.mem.span(c.getenv("HOME") orelse return);
     var b1: [256]u8 = undefined;
     var b2: [256]u8 = undefined;
     const a = try std.fmt.bufPrint(&b1, "{s}/src/gtty", .{home});
     const b = try std.fmt.bufPrint(&b2, "{s}/docs", .{home});
-    var p = try Peek.openRecent(t.allocator, 1, a, &.{ a, b }, .{});
+    var p = try Peek.openFocus(t.allocator, 1, a, &.{ b, a }, .{});
     var reaper: Process.Reaper = .{ .gpa = t.allocator };
     defer reaper.deinit();
     defer p.deinit(&reaper);
     try t.expect(p.wantsKeys());
-    try t.expectEqual(@as(usize, 1), p.sel);
+    try t.expectEqual(@as(usize, 0), p.sel);
     try t.expectEqual(Action.cd, p.key(c.SDLK_RETURN));
     try t.expectEqualStrings(b, p.target);
     // The home folder's own name doesn't match every row.
@@ -813,4 +870,20 @@ test "recent peek: opens expanded, starts past the current folder, filters witho
         p.text(base);
         try t.expectEqual(@as(usize, 0), p.shown.items.len);
     }
+}
+
+test "session peek: opens expanded on the last used (bottom); a pick restores it by id" {
+    const t = std.testing;
+    var p = try Peek.openSessions(t.allocator, 1, &.{ "older", "newest" }, &.{ "id-1", "id-2" }, .{});
+    var reaper: Process.Reaper = .{ .gpa = t.allocator };
+    defer reaper.deinit();
+    defer p.deinit(&reaper);
+    try t.expect(p.wantsKeys());
+    try t.expectEqual(@as(usize, 1), p.sel);
+    try t.expectEqual(Action.restore, p.key(c.SDLK_RETURN));
+    try t.expectEqualStrings("id-2", p.target);
+    p.text("old");
+    try t.expectEqual(@as(usize, 1), p.shown.items.len);
+    try t.expectEqual(Action.restore, p.key(c.SDLK_RETURN));
+    try t.expectEqualStrings("id-1", p.target);
 }

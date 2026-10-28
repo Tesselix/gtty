@@ -39,7 +39,7 @@ const remote = @import("../core/remote.zig");
 const RemoteLink = @import("../core/RemoteLink.zig");
 const FileOpener = @import("FileOpener.zig");
 const FileFx = @import("FileFx.zig");
-const RecentFolders = @import("../core/RecentFolders.zig");
+const FocusFolders = @import("../core/FocusFolders.zig");
 const LineEdit = @import("LineEdit.zig");
 const find = @import("find.zig");
 const Rect = Gfx.Rect;
@@ -50,7 +50,7 @@ pub const Kind = enum { command, shell };
 
 /// `close` is the red × : close once finished; while running it opens the
 /// kill menu, and only `kill` (the skull in that menu) kills the job.
-pub const Hit = enum { none, title, find_box, find_close, close, kill, check, copy, zoom_in, zoom_out, colors, sync, files, minimize, maximize, scroller, git_chip, folder_chip, recent_chip, footer, out };
+pub const Hit = enum { none, title, find_box, find_close, close, kill, check, copy, zoom_in, zoom_out, colors, sync, files, minimize, maximize, scroller, git_chip, folder_chip, focus_chip, session_chip, footer, out };
 
 /// The selection checkbox at the far left of the title (several windows
 /// in the windows area): hidden (one window shown), off (in the job grid),
@@ -138,8 +138,8 @@ ls_cmd_buf: [256]u8 = undefined,
 ls_cmd_len: usize = 0,
 cmd_seen: u32 = 0,
 /// A command that counts as a use of its folder started
-/// (`RecentFolders.countsAsUse`): bumped, with the folder it ran in;
-/// App's recent folders count it when it differs from `use_seen`.
+/// (`FocusFolders.countsAsUse`): bumped, with the folder it ran in;
+/// App's focus folders count it when it differs from `use_seen`.
 use_seq: u32 = 0,
 use_seen: u32 = 0,
 use_dir: std.ArrayList(u8) = .empty,
@@ -318,15 +318,22 @@ chips_next_ms: u64 = 0,
 foot_r: Rect = .{},
 git_chip_r: Rect = .{},
 folder_chip_r: Rect = .{},
-/// The recent chip (the folders used lately; a click opens their list).
-recent_chip_r: Rect = .{},
+/// The focus chip (the folders used lately; a click opens their list).
+focus_chip_r: Rect = .{},
 /// The mouse is over a chip / its peek is open (drawn lighter).
 over_git_chip: bool = false,
 git_peek_open: bool = false,
 over_folder_chip: bool = false,
 folder_peek_open: bool = false,
-over_recent_chip: bool = false,
-recent_peek_open: bool = false,
+over_focus_chip: bool = false,
+focus_peek_open: bool = false,
+/// The title-bar action on the left under the mouse, when it can be
+/// clicked (drawn lit, the pointer a hand); `.none` otherwise.
+over_action: Hit = .none,
+/// The session chip (gtty-sessions saved: their list), after the focus chip.
+session_chip_r: Rect = .{},
+over_session_chip: bool = false,
+session_peek_open: bool = false,
 
 pub fn create(gpa: std.mem.Allocator, gfx: *Gfx, uid: ids.Id, serial: u32, spec: Spec, rect: Rect, scale: Scale) !*JobWindow {
     const w = try gpa.create(JobWindow);
@@ -582,7 +589,7 @@ pub fn pump(w: *JobWindow, gfx: *Gfx) bool {
             w.ls_cmd_len = cmd.len;
         }
         // The folder it runs in: the one reported at its prompt.
-        if (RecentFolders.countsAsUse(cmd) and w.folder_now.items.len > 0) {
+        if (FocusFolders.countsAsUse(cmd) and w.folder_now.items.len > 0) {
             w.use_dir.clearRetainingCapacity();
             w.use_dir.appendSlice(w.gpa, w.folder_now.items) catch {};
             w.use_seq +%= 1;
@@ -1129,6 +1136,9 @@ pub var color_folders: bool = true;
 /// drop): run the shell's last listing command again (config
 /// `refresh-ls`, Settings → General; `refreshListing`).
 pub var refresh_ls: bool = true;
+/// Some gtty-session is saved (core/Sessions.zig): the session chip shows
+/// (App sets it).
+pub var has_sessions: bool = false;
 pub var mark_pt: f32 = 4;
 /// Space between the window's frame and the marks strip, in points.
 const mark_gap: f32 = 3;
@@ -1283,8 +1293,11 @@ pub fn footHeight(gfx: *Gfx, scale: Scale) f32 {
 /// The git chip's text outside a git repo (dimmed, no peek).
 const no_git_label = "git";
 
-/// The recent chip's text.
-const recent_label = "recent";
+/// The focus chip's text.
+const focus_label = "focus";
+
+/// The session chip's text.
+const session_label = "session";
 
 /// Longest branch name shown on the chip; the peek shows all of it.
 const chip_max_chars = 32;
@@ -1293,11 +1306,13 @@ const chip_max_chars = 32;
 /// runs: the folder chip first (the folder's name; not in a remote
 /// session, where the local folder means nothing), then the git chip,
 /// always there: the branch inside a git repo, else dimmed (`no_git_label`,
-/// no peek); then the recent chip (not in a remote session either).
-fn layoutChips(w: *JobWindow, gfx: *Gfx) void {
+/// no peek); then the focus chip (not in a remote session either); then
+/// the session chip while some session is saved (`has_sessions`).
+pub fn layoutChips(w: *JobWindow, gfx: *Gfx) void {
     w.git_chip_r = .{};
     w.folder_chip_r = .{};
-    w.recent_chip_r = .{};
+    w.focus_chip_r = .{};
+    w.session_chip_r = .{};
     if (w.grid_r != null or !w.proc.running()) return;
     const f = chipFace(gfx, w.scale) catch return;
     const ui = w.scale.ui;
@@ -1311,7 +1326,13 @@ fn layoutChips(w: *JobWindow, gfx: *Gfx) void {
     };
     w.git_chip_r = .{ .x = x, .y = y, .w = chipWidth(f, ui, w.branch() orelse no_git_label), .h = h };
     x += w.git_chip_r.w + @round(6 * ui);
-    if (w.remote_len == 0) w.recent_chip_r = .{ .x = x, .y = y, .w = chipWidth(f, ui, recent_label), .h = h };
+    if (w.remote_len == 0) {
+        w.focus_chip_r = .{ .x = x, .y = y, .w = chipWidth(f, ui, focus_label), .h = h };
+        x += w.focus_chip_r.w + @round(6 * ui);
+    }
+    // Only when it fits (a narrow window).
+    const sw = chipWidth(f, ui, session_label);
+    if (has_sessions and x + sw <= r.x + r.w - @round(6 * ui)) w.session_chip_r = .{ .x = x, .y = y, .w = sw, .h = h };
 }
 
 fn chipWidth(f: *const Gfx.Face, ui: f32, label: []const u8) f32 {
@@ -1319,8 +1340,8 @@ fn chipWidth(f: *const Gfx.Face, ui: f32, label: []const u8) f32 {
     return @round(7 * ui) * 2 + chipIconW(f, ui) + label_w + chipCapW(f, ui);
 }
 
-/// The key-cap at a chip's right end (its shortcut's number, ⌘1…3 /
-/// Ctrl+Shift+1…3), with the gap before it.
+/// The key-cap at a chip's right end (its shortcut's number, ⌘1…4 /
+/// Ctrl+Shift+1…4), with the gap before it.
 fn chipCapW(f: *const Gfx.Face, ui: f32) f32 {
     return @round(6 * ui) + f.cell_w + @round(4 * ui) * 2;
 }
@@ -1964,7 +1985,8 @@ pub fn hit(w: *const JobWindow, x: f32, y: f32) Hit {
     if (w.grid_r == null and w.scrollThumb() != null and w.scrollerHitR().contains(x, y)) return .scroller;
     if (w.git_chip_r.contains(x, y)) return .git_chip;
     if (w.folder_chip_r.contains(x, y)) return .folder_chip;
-    if (w.recent_chip_r.contains(x, y)) return .recent_chip;
+    if (w.focus_chip_r.contains(x, y)) return .focus_chip;
+    if (w.session_chip_r.contains(x, y)) return .session_chip;
     if (w.grid_r == null and w.foot_r.contains(x, y)) return .footer;
     return .out;
 }
@@ -2050,10 +2072,10 @@ fn tickRest(w: *JobWindow, gfx: *Gfx, now: u64) bool {
     if (!w.proc.running() and w.link_pid != 0) w.endRemote();
     if (w.grid_r == null and w.proc.running() and now >= w.chips_next_ms) {
         w.chips_next_ms = now + chips_refresh_ms;
-        const before = .{ w.git_chip_r, w.folder_chip_r, w.recent_chip_r };
+        const before = .{ w.git_chip_r, w.folder_chip_r, w.focus_chip_r, w.session_chip_r };
         chips = w.refreshChips() or chips;
         w.layoutChips(gfx);
-        if (!std.meta.eql(before, .{ w.git_chip_r, w.folder_chip_r, w.recent_chip_r })) chips = true;
+        if (!std.meta.eql(before, .{ w.git_chip_r, w.folder_chip_r, w.focus_chip_r, w.session_chip_r })) chips = true;
     }
     // Moving: redraw every frame; done after `anim_len_ms`.
     if (w.anim_from != null) {
@@ -2364,13 +2386,53 @@ pub fn hover(w: *JobWindow, pt: ?[2]f32) bool {
     const part: Hit = if (pt) |p| w.hit(p[0], p[1]) else .none;
     const over_chip = part == .git_chip;
     const over_folder = part == .folder_chip;
-    const over_recent = part == .recent_chip;
-    const changed = over != w.over_scroller or over_chip != w.over_git_chip or over_folder != w.over_folder_chip or over_recent != w.over_recent_chip;
+    const over_focus = part == .focus_chip;
+    const over_session = part == .session_chip;
+    const action: Hit = if (w.actionLive(part)) part else .none;
+    const changed = over != w.over_scroller or over_chip != w.over_git_chip or over_folder != w.over_folder_chip or over_focus != w.over_focus_chip or over_session != w.over_session_chip or action != w.over_action;
+    w.over_action = action;
     w.over_scroller = over;
     w.over_git_chip = over_chip;
     w.over_folder_chip = over_folder;
-    w.over_recent_chip = over_recent;
+    w.over_focus_chip = over_focus;
+    w.over_session_chip = over_session;
     return changed;
+}
+
+/// A left title-bar action that a click would act on now (shown, and
+/// not at its limit: A− at 100%, A+ at the largest, the folder button in
+/// a remote session).
+fn actionLive(w: *const JobWindow, h: Hit) bool {
+    return switch (h) {
+        .check => w.check_r.w > 0 and w.check != .locked,
+        .copy => w.copy_r.w > 0,
+        .zoom_out => w.zoom_out_r.w > 0 and w.zoom > min_zoom,
+        .zoom_in => w.zoom_in_r.w > 0 and w.zoom < max_zoom,
+        .colors => w.colors_r.w > 0,
+        .sync => w.sync_r.w > 0,
+        .files => w.files_r.w > 0 and w.remote_len == 0,
+        else => false,
+    };
+}
+
+/// The rect of a left title-bar action.
+fn actionRect(w: *const JobWindow, h: Hit) Rect {
+    return switch (h) {
+        .check => w.check_r,
+        .copy => w.copy_r,
+        .zoom_out => w.zoom_out_r,
+        .zoom_in => w.zoom_in_r,
+        .colors => w.colors_r,
+        .sync => w.sync_r,
+        .files => w.files_r,
+        else => .{},
+    };
+}
+
+/// Pointer over a left title-bar action that can be clicked (App shows
+/// the hand pointer).
+pub fn overAction(w: *const JobWindow) bool {
+    return w.over_action != .none;
 }
 
 /// Left button down on the content: start a selection there. A double
@@ -2609,8 +2671,10 @@ fn drawFooter(w: *const JobWindow, gfx: *Gfx, theme: *const Theme) void {
     }
     if (w.folderName()) |name| if (w.folder_chip_r.w > 0)
         drawChip(gfx, theme, f, ui, w.folder_chip_r, name, w.over_folder_chip or w.folder_peek_open, .folder, true, 1);
-    if (w.recent_chip_r.w > 0)
-        drawChip(gfx, theme, f, ui, w.recent_chip_r, recent_label, w.over_recent_chip or w.recent_peek_open, .recent, true, 3);
+    if (w.focus_chip_r.w > 0)
+        drawChip(gfx, theme, f, ui, w.focus_chip_r, focus_label, w.over_focus_chip or w.focus_peek_open, .focus, true, 3);
+    if (w.session_chip_r.w > 0)
+        drawChip(gfx, theme, f, ui, w.session_chip_r, session_label, w.over_session_chip or w.session_peek_open, .session, true, 4);
     if (w.chip_flash_ms != 0) {
         const t = c.SDL_GetTicks() -| w.chip_flash_ms;
         if (t < name_flash_ms) {
@@ -2623,7 +2687,7 @@ fn drawFooter(w: *const JobWindow, gfx: *Gfx, theme: *const Theme) void {
 /// A chip: its icon and label (cut with … when long), then its
 /// shortcut's number `num` in a key-cap; lighter while the mouse is on it
 /// or its peek is open; dimmed when disabled.
-fn drawChip(gfx: *Gfx, theme: *const Theme, f: *Gfx.Face, ui: f32, cr: Rect, label: []const u8, lit: bool, icon: enum { git, folder, recent }, enabled: bool, num: u8) void {
+fn drawChip(gfx: *Gfx, theme: *const Theme, f: *Gfx.Face, ui: f32, cr: Rect, label: []const u8, lit: bool, icon: enum { git, folder, focus, session }, enabled: bool, num: u8) void {
     const bg = theme.title_bg.mix(theme.fg, if (lit) 0.16 else if (enabled) 0.06 else 0.02);
     gfx.fill(cr, bg);
     const icon_col = if (enabled) theme.focus else theme.dim;
@@ -2633,7 +2697,8 @@ fn drawChip(gfx: *Gfx, theme: *const Theme, f: *Gfx.Face, ui: f32, cr: Rect, lab
     switch (icon) {
         .git => gitIcon(gfx, icon_col, ui, cr.x + pad, iy, iw, f.cell_h),
         .folder => folderIcon(gfx, icon_col, ui, cr.x + pad, iy, iw, f.cell_h),
-        .recent => clockIcon(gfx, icon_col, bg, ui, cr.x + pad, iy, iw, f.cell_h),
+        .focus => clockIcon(gfx, icon_col, bg, ui, cr.x + pad, iy, iw, f.cell_h),
+        .session => sessionIcon(gfx, icon_col, bg, ui, cr.x + pad, iy, iw, f.cell_h),
     }
     const tx = cr.x + pad + chipIconW(f, ui);
     const ty = cr.y + @round((cr.h - f.cell_h) / 2);
@@ -2657,7 +2722,7 @@ fn folderIcon(gfx: *Gfx, col: Rgb, ui: f32, x: f32, y: f32, w: f32, h: f32) void
     gfx.fill(.{ .x = body.x, .y = body.y - tab_h, .w = @round(body.w * 0.45), .h = tab_h + t }, col);
 }
 
-/// A clock face with its hands at ten past (recent folders), centered in
+/// A clock face with its hands at ten past (focus folders), centered in
 /// the `w` × `h` box on background `bg`.
 fn clockIcon(gfx: *Gfx, col: Rgb, bg: Rgb, ui: f32, x: f32, y: f32, w: f32, h: f32) void {
     const t = @max(@round(h * 0.08), @max(@round(ui), 1));
@@ -2669,6 +2734,20 @@ fn clockIcon(gfx: *Gfx, col: Rgb, bg: Rgb, ui: f32, x: f32, y: f32, w: f32, h: f
     gfx.disc(cx, cy, rad - t, bg);
     gfx.line(cx, cy, cx, cy - rad * 0.62, col, t);
     gfx.line(cx, cy, cx + rad * 0.48, cy, col, t);
+}
+
+/// Two windows, one over the other's corner (a session: a screen of
+/// windows), centered in a `w` × `h` box.
+fn sessionIcon(gfx: *Gfx, col: Rgb, bg: Rgb, ui: f32, x: f32, y: f32, w: f32, h: f32) void {
+    const t = @max(@round(h * 0.08), @max(@round(ui), 1));
+    const bw = @round(w * 0.72);
+    const bh = @round(h * 0.46);
+    const back: Rect = .{ .x = x + w - bw, .y = y + @round(h * 0.16), .w = bw, .h = bh };
+    const front: Rect = .{ .x = x, .y = y + @round(h * 0.38), .w = bw, .h = bh };
+    gfx.outline(back, col, t);
+    gfx.fill(front, bg);
+    gfx.outline(front, col, t);
+    gfx.fill(.{ .x = front.x, .y = front.y, .w = front.w, .h = @max(@round(h * 0.1), t) }, col);
 }
 
 /// Branching commits, a "Y": a first commit, then a joint commit where a
@@ -2788,9 +2867,20 @@ fn drawTitle(w: *JobWindow, gfx: *Gfx, theme: *const Theme, chrome: *Gfx.Face) v
     const ui = w.scale.ui;
     gfx.fill(w.title_r, theme.title_bg);
     const ty = w.title_r.y + @round((w.title_r.h - chrome.cell_h) / 2);
+    // The title's own area: from the window number to the window actions
+    // (or the find box), a band of its own between the content actions
+    // on the left and the window actions on the right.
+    const end = if (w.find_r.w > 0) w.find_r.x else w.min_r.x;
+    const area_x = w.actions_end + @round(6 * ui);
+    const area_end = end - @round(6 * ui);
+    const band_h = @round(chrome.cell_h + 6 * ui);
+    if (area_end > area_x)
+        gfx.fill(.{ .x = area_x, .y = w.title_r.y + @round((w.title_r.h - band_h) / 2), .w = area_end - area_x, .h = band_h }, theme.title_bg.mix(theme.fg, 0.05));
+    const inner_pad = @round(4 * ui);
+
     var idbuf: [16]u8 = undefined;
     const id_s = std.fmt.bufPrint(&idbuf, "#{d}", .{w.serial}) catch "#";
-    var x = w.actions_end + @round(10 * ui);
+    var x = area_x + inner_pad;
     // Serial number as a small badge, so it's easy to tell windows apart
     // (filled blue on the focused window).
     const bpad = @round(4 * ui);
@@ -2803,22 +2893,26 @@ fn drawTitle(w: *JobWindow, gfx: *Gfx, theme: *const Theme, chrome: *Gfx.Face) v
     const status_col = if (w.proc.running()) theme.focus else if (w.proc.exit_code == 0) theme.ok else theme.stderr_accent;
     const dot = @round(chrome.cell_h * 0.36);
     gfx.fill(.{ .x = x, .y = w.title_r.y + (w.title_r.h - dot) / 2, .w = dot, .h = dot }, status_col);
-    x += dot + chrome.cell_w * 0.6;
+    x += dot + chrome.cell_w;
 
-    // Title, then the status text right before the window actions. In a
-    // narrow (grid) title bar the status is dropped first, then the title
-    // is cut; the action icons always stay.
+    // The status text at the area's right end; the title (the command)
+    // centered in the area, pushed aside by the number / status when they
+    // would overlap, cut when it doesn't fit. In a narrow (grid) title bar
+    // the status is dropped first, then the title is cut; the action
+    // icons always stay.
     var sbuf: [48]u8 = undefined;
     const status = w.statusText(&sbuf);
     const status_w = Gfx.textWidth(chrome, status);
-    const end = if (w.find_r.w > 0) w.find_r.x else w.min_r.x;
-    const room = end - chrome.cell_w - x;
+    const room = area_end - inner_pad - x;
     const show_status = room >= status_w + chrome.cell_w * 8;
-    const title_max = room - (if (show_status) status_w + chrome.cell_w else 0);
-    gfx.clip(.{ .x = x, .y = w.title_r.y, .w = @max(title_max, 0), .h = w.title_r.h });
-    _ = gfx.text(chrome, x, ty, w.title, theme.title_fg);
+    const right = if (show_status) area_end - inner_pad - status_w - chrome.cell_w else area_end - inner_pad;
+    const tw = Gfx.textWidth(chrome, w.title);
+    const centered = area_x + @round((area_end - area_x - tw) / 2);
+    const tx = @max(@min(centered, right - tw), x);
+    gfx.clip(.{ .x = x, .y = w.title_r.y, .w = @max(right - x, 0), .h = w.title_r.h });
+    _ = gfx.text(chrome, tx, ty, w.title, theme.title_fg);
     gfx.clip(null);
-    if (show_status) _ = gfx.text(chrome, end - status_w - chrome.cell_w, ty, status, theme.dim);
+    if (show_status) _ = gfx.text(chrome, area_end - inner_pad - status_w, ty, status, theme.dim);
     if (w.find_r.w > 0) w.drawFind(gfx, theme, chrome);
 
     closeIcon(gfx, w.close_r, theme, ui);
@@ -2834,6 +2928,13 @@ fn drawTitle(w: *JobWindow, gfx: *Gfx, theme: *const Theme, chrome: *Gfx.Face) v
         colorsIcon(gfx, chrome, w.colors_r, theme, ui, w.colors);
         syncIcon(gfx, chrome, w.sync_r, theme, ui, w.sync);
         filesIcon(gfx, w.files_r, theme, ui, w.remote_len == 0);
+    }
+    // The action under the mouse lights up: a lighter face and a thin
+    // frame, so the buttons read as clickable.
+    if (w.over_action != .none and w.actionLive(w.over_action)) {
+        const r = w.actionRect(w.over_action);
+        gfx.fillAlpha(r, Rgb.hex(0xffffff), 40);
+        gfx.outline(r, theme.title_fg.mix(theme.title_bg, 0.25), @max(@round(ui), 1));
     }
     if (w.min_r.w > 0) minimizeIcon(gfx, w.min_r, theme, ui);
     if (w.max_r.w > 0) maximizeIcon(gfx, w.max_r, theme, ui, w.maximized);
@@ -2923,9 +3024,16 @@ pub fn checkIcon(gfx: *Gfx, r: Rect, theme: *const Theme, ui: f32, look: CheckLo
     }
 }
 
+/// The face of a title-bar action button: a lighter gray than the title
+/// bar, so it reads as a button (the window actions on the right keep
+/// their own).
+fn actionBg(theme: *const Theme) Rgb {
+    return theme.title_bg.mix(theme.fg, 0.15);
+}
+
 /// Two overlapping sheets.
 pub fn copyIcon(gfx: *Gfx, r: Rect, theme: *const Theme, ui: f32) void {
-    gfx.fill(r, theme.title_bg.mix(theme.fg, 0.07));
+    gfx.fill(r, actionBg(theme));
     const t = @max(@round(ui), 1);
     const m = @round(r.w * 0.15);
     const s = @round(r.w * 0.55);
@@ -2933,14 +3041,14 @@ pub fn copyIcon(gfx: *Gfx, r: Rect, theme: *const Theme, ui: f32) void {
     const back: Rect = .{ .x = r.x + m, .y = r.y + m, .w = s, .h = s };
     const front: Rect = .{ .x = back.x + off, .y = back.y + off, .w = s, .h = s };
     gfx.outline(back, theme.title_fg.mix(theme.title_bg, 0.35), t);
-    gfx.fill(front, theme.title_bg.mix(theme.fg, 0.07));
+    gfx.fill(front, actionBg(theme));
     gfx.outline(front, theme.title_fg, t);
 }
 
 /// A letter A with a small + or − at its top right; dimmed when it can't
 /// go further (A− at 100%).
 fn zoomIcon(gfx: *Gfx, f: *Gfx.Face, r: Rect, theme: *const Theme, ui: f32, plus: bool, enabled: bool) void {
-    gfx.fill(r, theme.title_bg.mix(theme.fg, 0.07));
+    gfx.fill(r, actionBg(theme));
     const col = if (enabled) theme.title_fg else theme.title_fg.mix(theme.title_bg, 0.6);
     gfx.glyphAt(f, r.x + @round(r.w * 0.12), r.y + @round((r.h - f.cell_h) / 2), 'A', col);
     const t = @max(@round(1.2 * ui), 1);
@@ -2959,7 +3067,7 @@ const sync_label = "sync";
 /// the others, or is read-only and gets their typing).
 fn syncIcon(gfx: *Gfx, f: *Gfx.Face, r: Rect, theme: *const Theme, ui: f32, s: Sync) void {
     const on = s != .off;
-    gfx.fill(r, if (on) theme.focus.mix(theme.title_bg, 0.8) else theme.title_bg.mix(theme.fg, 0.07));
+    gfx.fill(r, if (on) theme.focus.mix(theme.title_bg, 0.8) else actionBg(theme));
     const box: Rect = .{ .x = r.x + @round(2 * ui), .y = r.y, .w = r.h, .h = r.h };
     checkIcon(gfx, box, theme, ui, if (on) .on else .off);
     const y = r.y + @round((r.h - f.cell_h) / 2);
@@ -2969,7 +3077,7 @@ fn syncIcon(gfx: *Gfx, f: *Gfx.Face, r: Rect, theme: *const Theme, ui: f32, s: S
 /// A pill with the word "color": each letter in its own color while colors
 /// are on; dim gray and struck through while they are off.
 fn colorsIcon(gfx: *Gfx, f: *Gfx.Face, r: Rect, theme: *const Theme, ui: f32, on: bool) void {
-    gfx.fill(r, theme.title_bg.mix(theme.fg, 0.07));
+    gfx.fill(r, actionBg(theme));
     const cols = [_]Rgb{ theme.palette[9], theme.palette[11], theme.palette[10], theme.palette[14], theme.palette[12] };
     const off_col = theme.title_fg.mix(theme.title_bg, 0.55);
     const x0 = r.x + @round((r.w - f.cell_w * colors_label.len) / 2);
@@ -2987,7 +3095,7 @@ fn colorsIcon(gfx: *Gfx, f: *Gfx.Face, r: Rect, theme: *const Theme, ui: f32, on
 /// A folder (its tab on the top left); dimmed when it can't be used (a
 /// remote session).
 fn filesIcon(gfx: *Gfx, r: Rect, theme: *const Theme, ui: f32, enabled: bool) void {
-    gfx.fill(r, theme.title_bg.mix(theme.fg, 0.07));
+    gfx.fill(r, actionBg(theme));
     const col = if (enabled) theme.title_fg else theme.title_fg.mix(theme.title_bg, 0.6);
     const t = @max(@round(1.2 * ui), 1);
     const m = @round(r.w * 0.2);

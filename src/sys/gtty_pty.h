@@ -54,6 +54,8 @@ long gtty_fg_args(int master, char *buf, unsigned long len);
 // argv / environment of a process ("NAME=value"), each ending in a NUL.
 long gtty_proc_args(int pid, char *buf, unsigned long len);
 long gtty_proc_env(int pid, char *buf, unsigned long len);
+// The user a process runs as (its effective uid), or -1.
+long gtty_proc_uid(int pid);
 // The local port of the process's first TCP connection, or -1.
 int gtty_proc_tcp_lport(int pid);
 

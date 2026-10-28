@@ -4,8 +4,9 @@
 // macOS: gtty's menus in the menu bar SDL creates (gtty app menu with
 // About / Preferences… / Services / Hide / Quit, then Window). SDL's
 // "Preferences…" row (⌘,, no action) becomes "Settings…" with New Window
-// (⌘N), New Shell (⌘T), Run Command and Sync Typing under it; a Help
-// menu with gtty Help (⌘?). No Edit menu (see gtty_menu.h).
+// (⌘N), New Shell (⌘T), Run Command and Sync Typing under it; a Session
+// menu (Take Snapshot, Session Manager…, the saved sessions, rebuilt each
+// time it opens); a Help menu with gtty Help (⌘?). No Edit menu (see gtty_menu.h).
 // The Dock icon's menu (right click) gets New Window too, as Terminal's
 // and Chrome's do.
 #import <Cocoa/Cocoa.h>
@@ -16,6 +17,7 @@
 static uint32_t menu_event;
 static gtty_menu_enabled_fn menu_enabled;
 static gtty_menu_checked_fn menu_checked;
+static gtty_menu_title_fn menu_title;
 
 @interface GttyMenuTarget : NSObject
 - (void)pick:(id)sender;
@@ -38,6 +40,36 @@ static gtty_menu_checked_fn menu_checked;
 @end
 
 static GttyMenuTarget *target;
+
+static NSMenuItem *item(NSString *title, int code, NSString *key);
+
+// Session ▸: its fixed rows (Take Snapshot, Session Manager…, a
+// separator), then the saved sessions as App lists them now.
+static const NSInteger session_fixed = 3;
+
+@interface GttySessionMenu : NSObject <NSMenuDelegate>
+@end
+
+@implementation GttySessionMenu
+- (void)menuNeedsUpdate:(NSMenu *)menu {
+    while ([menu numberOfItems] > session_fixed) [menu removeItemAtIndex:session_fixed];
+    char buf[512];
+    int n = 0;
+    for (; n < GTTY_MENU_SESSION_MAX; n++) {
+        int code = GTTY_MENU_SESSION_FIRST + n;
+        if (menu_title == NULL || !menu_title(code, buf, (int)sizeof buf)) break;
+        NSString *title = [NSString stringWithUTF8String:buf];
+        [menu addItem:item(title ? title : @"?", code, @"")];
+    }
+    if (n == 0) {
+        NSMenuItem *none = [[NSMenuItem alloc] initWithTitle:@"No Saved Sessions" action:nil keyEquivalent:@""];
+        [none setEnabled:NO];
+        [menu addItem:none];
+    }
+}
+@end
+
+static GttySessionMenu *session_delegate;
 static NSMenu *dock_menu;
 
 static NSMenuItem *item(NSString *title, int code, NSString *key) {
@@ -63,7 +95,7 @@ static NSMenu *topMenu(NSMenu *bar, NSString *title, NSInteger at) {
     return m;
 }
 
-bool gtty_menu_install(uint32_t event_type, gtty_menu_enabled_fn enabled, gtty_menu_checked_fn checked) {
+bool gtty_menu_install(uint32_t event_type, gtty_menu_enabled_fn enabled, gtty_menu_checked_fn checked, gtty_menu_title_fn title) {
     @autoreleasepool {
         NSMenu *bar = [NSApp mainMenu];
         if (bar == nil || [bar numberOfItems] == 0) return false;
@@ -72,6 +104,7 @@ bool gtty_menu_install(uint32_t event_type, gtty_menu_enabled_fn enabled, gtty_m
         menu_event = event_type;
         menu_enabled = enabled;
         menu_checked = checked;
+        menu_title = title;
         target = [[GttyMenuTarget alloc] init];
 
         // About gtty: gtty's own box (version, copyright, license, source)
@@ -100,6 +133,14 @@ bool gtty_menu_install(uint32_t event_type, gtty_menu_enabled_fn enabled, gtty_m
         [app insertItem:item(@"New Shell", GTTY_MENU_NEW_SHELL, @"t") atIndex:at + 2];
         [app insertItem:item(@"Run Command", GTTY_MENU_RUN, @"") atIndex:at + 3];
         [app insertItem:item(@"Sync Typing", GTTY_MENU_SYNC_TYPING, @"") atIndex:at + 4];
+
+        // Session ▸ (right after the app menu).
+        NSMenu *session = topMenu(bar, @"Session", 1);
+        [session addItem:item(@"Take Snapshot", GTTY_MENU_SNAPSHOT, @"")];
+        [session addItem:item(@"Session Manager…", GTTY_MENU_SESSIONS, @"")];
+        [session addItem:[NSMenuItem separatorItem]];
+        session_delegate = [[GttySessionMenu alloc] init];
+        [session setDelegate:session_delegate];
 
         // Help ▸ gtty Help (⌘?), last in the bar as on every Mac app; the
         // system adds its search field to it.

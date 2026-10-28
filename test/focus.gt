@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# The focus chip: commands run in folders under home count (not cd / ls /
+# pwd), a click on the chip opens the list expanded at once (the newest
+# at the bottom, the current folder green, home itself never; the newest
+# other one selected), Enter cds there.
+# Run with a scratch home and focus file:
+#   S=$(mktemp -d); mkdir -p $S/home/alpha $S/home/beta $S/home/gamma
+#   printf '9\t%s\t%s\n' $(date +%s) $S/home/gamma > $S/focus
+#   cd $S && HOME=$S/home GTTY_FOCUS=$S/focus gtty --script $REPO/test/focus.gt
+# Shots go to $S; the list: gamma, alpha, beta (bottom, selected: Enter
+# cds there); $S/focus then lists alpha (2), beta (1), gamma (9).
+/s bash
+/wait 1500
+/type cd ~/alpha
+/wait 300
+/type date
+/wait 300
+/type uname
+/wait 300
+/type ls
+/wait 300
+/type cd ~/beta
+/wait 300
+/type pwd
+/wait 300
+/type date
+/wait 300
+/type cd ~
+/wait 300
+/type date
+/wait 600
+/shot focus1-chips.bmp
+/click 210 620
+/wait 400
+/shot focus2-list.bmp
+/key enter
+/wait 800
+/shot focus3-cd.bmp
+/quit
