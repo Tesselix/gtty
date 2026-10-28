@@ -1,7 +1,7 @@
 # gtty — True Graphic Virtual Terminal
 
 [![Stable release](https://img.shields.io/github/v/release/gttyterm/gtty?sort=semver&label=stable&color=2ea44f)](https://github.com/gttyterm/gtty/releases/latest)
-[![Edge release](https://img.shields.io/github/v/release/gttyterm/gtty?include_prereleases&sort=date&label=edge&color=orange)](https://github.com/gttyterm/gtty/releases)
+[![Edge release](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fgttyterm%2Fgtty%2Fbadges%2Fedge.json)](https://github.com/gttyterm/gtty/releases)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/gttyterm/gtty/badge)](https://scorecard.dev/viewer/?uri=github.com/gttyterm/gtty)
 
 A multi-window terminal: all your shells and commands on one screen, side

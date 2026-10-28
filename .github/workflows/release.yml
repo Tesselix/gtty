@@ -192,3 +192,50 @@ jobs:
       provenance-name: gtty.intoto.jsonl
       upload-assets: true
       upload-tag-name: ${{ needs.channel.outputs.tag }}
+
+  # The README's edge badge: the last published pre-release's tag in a
+  # shields.io endpoint file, edge.json, alone on the orphan branch
+  # `badges` (one commit, replaced on every release, stable ones too;
+  # shields reads it from raw.githubusercontent.com, it refuses release
+  # assets on github.com). A pre-release published before the latest
+  # stable release isn't the edge: then the badge is empty and
+  # transparent, so nothing shows. Through the API: no checkout, no token in a git URL.
+  edge-badge:
+    name: Edge badge
+    needs: [channel, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # the badges branch
+    steps:
+      - name: Write edge.json on the badges branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          repo=$GITHUB_REPOSITORY
+          # By publish time, not version: edge keeps its own (lower) MINOR
+          # while stable moves on, so a newer edge can be 1.9.x after 1.10.x.
+          # (read fails on no input, and steps run with bash -e: || true.)
+          read -r edge edge_at < <(gh api "repos/$repo/releases?per_page=100" \
+            --jq '[.[] | select(.prerelease and (.draft | not))] | max_by(.published_at) // empty | "\(.tag_name) \(.published_at)"') || true
+          read -r stable stable_at < <(gh api "repos/$repo/releases/latest" \
+            --jq '"\(.tag_name) \(.published_at)"' 2>/dev/null) || true
+          # ISO 8601 times (UTC, same form) compare as strings.
+          if [ -n "$edge" ] && { [ -z "$stable" ] || [[ "$edge_at" > "$stable_at" ]]; }; then
+            tag=$edge
+            json=$(jq -nc --arg t "$tag" '{schemaVersion: 1, label: "edge", message: $t, color: "orange"}')
+          else
+            tag="none (stable ${stable:-none} is newest)"
+            json=$(jq -nc '{schemaVersion: 1, label: " ", message: " ", color: "rgba(0,0,0,0)", labelColor: "rgba(0,0,0,0)", style: "flat-square"}')
+          fi
+          blob=$(gh api "repos/$repo/git/blobs" -f content="$json" -f encoding=utf-8 --jq .sha)
+          tree=$(gh api "repos/$repo/git/trees" -f 'tree[][path]=edge.json' -f 'tree[][mode]=100644' \
+            -f 'tree[][type]=blob' -f "tree[][sha]=$blob" --jq .sha)
+          # No parents: the branch holds this one commit only.
+          commit=$(gh api "repos/$repo/git/commits" -f message="edge badge: $tag" -f tree="$tree" --jq .sha)
+          if gh api "repos/$repo/git/ref/heads/badges" --silent 2>/dev/null; then
+            gh api -X PATCH "repos/$repo/git/refs/heads/badges" -f sha="$commit" -F force=true --silent
+          else
+            gh api "repos/$repo/git/refs" -f ref=refs/heads/badges -f sha="$commit" --silent
+          fi
+          echo "edge badge: $tag"
+          echo "$json"
