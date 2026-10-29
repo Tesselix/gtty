@@ -24,7 +24,7 @@ Thanks for helping. A few rules:
   --script`) for what the user sees. CI runs the build and the unit
   tests on Linux and macOS for every pull request; `main` takes only
   pull requests with CI green.
-- **Bugs and ideas** go in [GitHub issues](https://github.com/gttyterm/gtty/issues).
+- **Bugs and ideas** go in [GitHub issues](https://github.com/Tesselix/gtty/issues).
   Security problems: privately, see [SECURITY.md](SECURITY.md).
 
 Building and testing are covered in [HACKING.md](HACKING.md): build, unit

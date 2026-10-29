@@ -3,7 +3,7 @@
 ## Reporting a vulnerability
 
 Please report security problems privately, not in a public issue:
-[open a private report](https://github.com/gttyterm/gtty/security/advisories/new)
+[open a private report](https://github.com/Tesselix/gtty/security/advisories/new)
 (GitHub's private vulnerability reporting, in the repository's Security
 tab).
 
