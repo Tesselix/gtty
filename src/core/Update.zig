@@ -12,7 +12,7 @@
 const std = @import("std");
 const c = @import("../c.zig").c;
 
-pub const repo = "gttyterm/gtty";
+pub const repo = "Tesselix/gtty";
 pub const api_url = "https://api.github.com/repos/" ++ repo ++ "/releases/latest";
 pub const download_url = "https://github.com/" ++ repo ++ "/releases/download/";
 
@@ -213,12 +213,12 @@ test "versions" {
 
 test "release answer" {
     const t = std.testing;
-    const ok = parseResponse(t.allocator, "{\"tag_name\":\"v0.4.0\",\"html_url\":\"https://github.com/gttyterm/gtty/releases/tag/v0.4.0\",\"assets\":[]}\n200");
+    const ok = parseResponse(t.allocator, "{\"tag_name\":\"v0.4.0\",\"html_url\":\"https://github.com/Tesselix/gtty/releases/tag/v0.4.0\",\"assets\":[]}\n200");
     try t.expectEqualStrings("0.4.0", ok.release.number());
-    try t.expectEqualStrings("https://github.com/gttyterm/gtty/releases/tag/v0.4.0", ok.release.url());
+    try t.expectEqualStrings("https://github.com/Tesselix/gtty/releases/tag/v0.4.0", ok.release.url());
     // A page elsewhere: the releases page instead.
     const odd = parseResponse(t.allocator, "{\"tag_name\":\"v0.4.0\",\"html_url\":\"https://evil.example/\"}\n200");
-    try t.expectEqualStrings("https://github.com/gttyterm/gtty/releases/latest", odd.release.url());
+    try t.expectEqualStrings("https://github.com/Tesselix/gtty/releases/latest", odd.release.url());
     try t.expect(parseResponse(t.allocator, "{\"message\":\"Not Found\"}\n404") == .err);
     try t.expect(parseResponse(t.allocator, "") == .err);
     try t.expect(parseResponse(t.allocator, "{\"tag_name\":\"nightly\"}\n200") == .err);
@@ -228,9 +228,9 @@ test "install commands" {
     const t = std.testing;
     const r = parseResponse(t.allocator, "{\"tag_name\":\"v0.4.0\"}\n200").release;
     var buf: [512]u8 = undefined;
-    try t.expectEqualStrings("curl -fL -o /tmp/gtty_0.4.0_amd64.deb https://github.com/gttyterm/gtty/releases/download/v0.4.0/gtty_0.4.0_amd64.deb && sudo apt install /tmp/gtty_0.4.0_amd64.deb", installCommand(&buf, .apt, &r).?);
-    try t.expectEqualStrings("sudo dnf install https://github.com/gttyterm/gtty/releases/download/v0.4.0/gtty-0.4.0-1.x86_64.rpm", installCommand(&buf, .dnf, &r).?);
-    try t.expectEqualStrings("sudo rpm -U https://github.com/gttyterm/gtty/releases/download/v0.4.0/gtty-0.4.0-1.x86_64.rpm", installCommand(&buf, .rpm, &r).?);
+    try t.expectEqualStrings("curl -fL -o /tmp/gtty_0.4.0_amd64.deb https://github.com/Tesselix/gtty/releases/download/v0.4.0/gtty_0.4.0_amd64.deb && sudo apt install /tmp/gtty_0.4.0_amd64.deb", installCommand(&buf, .apt, &r).?);
+    try t.expectEqualStrings("sudo dnf install https://github.com/Tesselix/gtty/releases/download/v0.4.0/gtty-0.4.0-1.x86_64.rpm", installCommand(&buf, .dnf, &r).?);
+    try t.expectEqualStrings("sudo rpm -U https://github.com/Tesselix/gtty/releases/download/v0.4.0/gtty-0.4.0-1.x86_64.rpm", installCommand(&buf, .rpm, &r).?);
     try t.expect(installCommand(&buf, .none, &r) == null);
     try t.expectEqual(Installer.zypper, Installer.fromName("zypper"));
     try t.expectEqual(Installer.none, Installer.fromName("pacman"));

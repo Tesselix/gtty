@@ -13,7 +13,7 @@ description: |
   True Graphic Virtual Terminal: a multi-window terminal, all your shells
   and commands on one screen.
   Your own shell (zsh / bash) runs the commands.
-homepage: https://github.com/gttyterm/gtty
+homepage: https://github.com/Tesselix/gtty
 license: GPL-3.0-or-later
 
 # Only the C library is linked; SDL loads X11 / Wayland, GL and audio

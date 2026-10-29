@@ -8,7 +8,7 @@
 # Expect: update-1: the yellow line "Newer version available: 0.4.0. Your
 # version is 0.2.1." with the apt command's button; update-2: the button
 # flashed, "copied the install command" (the clipboard has it); update-3:
-# "would open https://github.com/gttyterm/gtty/releases/tag/v0.4.0";
+# "would open https://github.com/Tesselix/gtty/releases/tag/v0.4.0";
 # update-4: the line closed (×), the window back to the top; update-5:
 # the menu's check brought it back, "gtty 0.4.0 is available".
 s

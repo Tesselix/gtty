@@ -1003,7 +1003,7 @@ decisions; items marked *open* are undecided.
   certificate goes into a temporary keychain (removed on exit), the API
   key into a temp file, `GTTY_NOTARY_KEY*` for package.sh.
 - **`scripts/set-github-secrets.sh`** (bash, re-run after the yearly
-  certificate renewal): `gh secret set --env` on gttyterm/gtty
+  certificate renewal): `gh secret set --env` on Tesselix/gtty
   (`GTTY_GITHUB_REPO`), for both environments `release` and `edge`
   (created if needed): needs `gh`
   logged in and the three files (names each missing one); asks the .p12
@@ -1202,8 +1202,8 @@ decisions; items marked *open* are undecided.
   done through a dialog / window (the dialog is the indication).
 
 - Repo: git.foodineat.com, org GTTY, repo gtty (Forgejo); public:
-  GitHub `git@github.com:gttyterm/gtty.git`. Local:
-  ~/src/gttyterm/gtty.
+  GitHub `git@github.com:Tesselix/gtty.git`. Local:
+  ~/src/Tesselix/gtty.
 - **GitHub Actions** (`.github/workflows/`; every action pinned by SHA
   with a `# vX.Y.Z` comment, Dependabot moves them weekly,
   `.github/dependabot.yml`; top-level `permissions: contents: read`,

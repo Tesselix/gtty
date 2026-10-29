@@ -1,8 +1,8 @@
 # gtty — True Graphic Virtual Terminal
 
-[![Stable release](https://img.shields.io/github/v/release/gttyterm/gtty?sort=semver&label=stable&color=2ea44f)](https://github.com/gttyterm/gtty/releases/latest)
-[![Edge release](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fgttyterm%2Fgtty%2Fbadges%2Fedge.json)](https://github.com/gttyterm/gtty/releases)
-[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/gttyterm/gtty/badge)](https://scorecard.dev/viewer/?uri=github.com/gttyterm/gtty)
+[![Stable release](https://img.shields.io/github/v/release/Tesselix/gtty?sort=semver&label=stable&color=2ea44f)](https://github.com/Tesselix/gtty/releases/latest)
+[![Edge release](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FTesselix%2Fgtty%2Fbadges%2Fedge.json)](https://github.com/Tesselix/gtty/releases)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Tesselix/gtty/badge)](https://scorecard.dev/viewer/?uri=github.com/Tesselix/gtty)
 
 A multi-window terminal: all your shells and commands on one screen, side
 by side or one click away.
@@ -17,7 +17,7 @@ Apple Silicon, macOS 13 or later. Download the latest stable release and
 open it:
 
 ```sh
-curl -fLO https://github.com/gttyterm/gtty/releases/latest/download/gtty-macos.dmg && open gtty-macos.dmg
+curl -fLO https://github.com/Tesselix/gtty/releases/latest/download/gtty-macos.dmg && open gtty-macos.dmg
 ```
 
 1. In the window that opens, drag the **gtty** icon onto the
@@ -40,32 +40,32 @@ x86_64, glibc 2.31 or later. The latest stable release in one line.
 Debian / Ubuntu:
 
 ```sh
-curl -fLO https://github.com/gttyterm/gtty/releases/latest/download/gtty_amd64.deb && sudo apt install ./gtty_amd64.deb
+curl -fLO https://github.com/Tesselix/gtty/releases/latest/download/gtty_amd64.deb && sudo apt install ./gtty_amd64.deb
 ```
 
 Fedora / RHEL (older systems: `yum` instead of `dnf`):
 
 ```sh
-sudo dnf install https://github.com/gttyterm/gtty/releases/latest/download/gtty.x86_64.rpm
+sudo dnf install https://github.com/Tesselix/gtty/releases/latest/download/gtty.x86_64.rpm
 ```
 
 openSUSE:
 
 ```sh
-sudo zypper install https://github.com/gttyterm/gtty/releases/latest/download/gtty.x86_64.rpm
+sudo zypper install https://github.com/Tesselix/gtty/releases/latest/download/gtty.x86_64.rpm
 ```
 
 Any other rpm-based distro:
 
 ```sh
-sudo rpm -U https://github.com/gttyterm/gtty/releases/latest/download/gtty.x86_64.rpm
+sudo rpm -U https://github.com/Tesselix/gtty/releases/latest/download/gtty.x86_64.rpm
 ```
 
 Run the same line again to update.
 
 ### Other ways
 
-Or download from the **[latest release](https://github.com/gttyterm/gtty/releases/latest)**
+Or download from the **[latest release](https://github.com/Tesselix/gtty/releases/latest)**
 (each release lists its files and a `SHA256SUMS`):
 
 - **macOS** (Apple Silicon, 13+): `gtty-<version>-macos.dmg`; open it and
