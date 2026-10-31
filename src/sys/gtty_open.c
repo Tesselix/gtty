@@ -313,7 +313,7 @@ int gtty_open_with(const char *path, const char *id) {
 #include <mach-o/dyld.h>
 #endif
 
-int gtty_open_new_instance(const char *cwd, const char *geometry, const char *adopt) {
+int gtty_open_new_instance(const char *cwd, const char *geometry, const char *adopt, const char *restore) {
     char exe[PATH_MAX];
 #if defined(__APPLE__)
     uint32_t n = sizeof exe;
@@ -346,6 +346,7 @@ int gtty_open_new_instance(const char *cwd, const char *geometry, const char *ad
         if (cwd && chdir(cwd) != 0) _exit(127);
         if (geometry) setenv("GTTY_WINDOW", geometry, 1);
         if (adopt) setenv("GTTY_ADOPT", adopt, 1);
+        if (restore) setenv("GTTY_RESTORE", restore, 1);
         int fd = open("/dev/null", O_RDONLY);
         if (fd >= 0) {
             dup2(fd, 0);

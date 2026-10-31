@@ -25,7 +25,9 @@
 //!     the list at once, like the focus chip's: the saved sessions
 //!     (core/Sessions.zig), the last used at the bottom next to the chip
 //!     and selected; picking one asks App to restore it
-//!     (`Action.restore`, `target` = its id).
+//!     (`Action.restore`, `target` = its id). Its header has a save
+//!     button (floppy + "save", `save_r`): App asks for a name and saves
+//!     this gtty's windows as a new session (`Action.save`).
 //!
 //!   * **Peek:** a plain floating box over the chip, in the normal text
 //!     size: [copy] [expand]  full branch name  [×]. The copy button
@@ -108,6 +110,8 @@ box: Rect = .{},
 copy_r: Rect = .{},
 expand_r: Rect = .{},
 close_r: Rect = .{},
+/// Session list: save the current session (left of ×).
+save_r: Rect = .{},
 text_r: Rect = .{},
 filter_r: Rect = .{},
 list_r: Rect = .{},
@@ -118,10 +122,10 @@ bar_h: f32 = 3,
 
 pub const Kind = enum { git, folder, focus, session };
 pub const State = enum { idle, busy, ok, err };
-pub const Part = enum { none, copy, expand, close };
+pub const Part = enum { none, copy, expand, close, save };
 
 /// What App should do after an event.
-pub const Action = enum { none, redraw, copy, close, cd, restore };
+pub const Action = enum { none, redraw, copy, close, cd, restore, save };
 
 /// Mouse away this long: the peek closes (the countdown bar). A setting.
 pub var dismiss_ms: u64 = 5000;
@@ -476,7 +480,7 @@ pub fn motion(p: *Peek, x: f32, y: f32, now: u64) bool {
         p.hover_ms = 0;
         p.hold = false;
     } else if (!p.hold) p.hover_ms = @max(now, 1); // rests from now
-    p.over = if (!inside) .none else if (p.copy_r.contains(x, y)) .copy else if (p.expand_r.contains(x, y)) .expand else if (p.close_r.contains(x, y)) .close else .none;
+    p.over = if (!inside) .none else if (p.copy_r.contains(x, y)) .copy else if (p.expand_r.contains(x, y)) .expand else if (p.close_r.contains(x, y)) .close else if (p.save_r.contains(x, y)) .save else .none;
     if (p.kind == .folder and p.over == .expand and was[2] != .expand and !p.expanded) p.toggleExpand();
     p.hover_row = p.rowAt(x, y);
     return was[0] != (p.leave_ms != 0) or !std.meta.eql(was[1], p.hover_row) or was[2] != p.over;
@@ -492,6 +496,7 @@ fn rowAt(p: *const Peek, x: f32, y: f32) ?usize {
 pub fn click(p: *Peek, x: f32, y: f32) Action {
     if (p.copy_r.contains(x, y)) return .copy;
     if (p.close_r.contains(x, y)) return .close;
+    if (p.save_r.contains(x, y)) return .save;
     if (p.expand_r.contains(x, y)) {
         p.toggleExpand();
         p.hold = true;
@@ -573,7 +578,8 @@ pub fn layout(p: *Peek, f: *const Gfx.Face, sf: *const Gfx.Face, ui: f32, bounds
     p.row_h = @round(f.cell_h + 4 * ui);
 
     const copy_w = if (p.kind == .git) icon + gap else 0;
-    var w = pad + copy_w + icon + 2 * gap + Gfx.textWidth(f, p.full) + 2 * gap + icon + pad;
+    const save_w = if (p.kind == .session) @round(icon + 3 * gap + Gfx.textWidth(f, save_label)) else 0;
+    var w = pad + copy_w + icon + 2 * gap + Gfx.textWidth(f, p.full) + 2 * gap + save_w + (if (save_w > 0) gap else 0) + icon + pad;
     var h = head_h + p.bar_h;
     var msg_lines: usize = 0;
     if (p.state == .busy or p.state == .ok or p.state == .err) {
@@ -604,6 +610,7 @@ pub fn layout(p: *Peek, f: *const Gfx.Face, sf: *const Gfx.Face, ui: f32, bounds
     p.copy_r = .{ .x = x + pad, .y = iy, .w = icon, .h = icon };
     p.expand_r = .{ .x = p.copy_r.x + icon + gap, .y = iy, .w = icon, .h = icon };
     p.close_r = .{ .x = x + w - pad - icon, .y = iy, .w = icon, .h = icon };
+    p.save_r = if (save_w > 0) .{ .x = p.close_r.x - gap - save_w, .y = iy, .w = save_w, .h = icon } else .{};
     // Folder: no copy button (a click on the path copies).
     if (p.kind == .folder) {
         p.copy_r = .{};
@@ -616,7 +623,8 @@ pub fn layout(p: *Peek, f: *const Gfx.Face, sf: *const Gfx.Face, ui: f32, bounds
         p.expand_r = .{};
         tx = x + pad + gap;
     }
-    p.text_r = .{ .x = tx, .y = y, .w = @max(p.close_r.x - 2 * gap - tx, 0), .h = head_h };
+    const head_end = if (save_w > 0) p.save_r.x else p.close_r.x;
+    p.text_r = .{ .x = tx, .y = y, .w = @max(head_end - 2 * gap - tx, 0), .h = head_h };
 
     var cy = y + head_h;
     if (p.expanded) {
@@ -645,6 +653,7 @@ pub fn draw(p: *const Peek, gfx: *Gfx, theme: *const Theme, f: *Gfx.Face, sf: *G
         expandIcon(gfx, p.expand_r, theme, ui, p.expanded, p.over == .expand);
     }
     JobWindow.closeIcon(gfx, p.close_r, theme, ui);
+    if (p.save_r.w > 0) saveButton(gfx, f, p.save_r, theme, ui, p.over == .save);
     gfx.clip(p.text_r);
     const hy = p.text_r.y + @round((p.text_r.h - f.cell_h) / 2);
     const tend = gfx.text(f, p.text_r.x, hy, p.full, if (p.listOnly()) theme.title_fg else theme.prompt_fg);
@@ -758,6 +767,24 @@ fn filterHint(p: *const Peek) []const u8 {
         .session => "filter sessions",
         else => "filter folders",
     };
+}
+
+/// The session list's save button's word.
+const save_label = "save";
+
+/// The session list's save button: a floppy disk and "save" on a light
+/// face (as the title bar's actions), lighter with a frame under the mouse.
+fn saveButton(gfx: *Gfx, f: *Gfx.Face, r: Rect, theme: *const Theme, ui: f32, hot: bool) void {
+    gfx.fill(r, theme.title_bg.mix(theme.fg, if (hot) 0.22 else 0.12));
+    const t = @max(@round(ui), 1);
+    if (hot) gfx.outline(r, theme.title_fg, t);
+    // The disk: a square, the shutter on top, the label below.
+    const s = @round(r.h * 0.62);
+    const d: Rect = .{ .x = r.x + @round((r.h - s) / 2), .y = r.y + @round((r.h - s) / 2), .w = s, .h = s };
+    gfx.outline(d, theme.title_fg, t);
+    gfx.fill(.{ .x = d.x + @round(s * 0.25), .y = d.y, .w = @round(s * 0.45), .h = @round(s * 0.3) }, theme.title_fg);
+    gfx.outline(.{ .x = d.x + @round(s * 0.18), .y = d.y + @round(s * 0.55), .w = s - 2 * @round(s * 0.18), .h = s - @round(s * 0.55) }, theme.title_fg, t);
+    _ = gfx.text(f, r.x + r.h, r.y + @round((r.h - f.cell_h) / 2), save_label, theme.title_fg);
 }
 
 /// A chevron: up (grow into the list) while collapsed, down once expanded.
@@ -886,4 +913,10 @@ test "session peek: opens expanded on the last used (bottom); a pick restores it
     try t.expectEqual(@as(usize, 1), p.shown.items.len);
     try t.expectEqual(Action.restore, p.key(c.SDLK_RETURN));
     try t.expectEqualStrings("id-1", p.target);
+    // The save button asks App to save the current session.
+    p.box = .{ .x = 0, .y = 0, .w = 200, .h = 100 };
+    p.save_r = .{ .x = 120, .y = 2, .w = 50, .h = 16 };
+    _ = p.motion(130, 8, 1);
+    try t.expectEqual(Part.save, p.over);
+    try t.expectEqual(Action.save, p.click(130, 8));
 }

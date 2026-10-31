@@ -10,9 +10,12 @@
 //! the folder, wrapped and cut at the tile's edge; hovering a tile shows
 //! all it knows, a line each, unwrapped.
 //!
-//! Restore (Enter, a double click, the button) asks App to open it;
-//! Rename (F2, the button) edits the name in the list; Delete (Delete /
-//! Backspace, the button) asks once more on the button before it goes.
+//! Each row ends in ⋮ (`more`): a click opens its menu, Restore / Rename
+//! / Delete (`menu`; ↑ / ↓ / Enter, Esc closes; a click elsewhere only
+//! closes it). Restore (also Enter, a double click) asks App to open it
+//! (a new gtty, or this one while untouched); Rename (also F2) edits the
+//! name in the list; Delete (also Delete / Backspace) asks once more
+//! ("Sure?") before it goes.
 //! Changes are written to the shared file at once (other gttys see them).
 
 const std = @import("std");
@@ -32,8 +35,11 @@ const font_pt = 13;
 const confirm_ms = 3000;
 const max_name = 200;
 
-/// What a click on a spot does.
-const Ctl = union(enum) { row: usize, restore, rename, delete, tile: usize };
+/// What a click on a spot does: a row, its ⋮, a row of the ⋮ menu, a
+/// tile of the picture.
+const Ctl = union(enum) { row: usize, more: usize, item: Item, tile: usize };
+/// The ⋮ menu's rows, in order.
+const Item = enum { restore, rename, delete };
 const max_ctls = 256;
 
 gpa: std.mem.Allocator,
@@ -72,6 +78,9 @@ ctls: [max_ctls]struct { r: Rect, what: Ctl } = undefined,
 n_ctls: usize = 0,
 /// Rows that fit in the list (last draw).
 list_rows: usize = 1,
+/// The ⋮ menu, open for list row `row` (the selected one); `dots`: its
+/// ⋮ on screen (last draw), `hi`: the row the keys are on.
+menu: ?struct { row: usize, dots: Rect = .{}, hi: usize = 0 } = null,
 
 pub fn open(gpa: std.mem.Allocator, store: *Sessions) !*SessionsWindow {
     const window = c.SDL_CreateWindow("gtty Sessions", 940, 580, c.SDL_WINDOW_RESIZABLE | c.SDL_WINDOW_HIGH_PIXEL_DENSITY) orelse
@@ -277,6 +286,16 @@ pub fn onKey(s: *SessionsWindow, key: c.SDL_Keycode, mod: c.SDL_Keymod) void {
         }
         return;
     }
+    if (s.menu) |*m| {
+        switch (key) {
+            c.SDLK_ESCAPE => s.closeMenu(),
+            c.SDLK_UP => m.hi -|= 1,
+            c.SDLK_DOWN => m.hi = @min(m.hi + 1, @typeInfo(Item).@"enum".fields.len - 1),
+            c.SDLK_RETURN, c.SDLK_KP_ENTER => s.pickItem(@enumFromInt(m.hi)),
+            else => {},
+        }
+        return;
+    }
     switch (key) {
         c.SDLK_ESCAPE => if (s.confirm_at != 0) {
             s.confirm_at = 0;
@@ -305,6 +324,10 @@ fn onMotion(s: *SessionsWindow, x: f32, y: f32) void {
     // A tile's details follow the mouse: redraw while over one.
     if (now != s.over or (now != null and s.ctls[now.?].what == .tile)) s.dirty = true;
     s.over = now;
+    // The ⋮ menu's row under the mouse is the one the keys are on.
+    if (now) |i| if (s.ctls[i].what == .item) if (s.menu) |*m| {
+        m.hi = @intFromEnum(s.ctls[i].what.item);
+    };
 }
 
 fn onWheel(s: *SessionsWindow, dy: f32) void {
@@ -332,17 +355,50 @@ pub fn onClick(s: *SessionsWindow, x: f32, y: f32, clicks: u8) void {
         if (hit) |h| if (h == .row and h.row == s.selIndex()) return;
         s.commitRename();
     }
+    // The menu open: a click on one of its rows picks it; anywhere else
+    // it only closes the menu.
+    if (s.menu != null) {
+        if (hit) |h| if (h == .item) return s.pickItem(h.item);
+        return s.closeMenu();
+    }
     const h = hit orelse return;
-    if (h != .delete) s.confirm_at = 0;
+    s.confirm_at = 0;
     switch (h) {
         .row => |i| {
             s.select(i);
             if (clicks >= 2) s.restore();
         },
-        .restore => s.restore(),
-        .rename => s.startRename(),
-        .delete => s.delete(),
-        .tile => {},
+        .more => |i| {
+            s.select(i);
+            s.menu = .{ .row = i };
+        },
+        .item, .tile => {},
+    }
+}
+
+fn closeMenu(s: *SessionsWindow) void {
+    s.menu = null;
+    s.confirm_at = 0;
+    s.dirty = true;
+}
+
+/// A row of the ⋮ menu: Delete asks first ("Sure?", the menu stays open).
+fn pickItem(s: *SessionsWindow, it: Item) void {
+    s.dirty = true;
+    switch (it) {
+        .restore => {
+            s.menu = null;
+            s.restore();
+        },
+        .rename => {
+            s.menu = null;
+            s.startRename();
+        },
+        .delete => {
+            const asked = s.confirm_at != 0 and c.SDL_GetTicks() -| s.confirm_at <= confirm_ms;
+            s.delete();
+            if (asked) s.menu = null else if (s.menu) |*m| m.hi = @intFromEnum(Item.delete);
+        },
     }
 }
 
@@ -388,13 +444,17 @@ pub fn render(s: *SessionsWindow, theme: *const Theme) void {
     const count = std.fmt.bufPrint(&cbuf, "{d} saved", .{n}) catch "";
     _ = g.text(small, list_w - pad - Gfx.textWidth(small, count), @round((head_h - small.cell_h) / 2), count, theme.dim);
 
-    const btn_h = @round(f.cell_h * 1.9);
-    const foot_h = btn_h + 2 * pad + (if (s.note.len > 0) small.cell_h + @round(4 * ui) else 0);
+    const foot_h = if (s.note.len > 0) small.cell_h + 2 * pad else 0;
     const list_r: Rect = .{ .x = 0, .y = head_h, .w = list_w, .h = @max(H - head_h - foot_h, 1) };
     g.fill(list_r, theme.prompt_bg);
     const row_h = @round(f.cell_h + small.cell_h + 12 * ui);
     s.list_rows = @max(@as(usize, @intFromFloat(@floor(list_r.h / row_h))), 1);
     const sel = s.selIndex();
+    const dots_w = @round(f.cell_h * 1.1);
+    const dots_x = list_w - @round(8 * ui) - dots_w;
+    if (s.menu) |m| if (m.row >= n) {
+        s.menu = null;
+    };
     if (n == 0) {
         _ = g.text(f, pad, list_r.y + pad, "No saved sessions", theme.dim);
         _ = g.text(small, pad, list_r.y + pad + f.cell_h + @round(4 * ui), "Session ▸ Take Snapshot saves one", theme.dim);
@@ -418,7 +478,7 @@ pub fn render(s: *SessionsWindow, theme: *const Theme) void {
             g.fill(.{ .x = end, .y = ty, .w = @max(@round(2 * ui), 1), .h = f.cell_h }, theme.cursor);
             g.clip(list_r);
         } else {
-            g.clip(.{ .x = r.x, .y = r.y, .w = r.w - pad + @round(4 * ui), .h = r.h });
+            g.clip(.{ .x = r.x, .y = r.y, .w = @max(dots_x - @round(4 * ui), 1), .h = r.h });
             _ = g.text(f, pad, ty, x.name, theme.prompt_fg);
             g.clip(list_r);
         }
@@ -427,6 +487,19 @@ pub fn render(s: *SessionsWindow, theme: *const Theme) void {
         const info = std.fmt.bufPrint(&ibuf, "{d} window{s} · used {s}", .{ x.wins.items.len, if (x.wins.items.len == 1) "" else "s", when(&tbuf, x.used) }) catch "";
         _ = g.text(small, pad, ty + f.cell_h + @round(2 * ui), info, theme.dim);
         s.addCtl(r, .{ .row = k });
+        // ⋮: this row's menu (bright on the row under the mouse, the
+        // selected one, the one whose menu is open).
+        if (!(sel == k and s.edit != null)) {
+            const dots: Rect = .{ .x = dots_x, .y = r.y + @round((r.h - dots_w * 1.4) / 2), .w = dots_w, .h = @round(dots_w * 1.4) };
+            const menu_open = if (s.menu) |m| m.row == k else false;
+            const hot = menu_open or s.isOver(.{ .more = k });
+            if (hot) g.fill(dots, theme.title_bg.mix(theme.fg, 0.12));
+            const lit = hot or sel == k or s.isOver(.{ .row = k });
+            const dc = if (lit) theme.title_fg else theme.dim.mix(theme.prompt_bg, 0.3);
+            _ = g.text(f, dots.x + @round((dots.w - Gfx.textWidth(f, "⋮")) / 2), dots.y + @round((dots.h - f.cell_h) / 2), "⋮", dc);
+            s.addCtl(dots, .{ .more = k });
+            if (menu_open) s.menu.?.dots = dots;
+        }
     }
     g.clip(null);
     // More rows than fit: a scroll mark.
@@ -439,15 +512,9 @@ pub fn render(s: *SessionsWindow, theme: *const Theme) void {
     }
     g.fill(.{ .x = list_w, .y = 0, .w = @max(@round(ui), 1), .h = H }, theme.divider);
 
-    // Buttons under the list.
-    const by = H - foot_h + pad;
-    const bw = @round((list_w - 2 * pad - 2 * @round(8 * ui)) / 3);
-    const has = sel != null;
+    // A notice under the list.
     const armed = s.confirm_at != 0;
-    s.button(f, theme, .{ .x = pad, .y = by, .w = bw, .h = btn_h }, "Restore", .restore, has, theme.title_fg);
-    s.button(f, theme, .{ .x = pad + bw + @round(8 * ui), .y = by, .w = bw, .h = btn_h }, "Rename", .rename, has, theme.title_fg);
-    s.button(f, theme, .{ .x = pad + 2 * (bw + @round(8 * ui)), .y = by, .w = bw, .h = btn_h }, if (armed) "Sure?" else "Delete", .delete, has, if (armed) theme.stderr_accent else theme.title_fg);
-    if (s.note.len > 0) _ = g.text(small, pad, by + btn_h + @round(4 * ui), s.note, theme.stderr_accent);
+    if (s.note.len > 0) _ = g.text(small, pad, H - foot_h + pad, s.note, theme.stderr_accent);
 
     // The picture of the selected session, its name over it.
     if (s.selected()) |x| {
@@ -460,14 +527,16 @@ pub fn render(s: *SessionsWindow, theme: *const Theme) void {
         var tbuf: [40]u8 = undefined;
         var hbuf: [160]u8 = undefined;
         const hint = if (armed)
-            "click Sure? (or press Delete) again to delete it"
+            "Delete again to delete it (Esc: keep it)"
         else
-            std.fmt.bufPrint(&hbuf, "taken {s} · Enter or double-click: restore (replaces this gtty's windows)", .{when(&tbuf, x.created)}) catch "";
+            std.fmt.bufPrint(&hbuf, "taken {s} · Enter or double-click: restore in a new gtty · ⋮ rename, delete", .{when(&tbuf, x.created)}) catch "";
         _ = g.text(small, area.x, area.y + area.h + @round(6 * ui), hint, if (armed) theme.stderr_accent else theme.dim);
         s.drawPicture(f, small, theme, x, area);
     } else if (n > 0) {
         _ = g.text(f, area.x, area.y, "Select a session", theme.dim);
     }
+
+    if (s.menu) |m| s.drawMenu(f, theme, m.dots, m.hi, W, H);
 
     if (s.shot_path) |p| {
         s.shot_path = null;
@@ -531,7 +600,8 @@ fn drawPicture(s: *SessionsWindow, f: *Gfx.Face, small: *Gfx.Face, theme: *const
         s.addCtl(r, .{ .tile = i });
         if (r.contains(s.mouse[0], s.mouse[1])) hovered = i;
     }
-    if (hovered) |i| s.drawDetails(f, theme, &x.wins.items[i]);
+    // Not over the ⋮ menu.
+    if (hovered) |i| if (s.menu == null) s.drawDetails(f, theme, &x.wins.items[i]);
 }
 
 /// A tile: its frame (blue: the current window), then the command, for a
@@ -635,14 +705,42 @@ fn drawDetails(s: *SessionsWindow, f: *Gfx.Face, theme: *const Theme, w: *const 
     for (lines[0..n], 0..) |l, k| _ = g.text(f, box.x + p, box.y + p + @as(f32, @floatFromInt(k)) * f.cell_h, l, if (k == 0) theme.prompt_fg else theme.title_fg);
 }
 
-fn button(s: *SessionsWindow, f: *Gfx.Face, theme: *const Theme, r: Rect, label: []const u8, what: Ctl, enabled: bool, fg: Rgb) void {
+/// The ⋮ menu under its dots (over them when it doesn't fit), kept in
+/// the window: Restore, Rename, Delete with their keys; an asked Delete
+/// reads "Sure? Delete" in red.
+fn drawMenu(s: *SessionsWindow, f: *Gfx.Face, theme: *const Theme, dots: Rect, hi: usize, W: f32, H: f32) void {
     const g = &s.gfx;
-    g.fill(r, if (enabled and s.isOver(what)) theme.title_bg.mix(theme.focus, 0.3) else theme.title_bg);
-    g.outline(r, theme.divider, @max(@round(s.ui), 1));
-    g.clip(r);
-    _ = g.text(f, r.x + @round((r.w - Gfx.textWidth(f, label)) / 2), r.y + @round((r.h - f.cell_h) / 2), label, if (enabled) fg else theme.dim);
-    g.clip(null);
-    if (enabled) s.addCtl(r, what);
+    const ui = s.ui;
+    const armed = s.confirm_at != 0;
+    const labels = [_][]const u8{ "Restore", "Rename", if (armed) "Sure? Delete" else "Delete" };
+    const keys = [_][]const u8{ "Enter", "F2", "Del" };
+    const p = @round(10 * ui);
+    const row_h = @round(f.cell_h * 1.7);
+    var lw: f32 = 0;
+    var kw: f32 = 0;
+    for (labels, keys) |l, k| {
+        lw = @max(lw, Gfx.textWidth(f, l));
+        kw = @max(kw, Gfx.textWidth(f, k));
+    }
+    const mw = p + lw + 3 * p + kw + p;
+    const mh = @as(f32, @floatFromInt(labels.len)) * row_h + @round(8 * ui);
+    var x = @max(dots.x + dots.w - mw, 0);
+    x = @min(x, @max(W - mw, 0));
+    var y = dots.y + dots.h + @round(2 * ui);
+    if (y + mh > H) y = @max(dots.y - mh - @round(2 * ui), 0);
+    const box: Rect = .{ .x = x, .y = y, .w = mw, .h = mh };
+    g.fill(box, theme.title_bg);
+    g.outline(box, theme.title_fg.mix(theme.title_bg, 0.45), @max(@round(ui), 1));
+    for (labels, keys, 0..) |l, k, i| {
+        const it: Item = @enumFromInt(i);
+        const r: Rect = .{ .x = box.x + @round(4 * ui), .y = box.y + @round(4 * ui) + @as(f32, @floatFromInt(i)) * row_h, .w = box.w - @round(8 * ui), .h = row_h };
+        if (hi == i) g.fill(r, theme.selection);
+        const ty = r.y + @round((row_h - f.cell_h) / 2);
+        const danger = it == .delete and armed;
+        _ = g.text(f, box.x + p, ty, l, if (danger) theme.stderr_accent else theme.prompt_fg);
+        _ = g.text(f, box.x + box.w - p - Gfx.textWidth(f, k), ty, k, theme.dim);
+        s.addCtl(r, .{ .item = it });
+    }
 }
 
 /// `p` with the home folder as `~`.

@@ -3,10 +3,12 @@
 
 // A stand-in "ssh" for tests: the "remote machine" is this one.
 // With a remote command (gtty's own connection): runs it with sh -c
-// (FAKE_SSH_NOLINK set: fails, like a host that wants a password).
+// (FAKE_SSH_NOLINK set: fails, like a host that wants a password;
+// FAKE_SSH_GONE=N: exits 255 after N s, like a host gone silent).
 // Without one (the user's session): an interactive bash on its own
 // terminal (via script(1)) with SSH_CONNECTION set, while this process
 // stays in front on the window's terminal, as a real ssh does.
+#include <signal.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
@@ -23,6 +25,19 @@ int main(int argc, char **argv) {
     if (i + 1 < argc) { // a remote command
         // A host gtty can't log in to (e.g. it wants a password).
         if (getenv("FAKE_SSH_NOLINK")) return 255;
+        // A host that stops answering after N seconds: ssh's keep-alives
+        // give up (exit 255); the user's session just hangs.
+        const char *gone = getenv("FAKE_SSH_GONE");
+        if (gone) {
+            pid_t sh = fork();
+            if (sh == 0) {
+                execlp("sh", "sh", "-c", argv[i + 1], (char *)0);
+                _exit(127);
+            }
+            sleep((unsigned)atoi(gone));
+            kill(sh, SIGKILL);
+            return 255;
+        }
         execlp("sh", "sh", "-c", argv[i + 1], (char *)0);
         return 127;
     }

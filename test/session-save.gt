@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# The session list's save button: a click opens the modal with the time
+# as the name, all selected; typing replaces it and Enter saves the
+# session under that name ("work" is then the last used, at the bottom).
+# Run with a scratch home and sessions file:
+#   S=$(mktemp -d); mkdir -p $S/home/alpha
+#   cd $S && HOME=$S/home GTTY_SESSIONS=$S/sessions gtty --script $REPO/test/session-save.gt
+#   grep work $S/sessions
+# Shots go to $S: 1 the list with its save button, 2 the modal (the name
+# selected), 3 the name typed, 4 the list with "work" at the bottom.
+/s bash
+/wait 1500
+/type cd ~/alpha
+/wait 300
+/menu snapshot
+/wait 1200
+/key cmd+4
+/wait 600
+/shot save1-list.bmp
+/click 475 557
+/wait 500
+/shot save2-modal.bmp
+/text work
+/wait 300
+/shot save3-typed.bmp
+/key enter
+/wait 800
+/key cmd+4
+/wait 600
+/shot save4-saved.bmp
+/quit

@@ -106,6 +106,10 @@ offer: ?struct { window: ids_mod.Id, until: u64 } = null,
 /// Started for a window dropped on the desktop (GTTY_ADOPT "socket<TAB>id"):
 /// it is taken from that gtty at start, in place of the start-up shell.
 adopt_from: ?Adopt = null,
+/// Started to restore a saved session (GTTY_RESTORE, its id; another
+/// gtty's restore, `restoreInNew`): restored at start in place of the
+/// start-up shell (`tickRestoreFrom`).
+restore_from: ?[]u8 = null,
 /// A window from another gtty dragged over this one: where it would land
 /// (`landing`) is drawn as a placeholder tile (`drawLanding`) until
 /// `until` (the other gtty keeps telling, `op hover`; Wayland: this
@@ -537,12 +541,17 @@ pub fn create(gpa: std.mem.Allocator, opts: Options) !*App {
     if (opts.script) |path| try app.loadScript(path);
     app.listenCtl();
     app.adopt_from = app.adoptEnv();
+    if (c.getenv("GTTY_RESTORE")) |v| {
+        app.restore_from = gpa.dupe(u8, std.mem.span(v)) catch null;
+        _ = c.unsetenv("GTTY_RESTORE");
+    }
     // The project's rule: gtty always starts with a shell unless another
     // command started it, so an empty start-up command means the shell.
     // (A --script run without -c has none: test scripts open their own.)
     // Started for a window dropped on the desktop: that window instead
-    // (`tickAdopt`; the shell after all if it can't be taken).
-    if (opts.command) |cmd| if (app.adopt_from == null) {
+    // (`tickAdopt`; the shell after all if it can't be taken); to restore
+    // a session: its windows (`tickRestoreFrom`, the same).
+    if (opts.command) |cmd| if (app.adopt_from == null and app.restore_from == null) {
         const trimmed = std.mem.trim(u8, cmd, " \t");
         app.startup = try gpa.dupe(u8, if (trimmed.len > 0) trimmed else "s");
     };
@@ -574,6 +583,7 @@ pub fn destroy(app: *App) void {
     c.gtty_close(app.ctl_fd);
     if (app.ctl_path) |p| app.gpa.free(p);
     if (app.adopt_from) |a| app.gpa.free(a.path);
+    if (app.restore_from) |r| app.gpa.free(r);
     app.extras.deinit(app.gpa);
     if (app.peek) |*pk| pk.deinit(&app.reaper);
     app.freePicker();
@@ -1409,7 +1419,7 @@ fn newWindow(app: *App, from: ?*JobWindow) void {
     var gbuf: [64]u8 = undefined;
     const geo: ?[:0]const u8 = if (app.cascade()) |g| std.fmt.bufPrintZ(&gbuf, "{d},{d},{d},{d}", .{ g[0], g[1], g[2], g[3] }) catch null else null;
     if (c.getenv("GTTY_SHOW_DRY") != null) return app.sayFmt("would open a new gtty in {s} at {s}", .{ dir orelse ".", geo orelse "-" }, app.theme.dim);
-    const pid = c.gtty_open_new_instance(if (dir) |d| d.ptr else null, if (geo) |g| g.ptr else null, null);
+    const pid = c.gtty_open_new_instance(if (dir) |d| d.ptr else null, if (geo) |g| g.ptr else null, null, null);
     if (pid <= 0) {
         beep.beep();
         return app.say("could not start a new gtty", app.theme.stderr_accent);
@@ -2498,7 +2508,7 @@ fn menuPick(app: *App, code: i32) void {
             app.checkUpdates(true);
         },
         c.GTTY_MENU_HELP => app.openHelp(),
-        c.GTTY_MENU_SNAPSHOT => app.takeSnapshot(),
+        c.GTTY_MENU_SNAPSHOT => app.takeSnapshot(null),
         c.GTTY_MENU_SESSIONS => app.openSessionsWindow(),
         else => if (code >= c.GTTY_MENU_SESSION_FIRST and code < c.GTTY_MENU_SESSION_FIRST + c.GTTY_MENU_SESSION_MAX) {
             app.closeMenu();
@@ -3395,10 +3405,11 @@ fn snapWin(app: *App, a: std.mem.Allocator, w: *JobWindow, place: Sessions.Place
     return spec;
 }
 
-/// Session ▸ Take Snapshot: every shell window of this gtty (in the
-/// windows area and in the job grid), saved as a new session in the file
-/// all gttys share.
-fn takeSnapshot(app: *App) void {
+/// Session ▸ Take Snapshot (named after the time), or the session list's
+/// save button (`name` from `askSnapshot`): every shell window of this
+/// gtty (in the windows area and in the job grid), saved as a new session
+/// in the file all gttys share.
+fn takeSnapshot(app: *App, given: ?[]const u8) void {
     app.closeMenu();
     var arena = std.heap.ArenaAllocator.init(app.gpa);
     defer arena.deinit();
@@ -3437,7 +3448,7 @@ fn takeSnapshot(app: *App) void {
         break;
     };
     var nbuf: [200]u8 = undefined;
-    const name = Sessions.autoName(&nbuf, Sessions.now());
+    const name = given orelse Sessions.autoName(&nbuf, Sessions.now());
     var ibuf: [64]u8 = undefined;
     const id = app.sessions.newId(&ibuf);
     app.sessions.reload();
@@ -3448,6 +3459,26 @@ fn takeSnapshot(app: *App) void {
     app.saveSessions();
     app.sessionsChanged();
     app.sayFmt("session saved: {s} ({d} window{s})", .{ name, specs.items.len, if (specs.items.len == 1) "" else "s" }, app.theme.ok);
+}
+
+/// The session list's save button: a modal with the name the snapshot
+/// would get (the time), all selected so typing replaces it; Save takes
+/// the snapshot (`takeSnapshot`).
+fn askSnapshot(app: *App) void {
+    if (snapshotCount(app) == 0) {
+        beep.beep();
+        return app.say("snapshot: no shell window to save", app.theme.stderr_accent);
+    }
+    var nbuf: [200]u8 = undefined;
+    app.openModal(.{
+        .title = "Save the current session",
+        .body = "Type a name, or keep the time · Esc leaves it unsaved",
+        .buttons = &.{ .{ .label = "Cancel" }, .{ .label = "Save", .kind = .primary } },
+        .default = 1,
+        .safe = 0,
+        .timeout_ms = 30_000,
+        .input = Sessions.autoName(&nbuf, Sessions.now()),
+    }, .{ .snapshot = .{ .window = 0 } });
 }
 
 fn saveSessions(app: *App) void {
@@ -3468,9 +3499,11 @@ fn sessionsChanged(app: *App) void {
     app.dirty = true;
 }
 
-/// Restore session `id` (the menu, the chip's list, the manager): it
-/// replaces this gtty's windows. Jobs still working there (a command, a
-/// shell running one, an ssh session) are named in a question first.
+/// Restore session `id` (the menu, the chip's list, the manager): in a
+/// new gtty (`restoreInNew`), or, while this one is untouched (just
+/// opened or restored, nothing typed: `untouched`), in place of its
+/// windows. Jobs still working there (a shell still starting) are named
+/// in a question first.
 fn restoreSession(app: *App, id: []const u8) void {
     app.closeMenu();
     app.closePeek();
@@ -3479,6 +3512,8 @@ fn restoreSession(app: *App, id: []const u8) void {
         beep.beep();
         return app.say("that session is gone (deleted in another gtty?)", app.theme.stderr_accent);
     };
+    // Something was done here: the session gets a gtty of its own.
+    if (!app.untouched()) return app.restoreInNew(id, x.name);
     var busy: usize = 0;
     var lbuf: [400]u8 = undefined;
     var list: std.Io.Writer = .fixed(&lbuf);
@@ -3668,6 +3703,7 @@ fn restoreStep(app: *App, st: *RestoreStep, now: u64) bool {
             var buf: [8300]u8 = undefined;
             const bytes = std.fmt.bufPrint(&buf, "\x15{s}{s}", .{ st.text, if (st.enter) "\r" else "" }) catch return true;
             w.typeBytes(bytes);
+            w.used = false; // the session's, not the user's
             if (st.rdir.len == 0) return true;
             st.state = .remote;
             st.until = now + restore_remote_ms;
@@ -3688,6 +3724,7 @@ fn restoreStep(app: *App, st: *RestoreStep, now: u64) bool {
             remote.shQuote(&out, st.rdir) catch return true;
             out.writeAll("\r") catch return true;
             w.typeBytes(out.buffered());
+            w.used = false;
             return true;
         },
     }
@@ -3737,6 +3774,45 @@ fn pickMenuSession(app: *App, k: usize) void {
     app.restoreSession(id);
 }
 
+/// Nothing was done in this gtty yet: only shells, none sent anything
+/// (`JobWindow.used`: keys, a paste, a cd gtty typed, the AI; a session's
+/// restore steps don't count). A restore may replace its windows then.
+fn untouched(app: *App) bool {
+    for (app.jobs.items) |w| {
+        if (w.kind != .shell or w.used) return false;
+    }
+    return true;
+}
+
+/// Restore session `id` (named `name`) in a new gtty: started with
+/// GTTY_RESTORE, cascaded from this one, it comes to the front.
+fn restoreInNew(app: *App, id: []const u8, name: []const u8) void {
+    var ibuf: [128]u8 = undefined;
+    const idz = std.fmt.bufPrintZ(&ibuf, "{s}", .{id}) catch return;
+    var gbuf: [64]u8 = undefined;
+    const geo: ?[:0]const u8 = if (app.cascade()) |g| std.fmt.bufPrintZ(&gbuf, "{d},{d},{d},{d}", .{ g[0], g[1], g[2], g[3] }) catch null else null;
+    if (c.getenv("GTTY_SHOW_DRY") != null) return app.sayFmt("would open a new gtty for session {s} at {s}", .{ name, geo orelse "-" }, app.theme.dim);
+    const home: ?[*:0]const u8 = c.getenv("HOME");
+    const pid = c.gtty_open_new_instance(home, if (geo) |g| g.ptr else null, null, idz.ptr);
+    if (pid <= 0) {
+        beep.beep();
+        return app.say("could not start a new gtty", app.theme.stderr_accent);
+    }
+    app.yield_pid = pid;
+    app.yield_until = c.SDL_GetTicks() + 5000;
+    app.sayFmt("opening {s} in a new gtty…", .{name}, app.theme.dim);
+}
+
+/// Started to restore a session (GTTY_RESTORE): its windows, once. Gone
+/// (deleted meanwhile) or nothing opened: the shell, as any gtty start.
+fn tickRestoreFrom(app: *App) void {
+    const id = app.restore_from orelse return;
+    app.restore_from = null;
+    defer app.gpa.free(id);
+    app.doRestore(id);
+    if (app.jobs.items.len == 0) app.openShell(null);
+}
+
 /// Open the list of the session chip of window `i`, expanded at once:
 /// the sessions used last, the last used at the bottom (by the chip).
 fn openSessionPeek(app: *App, i: usize) void {
@@ -3774,6 +3850,7 @@ fn openSessionsWindow(app: *App) void {
 /// Each frame: the file read again when another gtty changed it (at most
 /// once a second), the manager's requests and drawing, the restore steps.
 fn tickSessions(app: *App) void {
+    app.tickRestoreFrom();
     const now = c.SDL_GetTicks();
     if (now -| app.sessions_checked_ms >= 1000) {
         app.sessions_checked_ms = now;
@@ -3884,6 +3961,8 @@ fn peekAction(app: *App, a: Peek.Action) void {
                 beep.beep();
             }
         },
+        // The session list's save button: ask for a name.
+        .save => return app.askSnapshot(),
         // A session picked in the session chip's list.
         .restore => {
             var ibuf: [64]u8 = undefined;
@@ -5828,7 +5907,7 @@ fn tearOff(app: *App, w: *JobWindow, at: [2]f64, grab: [2]f32) void {
     const dir: ?[:0]const u8 = if (d.len > 0) (if (std.fmt.bufPrintZ(&zbuf, "{s}", .{d}) catch null) |z| (if (isDir(z)) z else null) else null) else null;
     if (c.getenv("GTTY_SHOW_DRY") != null) return app.sayFmt("would open a new gtty for #{d} at {s}", .{ w.serial, geo orelse "-" }, app.theme.dim);
     app.offer = .{ .window = w.uid, .until = c.SDL_GetTicks() + 15_000 };
-    const pid = c.gtty_open_new_instance(if (dir) |z| z.ptr else null, if (geo) |g| g.ptr else null, adopt.ptr);
+    const pid = c.gtty_open_new_instance(if (dir) |z| z.ptr else null, if (geo) |g| g.ptr else null, adopt.ptr, null);
     if (pid <= 0) {
         app.offer = null;
         beep.beep();
@@ -6317,6 +6396,9 @@ const ModalJob = union(enum) {
     /// Restore session `id`, ending the jobs still working? 0 Cancel,
     /// 1 Restore (`window` 0: centered on gtty's window).
     restore: struct { id: []u8, window: ids_mod.Id },
+    /// Save this gtty's windows as a session named as the field says?
+    /// 0 Cancel, 1 Save (`window` 0: centered on gtty's window).
+    snapshot: struct { window: ids_mod.Id },
 
     /// The window it is about.
     fn window(j: ModalJob) ?ids_mod.Id {
@@ -6330,7 +6412,7 @@ const ModalJob = union(enum) {
 /// Free what a modal's job owns.
 fn freeModalJob(app: *App, job: ModalJob) void {
     switch (job) {
-        .none => {},
+        .none, .snapshot => {},
         .copy_drop => |d| {
             app.freePaths(d.paths);
             app.gpa.free(d.dest);
@@ -6365,12 +6447,27 @@ fn resolveModal(app: *App, pick: usize, how: ModalHow) void {
         app.dirty = true;
         return;
     }
+    // A snapshot's name: not empty (the dialog says so and stays open).
+    var nbuf: [512]u8 = undefined;
+    var name: []const u8 = "";
+    if (job == .snapshot and pick == 1 and how == .picked) if (app.modal) |*m| {
+        name = std.mem.trim(u8, m.inputText(&nbuf), " \t");
+        if (name.len == 0) {
+            m.setError("a session needs a name", c.SDL_GetTicks());
+            app.dirty = true;
+            return;
+        }
+    };
     app.modal = null;
     app.modal_job = .none;
     app.dirty = true;
     defer app.freeModalJob(job);
     switch (job) {
         .none, .rename => {},
+        .snapshot => {
+            if (pick != 1) return app.say(if (how == .timeout) "no answer: session not saved" else "session not saved", app.theme.dim);
+            app.takeSnapshot(name);
+        },
         .restore => |d| {
             if (pick != 1) return app.say(if (how == .timeout) "no answer: restore cancelled" else "restore cancelled", app.theme.dim);
             app.doRestore(d.id);
@@ -7225,7 +7322,8 @@ fn setFileOpener(app: *App, on: bool) void {
     app.dirty = true;
 }
 
-/// Each frame: the "can't connect" notice; the copy in progress.
+/// Each frame: the "can't connect" notice; a dead host's ssh hung up; the
+/// copy in progress.
 fn tickRemote(app: *App) void {
     for (app.jobs.items) |w| {
         // gtty can't reach that machine: say once that the remote helpers
@@ -7233,6 +7331,11 @@ fn tickRemote(app: *App) void {
         if (w.link_off and !w.link_off_said) {
             w.link_off_said = true;
             app.sayFmt("can't connect to {s}: file opener and git chip off until this ssh session ends", .{w.remoteDest()}, app.theme.stderr_accent);
+        }
+        // The host stopped answering: its ssh was hung up.
+        if (w.tickGone(c.SDL_GetTicks())) {
+            app.sayFmt("{s} stopped answering: ssh ended", .{w.remoteDest()}, app.theme.stderr_accent);
+            beep.beep();
         }
     }
     app.tickFetch();

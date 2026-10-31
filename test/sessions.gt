@@ -3,7 +3,9 @@
 # gtty-sessions: Session ▸ Take Snapshot saves the shell windows (the
 # windows area's tiles and the job grid), the session chip shows, the
 # Session Manager draws the picture (a tile's details on hover), and a
-# restore replaces the windows with the saved ones, each in its folder.
+# restore replaces the windows with the saved ones, each in its folder
+# (after `close all`: the new shell is untouched, so the restore happens
+# here; in a used gtty it opens a new one, test/session-manager.gt).
 # Run with a scratch home and sessions file:
 #   S=$(mktemp -d); mkdir -p $S/home/alpha $S/home/beta $S/home/gamma
 #   cd $S && HOME=$S/home GTTY_SESSIONS=$S/sessions gtty --script $REPO/test/sessions.gt
@@ -35,10 +37,8 @@
 /key escape
 /target main
 /wait 400
-/type cd ~
-/wait 400
-/close 2
-/wait 600
+/close all
+/wait 1800
 /move 330 620
 /wait 900
 /shot sessions4-list.bmp

@@ -31,8 +31,9 @@ int gtty_open_with(const char *path, const char *id);
  * a shell). `geometry` (NULL: none): put in its environment as
  * GTTY_WINDOW ("x,y,w,h", where its window goes). `adopt` (NULL: none):
  * GTTY_ADOPT, a job window it takes from this gtty instead of opening a
- * shell (App, window drag). Detached; doesn't wait.
- * Its process id: > 0; -1: failed. */
-int gtty_open_new_instance(const char *cwd, const char *geometry, const char *adopt);
+ * shell (App, window drag). `restore` (NULL: none): GTTY_RESTORE, the id
+ * of a saved session it restores instead of opening a shell. Detached;
+ * doesn't wait. Its process id: > 0; -1: failed. */
+int gtty_open_new_instance(const char *cwd, const char *geometry, const char *adopt, const char *restore);
 
 #endif

@@ -130,7 +130,8 @@ pub fn linkArgv(user_argv: []const []const u8, remote_cmd: []const u8, out: [][]
     const extra = [_][]const u8{
         "-o", "BatchMode=yes",          "-o", "ClearAllForwardings=yes",
         "-o", "ControlMaster=no",       "-o", "ConnectTimeout=15",
-        "-o", "ServerAliveInterval=30", "-T",
+        "-o", "ServerAliveInterval=3",  "-o", "ServerAliveCountMax=2",
+        "-T",
     };
     for (extra) |a| if (!add(out, &n, a)) return null;
     if (!add(out, &n, s.dest)) return null;

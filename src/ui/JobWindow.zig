@@ -193,6 +193,10 @@ name_flash: ?struct { ranges: [16]Screen.TextRange = undefined, n: usize = 0, ms
 echo_ms: u64 = 0,
 /// When the user last sent the job anything (keys, paste, a typed cd).
 key_ms: u64 = 0,
+/// Anything was sent to the job (keys, paste, a cd gtty typed, the AI):
+/// this gtty is no longer untouched (`App.untouched`). A session's
+/// restore steps clear it again (they aren't the user's).
+used: bool = false,
 /// When output last came that the user's typing didn't ask for (a build's
 /// progress lines being redrawn, …): the cursor stays hidden until the
 /// output rests `cursor_rest_ms`, so it doesn't jump around after the
@@ -297,6 +301,10 @@ link_port: u16 = 0,
 link_off: bool = false,
 /// App said so (once per session).
 link_off_said: bool = false,
+/// The link lost the host after logging in (`hostGone`): the user's ssh
+/// `gone_pid` is hung up at `gone_ms` if still in front (`tickGone`).
+gone_pid: c_int = 0,
+gone_ms: u64 = 0,
 /// Over there: the folder of the program in front on the user's
 /// terminal ("" unknown), and whether that program is a shell waiting.
 rcwd_buf: [4096]u8 = undefined,
@@ -774,6 +782,7 @@ pub fn send(w: *JobWindow, bytes: []const u8) void {
         return;
     }
     w.key_ms = c.SDL_GetTicks();
+    w.used = true;
     w.proc.write(bytes);
     w.mirror(bytes);
 }
@@ -810,6 +819,7 @@ fn input(w: *JobWindow, bytes: []const u8) void {
     }
     if (!w.following()) w.out.scroll = 0;
     w.key_ms = c.SDL_GetTicks();
+    w.used = true;
     w.proc.write(bytes);
 }
 
@@ -1484,6 +1494,7 @@ pub fn runAi(w: *JobWindow, n: u32, request: []const u8) void {
     w.out.ai = .armed;
     w.out.scroll = 0;
     trace.bytes("to", w.serial, out.buffered());
+    w.used = true;
     w.proc.write(out.buffered());
 }
 
@@ -1571,6 +1582,8 @@ fn endRemote(w: *JobWindow) void {
     w.copies = 0;
     w.link_off = false;
     w.link_off_said = false;
+    w.gone_pid = 0;
+    w.gone_ms = 0;
 }
 
 /// The connection failed or broke: close it, forget what came from the
@@ -1585,6 +1598,33 @@ fn linkLost(w: *JobWindow, gfx: *Gfx) void {
     w.info_id = null;
     w.branch_len = 0;
     w.layoutChips(gfx);
+}
+
+/// The link lost the host after logging in: it stopped answering (the
+/// link's keep-alives) or closed the connection. The user's ssh may wait
+/// for a dead host forever, so it is hung up after `gone_grace_ms` if it
+/// is still in front (one closing by itself says so first). mosh rides
+/// out an outage: left alone.
+fn hostGone(w: *JobWindow, now: u64) void {
+    const s = remote.sessionOfNul(w.link_args) orelse return;
+    if (s.kind != .ssh) return;
+    w.gone_pid = w.link_pid;
+    w.gone_ms = now + gone_grace_ms;
+    w.link_off_said = true; // not "can't connect": App says what happened
+}
+
+const gone_grace_ms = 1500;
+
+/// Each frame: the grace after `hostGone` is over: SIGHUP to that ssh if
+/// it is still this session's. True when it was hung up.
+pub fn tickGone(w: *JobWindow, now: u64) bool {
+    if (w.gone_ms == 0 or now < w.gone_ms) return false;
+    const pid = w.gone_pid;
+    w.gone_ms = 0;
+    w.gone_pid = 0;
+    if (pid <= 0 or pid != w.link_pid or !w.proc.running()) return false;
+    if (c.gtty_fg_pid(w.proc.out_fd) != pid) return false; // ended by itself
+    return c.kill(pid, c.SIGHUP) == 0;
 }
 
 /// Where this session's remote copies go: gtty's temp folder,
@@ -1615,6 +1655,7 @@ fn tickRemote(w: *JobWindow, gfx: *Gfx, now: u64) bool {
     const l = w.link orelse return false;
     _ = l.poll(now);
     if (l.state == .failed) {
+        if (l.lost) w.hostGone(now);
         w.linkLost(gfx);
         return true;
     }
