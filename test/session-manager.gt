@@ -1,0 +1,51 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# The Session Manager's ⋮ menu (Restore / Rename / Delete) and a restore
+# from a used gtty: it opens a new gtty (with GTTY_SHOW_DRY=1 the status
+# bar only says so) instead of replacing this one's windows.
+# Run with a scratch home and sessions file:
+#   S=$(mktemp -d); mkdir -p $S/home/alpha $S/home/beta
+#   cd $S && HOME=$S/home GTTY_SESSIONS=$S/sessions GTTY_SHOW_DRY=1 gtty --script $REPO/test/session-manager.gt
+#   grep '^S' $S/sessions     # one session left, its name ending in "x"
+# Shots go to $S: 1 the ⋮ menu of the second row, 2 Rename under the
+# mouse, 3 the name being edited, 4 Delete asked ("Sure? Delete", red),
+# 5 gtty's status bar: "would open a new gtty for session …".
+/s bash
+/wait 1500
+/type cd ~/alpha
+/wait 300
+/menu snapshot
+/wait 1100
+/type cd ~/beta
+/wait 300
+/menu snapshot
+/wait 600
+/menu sessions
+/wait 800
+/target sessions
+/click 283 107
+/wait 300
+/shot manager1-menu.bmp
+/move 220 175
+/wait 300
+/shot manager2-hover.bmp
+/click 220 175
+/wait 300
+/text x
+/shot manager3-rename.bmp
+/key enter
+/wait 300
+/click 283 62
+/wait 300
+/click 220 158
+/wait 300
+/shot manager4-sure.bmp
+/click 220 158
+/wait 300
+/click 283 62
+/wait 300
+/key enter
+/wait 600
+/target main
+/shot manager5-new-gtty.bmp
+/quit

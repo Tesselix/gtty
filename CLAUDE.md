@@ -255,7 +255,14 @@ the shell. Users expect it to behave like a shell in a terminal.
     opens its list **already expanded** (`Peek.openSessions`, kind
     `session`, `App.openSessionPeek`): the last 7 sessions used, the
     last used at the bottom and selected; a pick = `Action.restore`
-    (`Peek.target` = the id) → `App.restoreSession`. See "gtty-sessions".
+    (`Peek.target` = the id) → `App.restoreSession`. Its header's
+    **save** button (2026-10-31; floppy + "save" left of ×, `save_r`,
+    `Action.save`) → `App.askSnapshot`: the modal "Save the current
+    session" with the field = `autoName`, all selected (typing replaces
+    it), 30 s, Cancel safe (`ModalJob.snapshot`; empty name: red line,
+    stays open) → `takeSnapshot(name)`; the menu's Take Snapshot still
+    saves at once (`takeSnapshot(null)`). Test: `test/session-save.gt`.
+    See "gtty-sessions".
   - **Peek** (`src/ui/Peek.zig`, one at a time, `App.peek`): opens after
     0.5 s hover (`chip_hover_ms`) or a click; [copy] [expand ^] full branch
     [×]; grows up from the chip in the normal text size. Mouse away → 5 s
@@ -300,8 +307,16 @@ the shell. Users expect it to behave like a shell in a terminal.
   `menuNeedsUpdate:` through `gtty_menu_install`'s `title` callback,
   `App.menuTitle`; the drawn bar: `barRows(.session)`; both from
   `fillMenuSessions`, ids kept in `menu_sessions` for the pick).
-  **Restore** (`restoreSession`): **replaces** this gtty's windows (the
-  user's choice); windows still working (`!atPrompt`, named by the
+  **Restore** (`restoreSession`; the user's rule, 2026-10-31): **in a
+  new gtty** (`restoreInNew`: `gtty_open_new_instance` with `restore` =
+  the id → env `GTTY_RESTORE`, cascaded, home folder, comes to the
+  front; `GTTY_SHOW_DRY=1` only says so; the new gtty skips its start-up
+  command and restores at its first frame, `restore_from` /
+  `tickRestoreFrom`, a shell if nothing opened), unless this gtty is
+  **untouched** (`untouched`: only shell windows, none `JobWindow.used`
+  — set by anything sent to the job: keys, paste, a cd gtty typed, the
+  AI; the restore steps clear it again), then it **replaces** this
+  gtty's windows; windows still working (`!atPrompt`, named by the
   program in front, `frontName`) → the modal first (`ModalJob.restore`,
   Cancel / Restore danger, safe Cancel); `doRestore`: `touch` (last
   used), every job closed (`closeJob`, no `want_shell`), each window's
@@ -322,9 +337,15 @@ the shell. Users expect it to behave like a shell in a terminal.
   each tile: command (· user when another), host for ssh, folder; wrapped
   at the tile's width, clipped; current window's frame blue), hover a
   tile = every saved field, one line each, unwrapped (`drawDetails`).
+  Each row ends in **⋮** (2026-10-31; `Ctl.more`, drawn from the font):
+  a click opens its menu (`menu`, `drawMenu`, under the dots, over them
+  when no room): Restore / Rename / Delete with their keys; ↑ / ↓ /
+  Enter (the mouse moves `hi` too), Esc closes, a click elsewhere only
+  closes it; Delete asks first (row reads "Sure? Delete" in red, menu
+  stays), a second pick deletes. No buttons under the list any more.
   Enter / double click / Restore → `want_restore` → App; F2 / Rename:
-  inline edit (Enter keeps, Esc drops); Delete / Backspace / the button:
-  twice within 3 s (`Sure?`). Tests: `test/sessions.gt`,
+  inline edit (Enter keeps, Esc drops); Delete / Backspace: twice
+  within 3 s. Tests: `test/session-manager.gt` (`GTTY_SHOW_DRY=1`), `test/sessions.gt`,
   `test/sessions-ssh.gt` (stand-in ssh; the restored ssh is the real one).
 - **File actions** (added 2026-10-07; App "file actions" section) on an
   outlined local name (file or folder), or on the names ⌘-clicked
@@ -880,7 +901,7 @@ the shell. Users expect it to behave like a shell in a terminal.
     (`test/fileopener.gt`, with `GTTY_SHOW_DRY=1 GTTY_DRAG_DRY=1`).
 - **Remote sessions (ssh / mosh):** gtty must stay **transparent**: never
   wrap or add options to the user's ssh, never touch their env / config;
-  only watch. `gtty_fg_args` (`src/sys/gtty_pty.c`: tcgetpgrp + argv via
+  only watch (one exception: a dead host's ssh is hung up, see below). `gtty_fg_args` (`src/sys/gtty_pty.c`: tcgetpgrp + argv via
   KERN_PROCARGS2 / /proc) → `src/core/remote.zig` (`sessionOf`: ssh /
   mosh / mosh-client, destination) → `JobWindow.remoteNow`,
   `remote_buf` (checked with the chips). **gtty's own connection**
@@ -902,8 +923,21 @@ the shell. Users expect it to behave like a shell in a terminal.
   off until that ssh session ends (no retry; notice once). Remote front
   program is another hop / container shell / another user → `away=1`
   (`remote_away`) → off until back.
-  Tests: `test/remote.gt`, `test/remote-off.gt` with the stand-in
-  `test/fake-ssh/ssh.c` (`FAKE_SSH_NOLINK`, `FAKE_SSH_NESTED`; build it
+  **Dead host** (the user's rule, 2026-10-31; the one exception to "only
+  watch"): a host that vanishes without closing the connection (power
+  off, network gone) leaves the user's ssh waiting forever. The link
+  (`ServerAliveInterval=3`, `ServerAliveCountMax=2`: 6–9 s; the user
+  wanted ~10 s in all) failing after it was ready with ssh's
+  exit 255 (`RemoteLink.lost`; on EOF / a failed write the exit is awaited
+  `exit_wait_ms`, the pid is cleared once reaped) → `JobWindow.hostGone`:
+  ssh only, not mosh; `gone_grace_ms` (1.5 s, so a host that closed the
+  connection lets ssh end by itself) → `tickGone` (from `App.tickRemote`):
+  still `link_pid` and the terminal's front pid → SIGHUP to that ssh,
+  notice "X stopped answering: ssh ended" + beep. A link riding on the
+  user's ControlMaster can't notice (the master hangs too).
+  Tests: `test/remote.gt`, `test/remote-off.gt`, `test/remote-gone.gt`
+  with the stand-in `test/fake-ssh/ssh.c` (`FAKE_SSH_NOLINK`,
+  `FAKE_SSH_NESTED`, `FAKE_SSH_GONE=N`; build it
   with `cc` first, see the script's header).
 - **Start-up command:** `-c cmd` / `--command cmd` (default `s`; `""` =
   `s` too: see the rule "gtty always starts with a shell") is typed into the prompt and submitted once at start

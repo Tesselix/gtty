@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# A remote host that stops answering (powered off, network gone): gtty's
+# own connection gives up (keep-alives), and the user's ssh, which would
+# wait forever, is hung up 1.5 s later: the shell's prompt is back, with a
+# notice. Run from the repo root (stand-in ssh, see test/remote.gt):
+#   mkdir -p test/fake-ssh/bin && cc -o test/fake-ssh/bin/ssh test/fake-ssh/ssh.c
+#   zig build && zig-out/bin/gtty --script test/remote-gone.gt
+#   pkill -f "sshd: $USER@"
+/s bash
+/wait 1500
+/type export PATH=$PWD/test/fake-ssh/bin:$PATH; clear
+/wait 500
+/type FAKE_SSH_GONE=5 ssh me@box
+/wait 3000
+/type echo still-there
+/wait 1000
+/shot remote-gone-1-session.bmp
+# The link gives up at 5 s, the hang-up comes 1.5 s later.
+/wait 6000
+/shot remote-gone-2-ended.bmp
+/type echo back-home
+/wait 1000
+/shot remote-gone-3-local.bmp
+/quit

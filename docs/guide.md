@@ -89,17 +89,21 @@ Sessions are shared by every gtty on the machine.
 - **Session ▸** the last 7 sessions used: pick one to restore it.
 - The **session chip** (after the focus chip, while any session is saved):
   hover or click it and its list opens at once, the last used at the
-  bottom. Type to filter, **Enter** restores.
+  bottom. Type to filter, **Enter** restores. Its **save** button (top
+  right) saves this gtty's windows as a new session: it asks for a name,
+  the time already filled in and selected, so typing replaces it.
 - **Session ▸ Session Manager…** opens a window with every saved session
   on the left and, on the right, a picture of the selected one's screen:
   each window where it was, with its command (zsh, bash, ssh), the host
   for an ssh session, and its folder. Hover a window for all it saved.
-  **Restore** (or Enter, or a double click), **Rename** (F2), **Delete**
-  (click it, or press Delete, twice).
+  Each session's **⋮** opens its menu: **Restore** (or Enter, or a
+  double click), **Rename** (F2), **Delete** (pick it, or press Delete,
+  twice).
 
-**Restoring replaces this gtty's windows.** If some window is still
-working (a command, an ssh session), gtty asks first and names them.
-Each shell then opens in its folder (home if the folder is gone), in the
+**Restoring opens the session in a new gtty window**, so what you have
+open stays as it is. Only a gtty you haven't used yet (just opened or
+just restored, nothing typed into it) is used for the session instead,
+its windows replaced. Each shell then opens in its folder (home if the folder is gone), in the
 same place: the windows side by side as they were, the rest in the job
 grid. An ssh window runs its `ssh …` again, and once you're logged in
 (a password is up to you) gtty types `cd` to the folder you were in over
@@ -335,6 +339,12 @@ password. If it can't connect, the file opener and the git chip are off
 until you leave that ssh session (a notice says so). The same while you're
 further away inside the session (another ssh, a container shell, `sudo
 -i`): they come back when you return.
+
+If the other machine disappears without closing the connection (powered
+off, network gone), ssh would wait for it forever. gtty's own connection
+notices within about ten seconds; then gtty ends that ssh, the shell's
+prompt comes back and a notice says "box stopped answering: ssh ended".
+mosh sessions are left alone (mosh is made to wait out an outage).
 
 While the mouse is on a marked name, a short hint at the bottom of gtty's
 window says what the mouse does with it. Turn it off (and on) in

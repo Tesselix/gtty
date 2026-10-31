@@ -51,6 +51,13 @@ pid: c_int,
 in_fd: c_int,
 out_fd: c_int,
 state: State = .connecting,
+/// Failed after logging in, with ssh's own error (exit 255): the
+/// connection broke, the host stopped answering (keep-alives) or closed it.
+lost: bool = false,
+/// ssh closed its output, or a write to it failed: its exit is awaited a
+/// moment (`exit_wait_ms`) to learn how it ended.
+ended_ms: ?u64 = null,
+broken: bool = false,
 started_ms: u64,
 next_id: u32 = 1,
 hello_id: u32 = 0,
@@ -61,6 +68,8 @@ replies: std.ArrayList(Reply) = .empty,
 
 /// Giving up on a login that doesn't finish.
 const connect_timeout_ms = 20_000;
+/// How long a closed connection's ssh gets to exit by itself.
+const exit_wait_ms = 1000;
 
 pub fn open(gpa: std.mem.Allocator, spec: Spec, now_ms: u64) !*RemoteLink {
     var abuf: [80][]const u8 = undefined;
@@ -109,6 +118,7 @@ pub fn close(l: *RemoteLink) void {
 }
 
 fn killAndReap(pid: c_int) void {
+    if (pid <= 0) return; // already reaped
     c.gtty_kill(pid);
     var code: c_int = 0;
     // Killed with SIGKILL: gone at once; reap it (no zombie).
@@ -136,7 +146,7 @@ fn flush(l: *RemoteLink) void {
     while (l.outbuf.items.len > 0) {
         const n = c.gtty_write(l.in_fd, l.outbuf.items.ptr, l.outbuf.items.len);
         if (n <= 0) {
-            if (n < 0) l.fail();
+            if (n < 0) l.broken = true; // ssh is going: `poll` learns how
             return;
         }
         l.outbuf.replaceRangeAssumeCapacity(0, @intCast(n), &.{});
@@ -155,13 +165,13 @@ pub fn poll(l: *RemoteLink, now_ms: u64) bool {
     if (l.state == .failed) return false;
     const before = l.state;
     const n_before = l.replies.items.len;
-    l.flush();
+    if (!l.broken) l.flush();
     var buf: [16 * 1024]u8 = undefined;
     while (true) {
         const n = c.gtty_read(l.out_fd, &buf, buf.len);
         if (n == c.GTTY_AGAIN) break;
         if (n <= 0) {
-            l.fail(); // the connection ended
+            l.broken = true; // the connection ended
             break;
         }
         l.rbuf.appendSlice(l.gpa, buf[0..@intCast(n)]) catch break;
@@ -169,7 +179,15 @@ pub fn poll(l: *RemoteLink, now_ms: u64) bool {
     l.parse();
     if (l.state == .connecting and now_ms -| l.started_ms > connect_timeout_ms) l.fail();
     var code: c_int = 0;
-    if (l.state != .failed and c.gtty_poll_exit(l.pid, &code) == 1) l.state = .failed;
+    if (l.state != .failed and c.gtty_poll_exit(l.pid, &code) == 1) {
+        l.lost = l.state == .ready and code == 255;
+        l.pid = 0; // reaped: never signal that pid again
+        l.state = .failed;
+    } else if (l.state != .failed and l.broken) {
+        const since = l.ended_ms orelse now_ms;
+        l.ended_ms = since;
+        if (now_ms -| since > exit_wait_ms) l.fail();
+    }
     return l.state != before or l.replies.items.len != n_before;
 }
 
