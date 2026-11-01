@@ -25,7 +25,9 @@
 //!     the list at once, like the focus chip's: the saved sessions
 //!     (core/Sessions.zig), the last used at the bottom next to the chip
 //!     and selected; picking one asks App to restore it
-//!     (`Action.restore`, `target` = its id). Its header has a save
+//!     (`Action.restore`, `target` = its id): here, or with ⌘ (Linux
+//!     Ctrl) held in a new gtty, as VS Code's recent list; a dim line
+//!     under the list says so (`hint_r`, `new_window_hint`). Its header has a save
 //!     button (floppy + "save", `save_r`): App asks for a name and saves
 //!     this gtty's windows as a new session (`Action.save`).
 //!
@@ -45,6 +47,7 @@
 //! keyboard to it, and acts on what it returns.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const c = @import("../c.zig").c;
 const color = @import("../core/color.zig");
 const Theme = color.Theme;
@@ -116,6 +119,9 @@ text_r: Rect = .{},
 filter_r: Rect = .{},
 list_r: Rect = .{},
 msg_r: Rect = .{},
+/// The session list: the line under it saying how to open one in a new
+/// gtty (`new_window_hint`).
+hint_r: Rect = .{},
 row_h: f32 = 1,
 rows: usize = 0,
 bar_h: f32 = 3,
@@ -591,6 +597,10 @@ pub fn layout(p: *Peek, f: *const Gfx.Face, sf: *const Gfx.Face, ui: f32, bounds
         w = @max(w, @max(longest + 2 * f.cell_w + 2 * pad, f.cell_w * 30));
         p.rows = @max(p.visibleRows(), 1);
         h += f.cell_h + @round(10 * ui) + @as(f32, @floatFromInt(p.rows)) * p.row_h + pad;
+        if (p.kind == .session) {
+            w = @max(w, Gfx.textWidth(sf, new_window_hint) + 2 * pad);
+            h += sf.cell_h + pad;
+        }
     }
     if (msg_lines > 0) {
         var longest: f32 = 0;
@@ -632,9 +642,15 @@ pub fn layout(p: *Peek, f: *const Gfx.Face, sf: *const Gfx.Face, ui: f32, bounds
         cy += p.filter_r.h + @round(4 * ui);
         p.list_r = .{ .x = x + pad, .y = cy, .w = w - 2 * pad, .h = @as(f32, @floatFromInt(p.rows)) * p.row_h };
         cy += p.list_r.h + pad;
+        p.hint_r = .{};
+        if (p.kind == .session) {
+            p.hint_r = .{ .x = x + pad, .y = cy - @round(2 * ui), .w = w - 2 * pad, .h = sf.cell_h };
+            cy += sf.cell_h + pad;
+        }
     } else {
         p.filter_r = .{};
         p.list_r = .{};
+        p.hint_r = .{};
     }
     p.msg_r = if (msg_lines > 0) .{ .x = x + pad, .y = cy, .w = w - 2 * pad, .h = @as(f32, @floatFromInt(msg_lines)) * sf.cell_h } else .{};
 }
@@ -726,6 +742,12 @@ pub fn draw(p: *const Peek, gfx: *Gfx, theme: *const Theme, f: *Gfx.Face, sf: *G
         }
     }
 
+    if (p.hint_r.h > 0) {
+        gfx.clip(p.hint_r);
+        _ = gfx.text(sf, p.hint_r.x, p.hint_r.y, new_window_hint, theme.dim);
+        gfx.clip(null);
+    }
+
     // What the action is doing / did.
     if (p.msg_r.h > 0) {
         gfx.clip(p.msg_r);
@@ -771,6 +793,12 @@ fn filterHint(p: *const Peek) []const u8 {
 
 /// The session list's save button's word.
 const save_label = "save";
+/// Under the session list: the modifier that opens a session in a new
+/// gtty (App's `newWindowMod`), as VS Code's recent list.
+const new_window_hint = if (builtin.os.tag == .macos)
+    "⌘-click / ⌘Enter: open in a new window"
+else
+    "Ctrl+click / Ctrl+Enter: open in a new window";
 
 /// The session list's save button: a floppy disk and "save" on a light
 /// face (as the title bar's actions), lighter with a frame under the mouse.

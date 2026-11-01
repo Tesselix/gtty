@@ -90,7 +90,10 @@ Sessions are shared by every gtty on the machine.
 - **Session ▸** the last 7 sessions used: pick one to restore it.
 - The **session chip** (after the focus chip, while any session is saved):
   hover or click it and its list opens at once, the last used at the
-  bottom. Type to filter, **Enter** restores. Its **save** button (top
+  bottom. Type to filter; a click or **Enter**
+  restores it here, replacing this gtty's windows (asking first if some
+  are still working); **⌘-click** / **⌘Enter** (Linux Ctrl) opens it in a
+  new gtty instead. Its **save** button (top
   right) saves this gtty's windows as a new session: it asks for a name,
   that name already filled in and selected, so you can edit it or type
   another.

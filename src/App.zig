@@ -3556,7 +3556,18 @@ fn sessionsChanged(app: *App) void {
 /// opened or restored, nothing typed: `untouched`), in place of its
 /// windows. Jobs still working there (a shell still starting) are named
 /// in a question first.
-fn restoreSession(app: *App, id: []const u8) void {
+/// Where a restore opens: `auto` in this gtty while untouched, else a new
+/// one (the Session menu, the manager); `here` replaces this gtty's
+/// windows; `new` always a new gtty (the session chip's list; ⌘ held).
+const RestoreWhere = enum { auto, here, new };
+
+/// `mod` holds the modifier that opens a pick in a new window (as a link
+/// in a browser): ⌘ on macOS, Ctrl elsewhere.
+fn newWindowMod(mod: c.SDL_Keymod) bool {
+    return mod & (if (builtin.os.tag == .macos) c.SDL_KMOD_GUI else c.SDL_KMOD_CTRL) != 0;
+}
+
+fn restoreSession(app: *App, id: []const u8, where: RestoreWhere) void {
     app.closeMenu();
     app.closePeek();
     app.sessions.reload();
@@ -3565,7 +3576,7 @@ fn restoreSession(app: *App, id: []const u8) void {
         return app.say("that session is gone (deleted in another gtty?)", app.theme.stderr_accent);
     };
     // Something was done here: the session gets a gtty of its own.
-    if (!app.untouched()) return app.restoreInNew(id, x.name);
+    if (where == .new or (where == .auto and !app.untouched())) return app.restoreInNew(id, x.name);
     var busy: usize = 0;
     var lbuf: [400]u8 = undefined;
     var list: std.Io.Writer = .fixed(&lbuf);
@@ -3823,7 +3834,7 @@ fn pickMenuSession(app: *App, k: usize) void {
     var ibuf: [64]u8 = undefined;
     const id = ibuf[0..m.id_len];
     @memcpy(id, m.id[0..m.id_len]);
-    app.restoreSession(id);
+    app.restoreSession(id, .auto);
 }
 
 /// Nothing was done in this gtty yet: only shells, none sent anything
@@ -3922,7 +3933,7 @@ fn tickSessions(app: *App) void {
             if (sw.takeRestore()) |id| {
                 defer app.gpa.free(id);
                 _ = c.SDL_RaiseWindow(app.window);
-                app.restoreSession(id);
+                app.restoreSession(id, .auto);
             }
             if (app.sessions_win) |s| {
                 s.render(&app.theme);
@@ -3989,7 +4000,8 @@ fn layoutPeek(app: *App) void {
 }
 
 /// Act on what the peek returned for a click or a key.
-fn peekAction(app: *App, a: Peek.Action) void {
+/// `new_window`: the pick was made with `newWindowMod` held.
+fn peekAction(app: *App, a: Peek.Action, new_window: bool) void {
     const pk = if (app.peek) |*p| p else return;
     switch (a) {
         .none, .redraw => {},
@@ -4015,13 +4027,14 @@ fn peekAction(app: *App, a: Peek.Action) void {
         },
         // The session list's save button: ask for a name.
         .save => return app.askSnapshot(),
-        // A session picked in the session chip's list.
+        // A session picked in the session chip's list: it replaces this
+        // gtty's windows; ⌘ (Linux Ctrl) held, a new gtty opens it.
         .restore => {
             var ibuf: [64]u8 = undefined;
             const n = @min(pk.target.len, ibuf.len);
             @memcpy(ibuf[0..n], pk.target[0..n]);
             app.closePeek();
-            return app.restoreSession(ibuf[0..n]);
+            return app.restoreSession(ibuf[0..n], if (new_window) .new else .here);
         },
     }
     app.layoutPeek();
@@ -5044,7 +5057,9 @@ fn onKey(app: *App, key: c.SDL_Keycode, mod: c.SDL_Keymod) void {
     if (findKeyPressed(key, mod)) return app.openFind();
     if (app.findTarget()) |w| if (app.findBoxKey(w, key, ctrl, cmd, alt, shift)) return;
     // An expanded peek has the keyboard (its filter box and list).
-    if (app.peek) |*pk| if (pk.wantsKeys() and !cmd) return app.peekAction(pk.key(key));
+    // ⌘Enter in the session list: restore in a new gtty.
+    if (app.peek) |*pk| if (pk.wantsKeys() and (!cmd or (pk.kind == .session and (key == c.SDLK_RETURN or key == c.SDLK_KP_ENTER))))
+        return app.peekAction(pk.key(key), newWindowMod(mod));
 
     // File actions on the name the mouse has (or the selected names).
     if (app.fileKey(key, ctrl, cmd, alt, shift)) return;
@@ -5311,7 +5326,7 @@ fn onClick(app: *App, x: f32, y: f32, button: u8, clicks: u8) void {
     // click anywhere else closes it and still does what it does.
     if (app.peek) |*pk| {
         if (pk.contains(x, y)) {
-            if (button == c.SDL_BUTTON_LEFT) app.peekAction(pk.click(x, y));
+            if (button == c.SDL_BUTTON_LEFT) app.peekAction(pk.click(x, y), newWindowMod(c.SDL_GetModState()));
             // The folder peek: the chip's menu (the peek goes).
             if (button == c.SDL_BUTTON_RIGHT and pk.kind == .folder) {
                 const uid = pk.uid;

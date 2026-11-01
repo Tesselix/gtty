@@ -14,7 +14,8 @@
 //! / Delete (`menu`; ↑ / ↓ / Enter, Esc closes; a click elsewhere only
 //! closes it). Restore (also Enter, a double click) asks App to open it
 //! (a new gtty, or this one while untouched); Rename (also F2) edits the
-//! name in the list; Delete (also Delete / Backspace) asks once more
+//! name in the list (a LineEdit: all selected at first; arrows, words,
+//! Home / End, Shift selects, ⌘A / ⌘C / ⌘X / ⌘V); Delete (also Delete / Backspace) asks once more
 //! ("Sure?") before it goes.
 //! Changes are written to the shared file at once (other gttys see them).
 
@@ -27,13 +28,13 @@ const Theme = color.Theme;
 const Gfx = @import("../render/Gfx.zig");
 const Rect = Gfx.Rect;
 const Sessions = @import("../core/Sessions.zig");
+const LineEdit = @import("LineEdit.zig");
 
 const SessionsWindow = @This();
 
 const font_pt = 13;
 /// Delete asks again this long ("click again to delete").
 const confirm_ms = 3000;
-const max_name = 200;
 
 /// What a click on a spot does: a row, its ⋮, a row of the ⋮ menu, a
 /// tile of the picture.
@@ -54,7 +55,7 @@ sel_len: usize = 0,
 /// The first row shown (the list scrolls).
 top: usize = 0,
 /// Renaming the selected session: the name being typed.
-edit: ?struct { buf: [max_name]u8 = undefined, len: usize = 0 } = null,
+edit: ?LineEdit = null,
 /// Delete was asked (the button / key) at this time: asked again until
 /// `confirm_ms` later.
 confirm_at: u64 = 0,
@@ -184,10 +185,8 @@ fn restore(s: *SessionsWindow) void {
 
 fn startRename(s: *SessionsWindow) void {
     const x = s.selected() orelse return;
-    s.edit = .{};
-    const n = @min(x.name.len, max_name);
-    @memcpy(s.edit.?.buf[0..n], x.name[0..n]);
-    s.edit.?.len = n;
+    s.edit = LineEdit.init(x.name);
+    s.edit.?.selectAll();
     s.confirm_at = 0;
     s.dirty = true;
 }
@@ -196,7 +195,8 @@ fn commitRename(s: *SessionsWindow) void {
     const e = s.edit orelse return;
     s.edit = null;
     s.dirty = true;
-    const name = std.mem.trim(u8, e.buf[0..e.len], " \t");
+    var nbuf: [LineEdit.max * 4]u8 = undefined;
+    const name = std.mem.trim(u8, e.text(&nbuf), " \t");
     if (name.len == 0) return;
     const id = s.sel_buf[0..s.sel_len];
     // What other gttys changed meanwhile stays.
@@ -258,9 +258,7 @@ pub fn handle(s: *SessionsWindow, ev: *const c.SDL_Event) void {
 
 pub fn onText(s: *SessionsWindow, text: []const u8) void {
     const e = if (s.edit) |*e| e else return;
-    const n = @min(e.buf.len - e.len, text.len);
-    @memcpy(e.buf[e.len..][0..n], text[0..n]);
-    e.len += n;
+    e.insert(text);
     s.dirty = true;
 }
 
@@ -271,18 +269,7 @@ pub fn onKey(s: *SessionsWindow, key: c.SDL_Keycode, mod: c.SDL_Keymod) void {
         switch (key) {
             c.SDLK_RETURN, c.SDLK_KP_ENTER, c.SDLK_TAB => s.commitRename(),
             c.SDLK_ESCAPE => s.edit = null,
-            c.SDLK_BACKSPACE => while (e.len > 0) {
-                e.len -= 1;
-                if (e.buf[e.len] & 0xC0 != 0x80) break;
-            },
-            c.SDLK_V => if (cmd) {
-                if (c.SDL_GetClipboardText()) |t| {
-                    defer c.SDL_free(t);
-                    const line = std.mem.sliceTo(t, 0);
-                    s.onText(line[0 .. std.mem.indexOfAny(u8, line, "\r\n") orelse line.len]);
-                }
-            },
-            else => {},
+            else => editKey(e, key, mod),
         }
         return;
     }
@@ -314,6 +301,45 @@ pub fn onKey(s: *SessionsWindow, key: c.SDL_Keycode, mod: c.SDL_Keymod) void {
         c.SDLK_RETURN, c.SDLK_KP_ENTER => s.restore(),
         c.SDLK_F2 => s.startRename(),
         c.SDLK_DELETE, c.SDLK_BACKSPACE => s.delete(),
+        else => {},
+    }
+}
+
+/// An editing key for the name being typed, as the modal's input field
+/// takes them (macOS: ⌘ + ←/→ to the ends, ⌥ by words; Linux: Ctrl by
+/// words, Home / End).
+fn editKey(e: *LineEdit, key: c.SDL_Keycode, mod: c.SDL_Keymod) void {
+    const shift = mod & c.SDL_KMOD_SHIFT != 0;
+    const gui = mod & c.SDL_KMOD_GUI != 0;
+    const ctrl = mod & c.SDL_KMOD_CTRL != 0;
+    const word = mod & c.SDL_KMOD_ALT != 0 or ctrl;
+    // ⌘ on macOS, Ctrl elsewhere: select all, copy, cut, paste.
+    const cmd = if (builtin.os.tag == .macos) gui else ctrl;
+    switch (key) {
+        c.SDLK_LEFT => e.move(if (gui) .home else if (word) .word_left else .left, shift),
+        c.SDLK_RIGHT => e.move(if (gui) .end else if (word) .word_right else .right, shift),
+        c.SDLK_HOME, c.SDLK_UP => e.move(.home, shift),
+        c.SDLK_END, c.SDLK_DOWN => e.move(.end, shift),
+        c.SDLK_BACKSPACE => if (gui) {
+            e.move(.home, true);
+            e.backspace(false);
+        } else e.backspace(word),
+        c.SDLK_DELETE => e.delete(word),
+        c.SDLK_A => if (cmd) e.selectAll(),
+        c.SDLK_C, c.SDLK_X => if (cmd) {
+            var buf: [LineEdit.max * 4 + 1]u8 = undefined;
+            const t = e.selectedText(buf[0 .. buf.len - 1]);
+            if (t.len == 0) return;
+            buf[t.len] = 0;
+            _ = c.SDL_SetClipboardText(buf[0..t.len :0].ptr);
+            if (key == c.SDLK_X) e.backspace(false);
+        },
+        c.SDLK_V => if (cmd) {
+            const t = c.SDL_GetClipboardText() orelse return;
+            defer c.SDL_free(t);
+            const line = std.mem.sliceTo(t, 0);
+            e.insert(line[0 .. std.mem.indexOfAny(u8, line, "\r\n") orelse line.len]);
+        },
         else => {},
     }
 }
@@ -472,10 +498,29 @@ pub fn render(s: *SessionsWindow, theme: *const Theme) void {
             g.fill(box, theme.bg);
             g.outline(box, theme.focus, @max(@round(ui), 1));
             g.clip(box);
-            const tw = Gfx.textWidth(f, e.buf[0..e.len]);
-            const x0 = @min(pad, box.x + box.w - @round(4 * ui) - f.cell_w - tw);
-            const end = g.text(f, x0, ty, e.buf[0..e.len], theme.prompt_fg);
-            g.fill(.{ .x = end, .y = ty, .w = @max(@round(2 * ui), 1), .h = f.cell_h }, theme.cursor);
+            // Scrolled to keep the cursor in view; the selection under
+            // the text.
+            const cols: usize = @intFromFloat(@max(@floor((box.w - @round(8 * ui)) / f.cell_w), 1));
+            const first: usize = if (e.cursor + 1 > cols) e.cursor + 1 - cols else 0;
+            const x0 = box.x + @round(4 * ui);
+            const sl = e.selection();
+            if (sl[1] > sl[0]) {
+                const lo = @max(sl[0], first);
+                if (sl[1] > lo) g.fill(.{
+                    .x = x0 + @as(f32, @floatFromInt(lo - first)) * f.cell_w,
+                    .y = ty,
+                    .w = @as(f32, @floatFromInt(sl[1] - lo)) * f.cell_w,
+                    .h = f.cell_h,
+                }, theme.selection);
+            }
+            var cx = x0;
+            for (e.chars()[first..]) |cp| {
+                if (cx > box.x + box.w) break;
+                g.glyphAt(f, cx, ty, cp, theme.prompt_fg);
+                cx += f.cell_w;
+            }
+            const cur_x = x0 + @as(f32, @floatFromInt(e.cursor - first)) * f.cell_w;
+            g.fill(.{ .x = cur_x, .y = ty, .w = @max(@round(2 * ui), 1), .h = f.cell_h }, theme.cursor);
             g.clip(list_r);
         } else {
             g.clip(.{ .x = r.x, .y = r.y, .w = @max(dots_x - @round(4 * ui), 1), .h = r.h });
