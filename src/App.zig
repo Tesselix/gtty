@@ -3405,10 +3405,70 @@ fn snapWin(app: *App, a: std.mem.Allocator, w: *JobWindow, place: Sessions.Place
     return spec;
 }
 
-/// Session ▸ Take Snapshot (named after the time), or the session list's
-/// save button (`name` from `askSnapshot`): every shell window of this
-/// gtty (in the windows area and in the job grid), saved as a new session
-/// in the file all gttys share.
+/// The windows a snapshot saves, in its order: the windows area's (display
+/// order), then the job grid's (newest first); the first `shown` of them
+/// are in the windows area.
+fn snapshotWindows(app: *App, buf: *[128]*JobWindow) struct { all: []*JobWindow, shown: usize } {
+    var n: usize = 0;
+    var obuf: [64]*JobWindow = undefined;
+    for (app.shownOrder(&obuf)) |w| if (snapshotable(w)) {
+        buf[n] = w;
+        n += 1;
+    };
+    const shown = n;
+    var gbuf: [64]usize = undefined;
+    const grid, _ = app.gridJobs(&gbuf);
+    if (app.grid_oldest_first) std.mem.reverse(usize, grid);
+    for (grid) |i| if (snapshotable(app.jobs.items[i])) {
+        buf[n] = app.jobs.items[i];
+        n += 1;
+    };
+    return .{ .all = buf[0..n], .shown = shown };
+}
+
+/// The name the save field suggests (`Sessions.defaultName`): per saved
+/// window, a shell at its prompt gives its folder, anything else in front
+/// its command line as typed.
+fn snapshotName(app: *App, buf: []u8) []const u8 {
+    var arena = std.heap.ArenaAllocator.init(app.gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var wbuf: [128]*JobWindow = undefined;
+    var parts: std.ArrayList(Sessions.NamePart) = .empty;
+    for (app.snapshotWindows(&wbuf).all) |w| {
+        const part = namePart(a, w) orelse continue;
+        parts.append(a, part) catch break;
+    }
+    return Sessions.defaultName(buf, parts.items, Sessions.now());
+}
+
+/// What window `w` adds to a session's default name (strings in `a`).
+fn namePart(a: std.mem.Allocator, w: *JobWindow) ?Sessions.NamePart {
+    if (w.kind == .command) return .{ .command = w.title };
+    const fg_pid = c.gtty_fg_pid(w.proc.out_fd);
+    if (w.atPrompt() or fg_pid <= 0 or fg_pid == w.proc.pid) {
+        var fbuf: [4096]u8 = undefined;
+        return .{ .folder = a.dupe(u8, w.folder(&fbuf)) catch return null };
+    }
+    // The line the shell ran (the hooks' C mark), else the program's argv.
+    if (w.out.cmd_seq != 0 and w.out.lastCommand().len > 0)
+        return .{ .command = a.dupe(u8, w.out.lastCommand()) catch return null };
+    var abuf: [4096]u8 = undefined;
+    const na = c.gtty_fg_args(w.proc.out_fd, &abuf, abuf.len);
+    if (na <= 0) return .{ .command = frontName(w) };
+    var aw: std.Io.Writer.Allocating = .init(a);
+    var argv: [64][]const u8 = undefined;
+    for (remote.splitNul(abuf[0..@intCast(na)], &argv), 0..) |arg, k| {
+        if (k > 0) aw.writer.writeByte(' ') catch return null;
+        writeArg(&aw.writer, arg) catch return null;
+    }
+    return .{ .command = aw.written() };
+}
+
+/// Session ▸ Take Snapshot (named by `snapshotName`), or the session
+/// list's save button (`name` from `askSnapshot`): every shell window of
+/// this gtty (in the windows area and in the job grid), saved as a new
+/// session in the file all gttys share.
 fn takeSnapshot(app: *App, given: ?[]const u8) void {
     app.closeMenu();
     var arena = std.heap.ArenaAllocator.init(app.gpa);
@@ -3417,23 +3477,15 @@ fn takeSnapshot(app: *App, given: ?[]const u8) void {
     var specs: std.ArrayList(Sessions.WinSpec) = .empty;
     const area = app.layoutFor(app.gridCount()).main;
     const main_w: ?*JobWindow = if (app.main) |m| app.jobs.items[m] else null;
-    var obuf: [64]*JobWindow = undefined;
-    for (app.shownOrder(&obuf)) |w| {
-        if (!snapshotable(w)) continue;
-        const r = w.rect;
-        const tile = [4]f32{ (r.x - area.x) / area.w, (r.y - area.y) / area.h, r.w / area.w, r.h / area.h };
-        const s = app.snapWin(a, w, if (w == main_w) .main else .shown, tile) orelse continue;
-        specs.append(a, s) catch return;
-    }
-    // The job grid, newest first.
-    var gbuf: [64]usize = undefined;
-    const grid, _ = app.gridJobs(&gbuf);
-    if (app.grid_oldest_first) std.mem.reverse(usize, grid);
-    for (grid) |i| {
-        const w = app.jobs.items[i];
-        if (!snapshotable(w)) continue;
-        const s = app.snapWin(a, w, .grid, .{ 0, 0, 0, 0 }) orelse continue;
-        specs.append(a, s) catch return;
+    var wbuf: [128]*JobWindow = undefined;
+    const wins = app.snapshotWindows(&wbuf);
+    for (wins.all, 0..) |w, k| {
+        const s = if (k < wins.shown) blk: {
+            const r = w.rect;
+            const tile = [4]f32{ (r.x - area.x) / area.w, (r.y - area.y) / area.h, r.w / area.w, r.h / area.h };
+            break :blk app.snapWin(a, w, if (w == main_w) .main else .shown, tile);
+        } else app.snapWin(a, w, .grid, .{ 0, 0, 0, 0 });
+        specs.append(a, s orelse continue) catch return;
     }
     if (specs.items.len == 0) {
         beep.beep();
@@ -3448,7 +3500,7 @@ fn takeSnapshot(app: *App, given: ?[]const u8) void {
         break;
     };
     var nbuf: [200]u8 = undefined;
-    const name = given orelse Sessions.autoName(&nbuf, Sessions.now());
+    const name = given orelse app.snapshotName(&nbuf);
     var ibuf: [64]u8 = undefined;
     const id = app.sessions.newId(&ibuf);
     app.sessions.reload();
@@ -3462,8 +3514,8 @@ fn takeSnapshot(app: *App, given: ?[]const u8) void {
 }
 
 /// The session list's save button: a modal with the name the snapshot
-/// would get (the time), all selected so typing replaces it; Save takes
-/// the snapshot (`takeSnapshot`).
+/// would get (`snapshotName`), all selected so typing replaces it; Save
+/// takes the snapshot (`takeSnapshot`).
 fn askSnapshot(app: *App) void {
     if (snapshotCount(app) == 0) {
         beep.beep();
@@ -3472,12 +3524,12 @@ fn askSnapshot(app: *App) void {
     var nbuf: [200]u8 = undefined;
     app.openModal(.{
         .title = "Save the current session",
-        .body = "Type a name, or keep the time · Esc leaves it unsaved",
+        .body = "Type a name, or keep this one · Esc leaves it unsaved",
         .buttons = &.{ .{ .label = "Cancel" }, .{ .label = "Save", .kind = .primary } },
         .default = 1,
         .safe = 0,
         .timeout_ms = 30_000,
-        .input = Sessions.autoName(&nbuf, Sessions.now()),
+        .input = app.snapshotName(&nbuf),
     }, .{ .snapshot = .{ .window = 0 } });
 }
 
@@ -3504,7 +3556,18 @@ fn sessionsChanged(app: *App) void {
 /// opened or restored, nothing typed: `untouched`), in place of its
 /// windows. Jobs still working there (a shell still starting) are named
 /// in a question first.
-fn restoreSession(app: *App, id: []const u8) void {
+/// Where a restore opens: `auto` in this gtty while untouched, else a new
+/// one (the Session menu, the manager); `here` replaces this gtty's
+/// windows; `new` always a new gtty (the session chip's list; ⌘ held).
+const RestoreWhere = enum { auto, here, new };
+
+/// `mod` holds the modifier that opens a pick in a new window (as a link
+/// in a browser): ⌘ on macOS, Ctrl elsewhere.
+fn newWindowMod(mod: c.SDL_Keymod) bool {
+    return mod & (if (builtin.os.tag == .macos) c.SDL_KMOD_GUI else c.SDL_KMOD_CTRL) != 0;
+}
+
+fn restoreSession(app: *App, id: []const u8, where: RestoreWhere) void {
     app.closeMenu();
     app.closePeek();
     app.sessions.reload();
@@ -3513,7 +3576,7 @@ fn restoreSession(app: *App, id: []const u8) void {
         return app.say("that session is gone (deleted in another gtty?)", app.theme.stderr_accent);
     };
     // Something was done here: the session gets a gtty of its own.
-    if (!app.untouched()) return app.restoreInNew(id, x.name);
+    if (where == .new or (where == .auto and !app.untouched())) return app.restoreInNew(id, x.name);
     var busy: usize = 0;
     var lbuf: [400]u8 = undefined;
     var list: std.Io.Writer = .fixed(&lbuf);
@@ -3771,7 +3834,7 @@ fn pickMenuSession(app: *App, k: usize) void {
     var ibuf: [64]u8 = undefined;
     const id = ibuf[0..m.id_len];
     @memcpy(id, m.id[0..m.id_len]);
-    app.restoreSession(id);
+    app.restoreSession(id, .auto);
 }
 
 /// Nothing was done in this gtty yet: only shells, none sent anything
@@ -3870,7 +3933,7 @@ fn tickSessions(app: *App) void {
             if (sw.takeRestore()) |id| {
                 defer app.gpa.free(id);
                 _ = c.SDL_RaiseWindow(app.window);
-                app.restoreSession(id);
+                app.restoreSession(id, .auto);
             }
             if (app.sessions_win) |s| {
                 s.render(&app.theme);
@@ -3937,7 +4000,8 @@ fn layoutPeek(app: *App) void {
 }
 
 /// Act on what the peek returned for a click or a key.
-fn peekAction(app: *App, a: Peek.Action) void {
+/// `new_window`: the pick was made with `newWindowMod` held.
+fn peekAction(app: *App, a: Peek.Action, new_window: bool) void {
     const pk = if (app.peek) |*p| p else return;
     switch (a) {
         .none, .redraw => {},
@@ -3963,13 +4027,14 @@ fn peekAction(app: *App, a: Peek.Action) void {
         },
         // The session list's save button: ask for a name.
         .save => return app.askSnapshot(),
-        // A session picked in the session chip's list.
+        // A session picked in the session chip's list: it replaces this
+        // gtty's windows; ⌘ (Linux Ctrl) held, a new gtty opens it.
         .restore => {
             var ibuf: [64]u8 = undefined;
             const n = @min(pk.target.len, ibuf.len);
             @memcpy(ibuf[0..n], pk.target[0..n]);
             app.closePeek();
-            return app.restoreSession(ibuf[0..n]);
+            return app.restoreSession(ibuf[0..n], if (new_window) .new else .here);
         },
     }
     app.layoutPeek();
@@ -4992,7 +5057,9 @@ fn onKey(app: *App, key: c.SDL_Keycode, mod: c.SDL_Keymod) void {
     if (findKeyPressed(key, mod)) return app.openFind();
     if (app.findTarget()) |w| if (app.findBoxKey(w, key, ctrl, cmd, alt, shift)) return;
     // An expanded peek has the keyboard (its filter box and list).
-    if (app.peek) |*pk| if (pk.wantsKeys() and !cmd) return app.peekAction(pk.key(key));
+    // ⌘Enter in the session list: restore in a new gtty.
+    if (app.peek) |*pk| if (pk.wantsKeys() and (!cmd or (pk.kind == .session and (key == c.SDLK_RETURN or key == c.SDLK_KP_ENTER))))
+        return app.peekAction(pk.key(key), newWindowMod(mod));
 
     // File actions on the name the mouse has (or the selected names).
     if (app.fileKey(key, ctrl, cmd, alt, shift)) return;
@@ -5259,7 +5326,7 @@ fn onClick(app: *App, x: f32, y: f32, button: u8, clicks: u8) void {
     // click anywhere else closes it and still does what it does.
     if (app.peek) |*pk| {
         if (pk.contains(x, y)) {
-            if (button == c.SDL_BUTTON_LEFT) app.peekAction(pk.click(x, y));
+            if (button == c.SDL_BUTTON_LEFT) app.peekAction(pk.click(x, y), newWindowMod(c.SDL_GetModState()));
             // The folder peek: the chip's menu (the peek goes).
             if (button == c.SDL_BUTTON_RIGHT and pk.kind == .folder) {
                 const uid = pk.uid;

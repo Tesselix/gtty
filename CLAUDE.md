@@ -255,10 +255,17 @@ the shell. Users expect it to behave like a shell in a terminal.
     opens its list **already expanded** (`Peek.openSessions`, kind
     `session`, `App.openSessionPeek`): the last 7 sessions used, the
     last used at the bottom and selected; a pick = `Action.restore`
-    (`Peek.target` = the id) → `App.restoreSession`. Its header's
+    (`Peek.target` = the id) → `App.restoreSession(.here)`: replaces
+    this gtty's windows (2026-11-01, the user's rule; windows still
+    working: the modal first); with ⌘ (Linux Ctrl) held, click or
+    Enter (`newWindowMod`, from the key event's mod / `SDL_GetModState`
+    for clicks; `peekAction`'s `new_window`): `.new`, a new gtty. A dim
+    line under the list says so (`Peek.hint_r`, `new_window_hint`:
+    "⌘-click / ⌘Enter: open in a new window", Linux Ctrl; as VS Code's
+    recent list). Its header's
     **save** button (2026-10-31; floppy + "save" left of ×, `save_r`,
     `Action.save`) → `App.askSnapshot`: the modal "Save the current
-    session" with the field = `autoName`, all selected (typing replaces
+    session" with the field = `snapshotName`, all selected (typing replaces
     it), 30 s, Cancel safe (`ModalJob.snapshot`; empty name: red line,
     stays open) → `takeSnapshot(name)`; the menu's Take Snapshot still
     saves at once (`takeSnapshot(null)`). Test: `test/session-save.gt`.
@@ -292,8 +299,15 @@ the shell. Users expect it to behave like a shell in a terminal.
   when readable); ssh / mosh: host (`remote.sessionOf`), remote folder
   (`remoteCwd` when the link knew it), command line (the front ssh's argv,
   quoted only when needed, `writeArg`; mosh: `mosh <dest>`), local folder
-  = `link_cwd`. Name: `Sessions.autoName`, the date-time only
-  ("Oct 28 14:05"; renamed in the manager). **File** shared by all gttys:
+  = `link_cwd`. Name (2026-11-01; `App.snapshotName` →
+  `Sessions.defaultName`, unit-tested; Take Snapshot and the save
+  field's suggestion): the saved windows in the snapshot's order
+  (`snapshotWindows`), joined with ", ": a shell at its prompt (or with
+  no other program in front) gives its folder's base name ("/" for the
+  root), anything else its command line as typed (the hooks' last
+  command, else the front program's argv), e.g. "gtty, k8s_infra, htop";
+  cut with "…"; no windows: the date-time (`autoName`). Renamed in the
+  manager. **File** shared by all gttys:
   `$GTTY_SESSIONS`, else `$XDG_STATE_HOME/gtty/sessions`, else
   `~/.local/state/gtty/sessions` (0600; `S` / `W` lines, values
   escaped); every change = `reload` + change + `save` (temp + rename);
@@ -307,7 +321,9 @@ the shell. Users expect it to behave like a shell in a terminal.
   `menuNeedsUpdate:` through `gtty_menu_install`'s `title` callback,
   `App.menuTitle`; the drawn bar: `barRows(.session)`; both from
   `fillMenuSessions`, ids kept in `menu_sessions` for the pick).
-  **Restore** (`restoreSession`; the user's rule, 2026-10-31): **in a
+  **Restore** (`restoreSession(.auto)`: the Session menu, the manager;
+  the session chip's list is `.here` / `.new`, see above; the user's
+  rule, 2026-10-31): **in a
   new gtty** (`restoreInNew`: `gtty_open_new_instance` with `restore` =
   the id → env `GTTY_RESTORE`, cascaded, home folder, comes to the
   front; `GTTY_SHOW_DRY=1` only says so; the new gtty skips its start-up
@@ -344,7 +360,9 @@ the shell. Users expect it to behave like a shell in a terminal.
   closes it; Delete asks first (row reads "Sure? Delete" in red, menu
   stays), a second pick deletes. No buttons under the list any more.
   Enter / double click / Restore → `want_restore` → App; F2 / Rename:
-  inline edit (Enter keeps, Esc drops); Delete / Backspace: twice
+  inline edit (a `LineEdit`, 2026-11-01: the name all selected at first;
+  ← / → (⌥ / Ctrl by words, ⌘ to the ends), Home / End, Shift selects,
+  ⌘A / ⌘C / ⌘X / ⌘V, Linux Ctrl; Enter keeps, Esc drops); Delete / Backspace: twice
   within 3 s. Tests: `test/session-manager.gt` (`GTTY_SHOW_DRY=1`), `test/sessions.gt`,
   `test/sessions-ssh.gt` (stand-in ssh; the restored ssh is the real one).
 - **File actions** (added 2026-10-07; App "file actions" section) on an

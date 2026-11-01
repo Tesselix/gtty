@@ -243,6 +243,56 @@ pub fn autoName(buf: []u8, at: i64) []const u8 {
     return w.buffered();
 }
 
+/// What one window adds to a session's default name.
+pub const NamePart = union(enum) {
+    /// A shell at its prompt: the folder it is in (its base name is used).
+    folder: []const u8,
+    /// Anything else in front: its command line, as typed.
+    command: []const u8,
+};
+
+/// The name the save field suggests (`defaultName`): each window's part
+/// in the snapshot's order, joined with ", " — a shell its folder's base
+/// name ("/" for the root), anything else its command line ("htop",
+/// "ssh sagi@server.com"). Cut with "…" when `buf` is full; no windows:
+/// the time (`autoName`).
+pub fn defaultName(buf: []u8, parts: []const NamePart, at: i64) []const u8 {
+    if (parts.len == 0) return autoName(buf, at);
+    const ell = "…";
+    if (buf.len < ell.len) return buf[0..0];
+    var n: usize = 0;
+    for (parts, 0..) |p, k| {
+        const text = switch (p) {
+            .folder => |f| folderBase(f),
+            .command => |cmd| std.mem.trim(u8, cmd, " \t\r\n"),
+        };
+        const sep: []const u8 = if (k > 0) ", " else "";
+        for ([2][]const u8{ sep, text }) |piece| for (piece) |ch| {
+            if (n + 1 > buf.len - ell.len) {
+                // Not inside a character, nor after a bare separator.
+                if (ch & 0xC0 == 0x80) {
+                    while (n > 0 and buf[n - 1] & 0xC0 == 0x80) n -= 1;
+                    if (n > 0) n -= 1;
+                }
+                n = std.mem.trimEnd(u8, buf[0..n], ", ").len;
+                @memcpy(buf[n..][0..ell.len], ell);
+                return buf[0 .. n + ell.len];
+            }
+            // A command over several lines reads as one.
+            buf[n] = if (ch == '\n' or ch == '\r' or ch == '\t') ' ' else ch;
+            n += 1;
+        };
+    }
+    return buf[0..n];
+}
+
+/// A folder's base name: "gtty" for "~/src/gtty/gtty", "/" for the root.
+fn folderBase(f: []const u8) []const u8 {
+    const t = std.mem.trimEnd(u8, f, "/");
+    if (t.len == 0) return if (f.len > 0) "/" else "";
+    return std.fs.path.basename(t);
+}
+
 // ------------------------------------------------------------ file
 
 /// Where the file is; null: no home.
@@ -467,4 +517,49 @@ test "names: the time only" {
     try t.expect(name.len > 0);
     try t.expect(std.mem.indexOf(u8, name, " · ") == null);
     try t.expect(std.mem.indexOfScalar(u8, name, ':') != null);
+}
+
+test "default name: one shell window" {
+    var buf: [200]u8 = undefined;
+    try std.testing.expectEqualStrings("gtty", defaultName(&buf, &.{.{ .folder = "/Users/sagi/src/gtty/gtty" }}, 0));
+    try std.testing.expectEqualStrings("gtty", defaultName(&buf, &.{.{ .folder = "/Users/sagi/src/gtty/gtty/" }}, 0));
+}
+
+test "default name: several shell windows" {
+    var buf: [200]u8 = undefined;
+    try std.testing.expectEqualStrings("gtty, k8s_infra", defaultName(&buf, &.{
+        .{ .folder = "/Users/sagi/src/gtty/gtty" },
+        .{ .folder = "/Users/sagi/work/k8s_infra" },
+    }, 0));
+}
+
+test "default name: shells and commands, in order" {
+    var buf: [200]u8 = undefined;
+    try std.testing.expectEqualStrings("gtty, k8s_infra, htop, ssh sagi@server.com", defaultName(&buf, &.{
+        .{ .folder = "/Users/sagi/src/gtty/gtty" },
+        .{ .folder = "/Users/sagi/work/k8s_infra" },
+        .{ .command = "htop" },
+        .{ .command = "ssh sagi@server.com" },
+    }, 0));
+    try std.testing.expectEqualStrings("htop", defaultName(&buf, &.{.{ .command = "htop" }}, 0));
+}
+
+test "default name: the root folder" {
+    var buf: [200]u8 = undefined;
+    try std.testing.expectEqualStrings("/", defaultName(&buf, &.{.{ .folder = "/" }}, 0));
+    try std.testing.expectEqualStrings("/, tmp", defaultName(&buf, &.{ .{ .folder = "/" }, .{ .folder = "/tmp" } }, 0));
+}
+
+test "default name: cut to the buffer, never inside a character" {
+    var buf: [12]u8 = undefined;
+    const name = defaultName(&buf, &.{ .{ .folder = "/a/projéct" }, .{ .command = "vim notes.txt" } }, 0);
+    try std.testing.expect(std.mem.endsWith(u8, name, "…"));
+    try std.testing.expect(std.unicode.utf8ValidateSlice(name));
+    try std.testing.expectEqualStrings("projéct…", name);
+    try std.testing.expectEqualStrings("proj…", defaultName(buf[0..8], &.{.{ .folder = "/a/projéct" }}, 0));
+}
+
+test "default name: no windows is the time" {
+    var buf: [200]u8 = undefined;
+    try std.testing.expect(std.mem.indexOfScalar(u8, defaultName(&buf, &.{}, 0), ':') != null);
 }
