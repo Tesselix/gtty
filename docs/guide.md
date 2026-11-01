@@ -84,14 +84,16 @@ inside a shell (a build, an editor) is not saved: only the shell.
 Sessions are shared by every gtty on the machine.
 
 - **Session ▸ Take Snapshot** saves this gtty's windows as a new session,
-  named after the time it was taken ("Oct 28 14:05"; rename it in the
-  Session Manager).
+  named after its windows: a shell gives its folder's name, a window
+  running something else its command line ("gtty, k8s_infra, htop";
+  rename it in the Session Manager).
 - **Session ▸** the last 7 sessions used: pick one to restore it.
 - The **session chip** (after the focus chip, while any session is saved):
   hover or click it and its list opens at once, the last used at the
   bottom. Type to filter, **Enter** restores. Its **save** button (top
   right) saves this gtty's windows as a new session: it asks for a name,
-  the time already filled in and selected, so typing replaces it.
+  that name already filled in and selected, so you can edit it or type
+  another.
 - **Session ▸ Session Manager…** opens a window with every saved session
   on the left and, on the right, a picture of the selected one's screen:
   each window where it was, with its command (zsh, bash, ssh), the host

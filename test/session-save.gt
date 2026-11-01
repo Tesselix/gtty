@@ -1,8 +1,8 @@
 # SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
 # SPDX-License-Identifier: GPL-3.0-or-later
-# The session list's save button: a click opens the modal with the time
-# as the name, all selected; typing replaces it and Enter saves the
-# session under that name ("work" is then the last used, at the bottom).
+# The session list's save button: a click opens the modal with the
+# default name ("alpha": the shell's folder), all selected; typing
+# replaces it and Enter saves the session under that name ("work" is then the last used, at the bottom).
 # Run with a scratch home and sessions file:
 #   S=$(mktemp -d); mkdir -p $S/home/alpha
 #   cd $S && HOME=$S/home GTTY_SESSIONS=$S/sessions gtty --script $REPO/test/session-save.gt

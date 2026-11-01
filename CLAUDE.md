@@ -258,7 +258,7 @@ the shell. Users expect it to behave like a shell in a terminal.
     (`Peek.target` = the id) → `App.restoreSession`. Its header's
     **save** button (2026-10-31; floppy + "save" left of ×, `save_r`,
     `Action.save`) → `App.askSnapshot`: the modal "Save the current
-    session" with the field = `autoName`, all selected (typing replaces
+    session" with the field = `snapshotName`, all selected (typing replaces
     it), 30 s, Cancel safe (`ModalJob.snapshot`; empty name: red line,
     stays open) → `takeSnapshot(name)`; the menu's Take Snapshot still
     saves at once (`takeSnapshot(null)`). Test: `test/session-save.gt`.
@@ -292,8 +292,15 @@ the shell. Users expect it to behave like a shell in a terminal.
   when readable); ssh / mosh: host (`remote.sessionOf`), remote folder
   (`remoteCwd` when the link knew it), command line (the front ssh's argv,
   quoted only when needed, `writeArg`; mosh: `mosh <dest>`), local folder
-  = `link_cwd`. Name: `Sessions.autoName`, the date-time only
-  ("Oct 28 14:05"; renamed in the manager). **File** shared by all gttys:
+  = `link_cwd`. Name (2026-11-01; `App.snapshotName` →
+  `Sessions.defaultName`, unit-tested; Take Snapshot and the save
+  field's suggestion): the saved windows in the snapshot's order
+  (`snapshotWindows`), joined with ", ": a shell at its prompt (or with
+  no other program in front) gives its folder's base name ("/" for the
+  root), anything else its command line as typed (the hooks' last
+  command, else the front program's argv), e.g. "gtty, k8s_infra, htop";
+  cut with "…"; no windows: the date-time (`autoName`). Renamed in the
+  manager. **File** shared by all gttys:
   `$GTTY_SESSIONS`, else `$XDG_STATE_HOME/gtty/sessions`, else
   `~/.local/state/gtty/sessions` (0600; `S` / `W` lines, values
   escaped); every change = `reload` + change + `save` (temp + rename);

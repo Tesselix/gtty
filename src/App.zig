@@ -3405,10 +3405,70 @@ fn snapWin(app: *App, a: std.mem.Allocator, w: *JobWindow, place: Sessions.Place
     return spec;
 }
 
-/// Session ▸ Take Snapshot (named after the time), or the session list's
-/// save button (`name` from `askSnapshot`): every shell window of this
-/// gtty (in the windows area and in the job grid), saved as a new session
-/// in the file all gttys share.
+/// The windows a snapshot saves, in its order: the windows area's (display
+/// order), then the job grid's (newest first); the first `shown` of them
+/// are in the windows area.
+fn snapshotWindows(app: *App, buf: *[128]*JobWindow) struct { all: []*JobWindow, shown: usize } {
+    var n: usize = 0;
+    var obuf: [64]*JobWindow = undefined;
+    for (app.shownOrder(&obuf)) |w| if (snapshotable(w)) {
+        buf[n] = w;
+        n += 1;
+    };
+    const shown = n;
+    var gbuf: [64]usize = undefined;
+    const grid, _ = app.gridJobs(&gbuf);
+    if (app.grid_oldest_first) std.mem.reverse(usize, grid);
+    for (grid) |i| if (snapshotable(app.jobs.items[i])) {
+        buf[n] = app.jobs.items[i];
+        n += 1;
+    };
+    return .{ .all = buf[0..n], .shown = shown };
+}
+
+/// The name the save field suggests (`Sessions.defaultName`): per saved
+/// window, a shell at its prompt gives its folder, anything else in front
+/// its command line as typed.
+fn snapshotName(app: *App, buf: []u8) []const u8 {
+    var arena = std.heap.ArenaAllocator.init(app.gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var wbuf: [128]*JobWindow = undefined;
+    var parts: std.ArrayList(Sessions.NamePart) = .empty;
+    for (app.snapshotWindows(&wbuf).all) |w| {
+        const part = namePart(a, w) orelse continue;
+        parts.append(a, part) catch break;
+    }
+    return Sessions.defaultName(buf, parts.items, Sessions.now());
+}
+
+/// What window `w` adds to a session's default name (strings in `a`).
+fn namePart(a: std.mem.Allocator, w: *JobWindow) ?Sessions.NamePart {
+    if (w.kind == .command) return .{ .command = w.title };
+    const fg_pid = c.gtty_fg_pid(w.proc.out_fd);
+    if (w.atPrompt() or fg_pid <= 0 or fg_pid == w.proc.pid) {
+        var fbuf: [4096]u8 = undefined;
+        return .{ .folder = a.dupe(u8, w.folder(&fbuf)) catch return null };
+    }
+    // The line the shell ran (the hooks' C mark), else the program's argv.
+    if (w.out.cmd_seq != 0 and w.out.lastCommand().len > 0)
+        return .{ .command = a.dupe(u8, w.out.lastCommand()) catch return null };
+    var abuf: [4096]u8 = undefined;
+    const na = c.gtty_fg_args(w.proc.out_fd, &abuf, abuf.len);
+    if (na <= 0) return .{ .command = frontName(w) };
+    var aw: std.Io.Writer.Allocating = .init(a);
+    var argv: [64][]const u8 = undefined;
+    for (remote.splitNul(abuf[0..@intCast(na)], &argv), 0..) |arg, k| {
+        if (k > 0) aw.writer.writeByte(' ') catch return null;
+        writeArg(&aw.writer, arg) catch return null;
+    }
+    return .{ .command = aw.written() };
+}
+
+/// Session ▸ Take Snapshot (named by `snapshotName`), or the session
+/// list's save button (`name` from `askSnapshot`): every shell window of
+/// this gtty (in the windows area and in the job grid), saved as a new
+/// session in the file all gttys share.
 fn takeSnapshot(app: *App, given: ?[]const u8) void {
     app.closeMenu();
     var arena = std.heap.ArenaAllocator.init(app.gpa);
@@ -3417,23 +3477,15 @@ fn takeSnapshot(app: *App, given: ?[]const u8) void {
     var specs: std.ArrayList(Sessions.WinSpec) = .empty;
     const area = app.layoutFor(app.gridCount()).main;
     const main_w: ?*JobWindow = if (app.main) |m| app.jobs.items[m] else null;
-    var obuf: [64]*JobWindow = undefined;
-    for (app.shownOrder(&obuf)) |w| {
-        if (!snapshotable(w)) continue;
-        const r = w.rect;
-        const tile = [4]f32{ (r.x - area.x) / area.w, (r.y - area.y) / area.h, r.w / area.w, r.h / area.h };
-        const s = app.snapWin(a, w, if (w == main_w) .main else .shown, tile) orelse continue;
-        specs.append(a, s) catch return;
-    }
-    // The job grid, newest first.
-    var gbuf: [64]usize = undefined;
-    const grid, _ = app.gridJobs(&gbuf);
-    if (app.grid_oldest_first) std.mem.reverse(usize, grid);
-    for (grid) |i| {
-        const w = app.jobs.items[i];
-        if (!snapshotable(w)) continue;
-        const s = app.snapWin(a, w, .grid, .{ 0, 0, 0, 0 }) orelse continue;
-        specs.append(a, s) catch return;
+    var wbuf: [128]*JobWindow = undefined;
+    const wins = app.snapshotWindows(&wbuf);
+    for (wins.all, 0..) |w, k| {
+        const s = if (k < wins.shown) blk: {
+            const r = w.rect;
+            const tile = [4]f32{ (r.x - area.x) / area.w, (r.y - area.y) / area.h, r.w / area.w, r.h / area.h };
+            break :blk app.snapWin(a, w, if (w == main_w) .main else .shown, tile);
+        } else app.snapWin(a, w, .grid, .{ 0, 0, 0, 0 });
+        specs.append(a, s orelse continue) catch return;
     }
     if (specs.items.len == 0) {
         beep.beep();
@@ -3448,7 +3500,7 @@ fn takeSnapshot(app: *App, given: ?[]const u8) void {
         break;
     };
     var nbuf: [200]u8 = undefined;
-    const name = given orelse Sessions.autoName(&nbuf, Sessions.now());
+    const name = given orelse app.snapshotName(&nbuf);
     var ibuf: [64]u8 = undefined;
     const id = app.sessions.newId(&ibuf);
     app.sessions.reload();
@@ -3462,8 +3514,8 @@ fn takeSnapshot(app: *App, given: ?[]const u8) void {
 }
 
 /// The session list's save button: a modal with the name the snapshot
-/// would get (the time), all selected so typing replaces it; Save takes
-/// the snapshot (`takeSnapshot`).
+/// would get (`snapshotName`), all selected so typing replaces it; Save
+/// takes the snapshot (`takeSnapshot`).
 fn askSnapshot(app: *App) void {
     if (snapshotCount(app) == 0) {
         beep.beep();
@@ -3472,12 +3524,12 @@ fn askSnapshot(app: *App) void {
     var nbuf: [200]u8 = undefined;
     app.openModal(.{
         .title = "Save the current session",
-        .body = "Type a name, or keep the time · Esc leaves it unsaved",
+        .body = "Type a name, or keep this one · Esc leaves it unsaved",
         .buttons = &.{ .{ .label = "Cancel" }, .{ .label = "Save", .kind = .primary } },
         .default = 1,
         .safe = 0,
         .timeout_ms = 30_000,
-        .input = Sessions.autoName(&nbuf, Sessions.now()),
+        .input = app.snapshotName(&nbuf),
     }, .{ .snapshot = .{ .window = 0 } });
 }
 
