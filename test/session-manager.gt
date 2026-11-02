@@ -9,7 +9,8 @@
 #   grep '^S' $S/sessions     # one session left, its name ending in "x"
 # Shots go to $S: 1 the ⋮ menu of the second row, 2 Rename under the
 # mouse, 3 the name being edited, 4 Delete asked ("Sure? Delete", red),
-# 5 gtty's status bar: "would open a new gtty for session …".
+# 5 gtty's status bar: "would open a new gtty for session …" (the
+# manager closed by the restore).
 /s bash
 /wait 1500
 /type cd ~/alpha

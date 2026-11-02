@@ -1146,9 +1146,6 @@ pub var color_folders: bool = true;
 /// drop): run the shell's last listing command again (config
 /// `refresh-ls`, Settings → General; `refreshListing`).
 pub var refresh_ls: bool = true;
-/// Some gtty-session is saved (core/Sessions.zig): the session chip shows
-/// (App sets it).
-pub var has_sessions: bool = false;
 pub var mark_pt: f32 = 4;
 /// Space between the window's frame and the marks strip, in points.
 const mark_gap: f32 = 3;
@@ -1317,7 +1314,7 @@ const chip_max_chars = 32;
 /// session, where the local folder means nothing), then the git chip,
 /// always there: the branch inside a git repo, else dimmed (`no_git_label`,
 /// no peek); then the focus chip (not in a remote session either); then
-/// the session chip while some session is saved (`has_sessions`).
+/// the session chip (also with nothing saved: its list's save button).
 pub fn layoutChips(w: *JobWindow, gfx: *Gfx) void {
     w.git_chip_r = .{};
     w.folder_chip_r = .{};
@@ -1342,7 +1339,7 @@ pub fn layoutChips(w: *JobWindow, gfx: *Gfx) void {
     }
     // Only when it fits (a narrow window).
     const sw = chipWidth(f, ui, session_label);
-    if (has_sessions and x + sw <= r.x + r.w - @round(6 * ui)) w.session_chip_r = .{ .x = x, .y = y, .w = sw, .h = h };
+    if (x + sw <= r.x + r.w - @round(6 * ui)) w.session_chip_r = .{ .x = x, .y = y, .w = sw, .h = h };
 }
 
 fn chipWidth(f: *const Gfx.Face, ui: f32, label: []const u8) f32 {

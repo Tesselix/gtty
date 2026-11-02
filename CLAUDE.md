@@ -249,9 +249,10 @@ the shell. Users expect it to behave like a shell in a terminal.
     while dirty, at exit; script runs only with `GTTY_FOCUS`. Test:
     `test/focus.gt`.
   - **Session chip** (2026-10-28; `session_chip_r`, two-windows icon +
-    `session`, after the focus chip, also in a remote session, only
-    while some session is saved, `JobWindow.has_sessions`, and only
-    when it fits in the footer): hover (`chip_hover_ms`) or a click
+    `session`, after the focus chip, also in a remote session, also
+    with no session saved (2026-11-02, the user's rule: its list says
+    "no saved sessions", the save button works), only when it fits in
+    the footer): hover (`chip_hover_ms`) or a click
     opens its list **already expanded** (`Peek.openSessions`, kind
     `session`, `App.openSessionPeek`): the last 7 sessions used, the
     last used at the bottom and selected; a pick = `Action.restore`
@@ -262,13 +263,16 @@ the shell. Users expect it to behave like a shell in a terminal.
     for clicks; `peekAction`'s `new_window`): `.new`, a new gtty. A dim
     line under the list says so (`Peek.hint_r`, `new_window_hint`:
     "⌘-click / ⌘Enter: open in a new window", Linux Ctrl; as VS Code's
-    recent list). Its header's
+    recent list; not under an empty list, `showsHint`). Its header's
     **save** button (2026-10-31; floppy + "save" left of ×, `save_r`,
     `Action.save`) → `App.askSnapshot`: the modal "Save the current
     session" with the field = `snapshotName`, all selected (typing replaces
     it), 30 s, Cancel safe (`ModalJob.snapshot`; empty name: red line,
     stays open) → `takeSnapshot(name)`; the menu's Take Snapshot still
     saves at once (`takeSnapshot(null)`). Test: `test/session-save.gt`.
+    Left of save, **manage** (2026-11-02; a list icon + "manage",
+    `manage_r`, `Action.manage`, `Peek.headButton` draws both): the
+    peek closes, `openSessionsWindow`.
     See "gtty-sessions".
   - **Peek** (`src/ui/Peek.zig`, one at a time, `App.peek`): opens after
     0.5 s hover (`chip_hover_ms`) or a click; [copy] [expand ^] full branch
@@ -312,8 +316,7 @@ the shell. Users expect it to behave like a shell in a terminal.
   `~/.local/state/gtty/sessions` (0600; `S` / `W` lines, values
   escaped); every change = `reload` + change + `save` (temp + rename);
   `refresh` (stat: mtime + size) once a second (`tickSessions`) →
-  `sessionsChanged` (chip on / off, manager list, an open session peek
-  closes); ≤ 100 kept (least recently used go); script runs only with
+  `sessionsChanged` (manager list, an open session peek closes); ≤ 100 kept (least recently used go); script runs only with
   `GTTY_SESSIONS` (else in memory). **Session menu** (top level, between
   gtty and Help; `GTTY_MENU_SNAPSHOT` / `_SESSIONS` / `_SESSION_FIRST`
   + 0…6): Take Snapshot (dimmed with nothing to save), Session
@@ -359,7 +362,9 @@ the shell. Users expect it to behave like a shell in a terminal.
   Enter (the mouse moves `hi` too), Esc closes, a click elsewhere only
   closes it; Delete asks first (row reads "Sure? Delete" in red, menu
   stays), a second pick deletes. No buttons under the list any more.
-  Enter / double click / Restore → `want_restore` → App; F2 / Rename:
+  Enter / double click / Restore → `want_restore` → App, which closes
+  the manager first (`closeSessionsWindow`; 2026-11-02, the user's
+  rule), then restores; F2 / Rename:
   inline edit (a `LineEdit`, 2026-11-01: the name all selected at first;
   ← / → (⌥ / Ctrl by words, ⌘ to the ends), Home / End, Shift selects,
   ⌘A / ⌘C / ⌘X / ⌘V, Linux Ctrl; Enter keeps, Esc drops); Delete / Backspace: twice

@@ -29,7 +29,8 @@
 //!     Ctrl) held in a new gtty, as VS Code's recent list; a dim line
 //!     under the list says so (`hint_r`, `new_window_hint`). Its header has a save
 //!     button (floppy + "save", `save_r`): App asks for a name and saves
-//!     this gtty's windows as a new session (`Action.save`).
+//!     this gtty's windows as a new session (`Action.save`); left of it
+//!     "manage" (`manage_r`) opens the Session Manager (`Action.manage`).
 //!
 //!   * **Peek:** a plain floating box over the chip, in the normal text
 //!     size: [copy] [expand]  full branch name  [×]. The copy button
@@ -115,6 +116,8 @@ expand_r: Rect = .{},
 close_r: Rect = .{},
 /// Session list: save the current session (left of ×).
 save_r: Rect = .{},
+/// Session list: open the Session Manager (left of save).
+manage_r: Rect = .{},
 text_r: Rect = .{},
 filter_r: Rect = .{},
 list_r: Rect = .{},
@@ -128,10 +131,10 @@ bar_h: f32 = 3,
 
 pub const Kind = enum { git, folder, focus, session };
 pub const State = enum { idle, busy, ok, err };
-pub const Part = enum { none, copy, expand, close, save };
+pub const Part = enum { none, copy, expand, close, save, manage };
 
 /// What App should do after an event.
-pub const Action = enum { none, redraw, copy, close, cd, restore, save };
+pub const Action = enum { none, redraw, copy, close, cd, restore, save, manage };
 
 /// Mouse away this long: the peek closes (the countdown bar). A setting.
 pub var dismiss_ms: u64 = 5000;
@@ -214,6 +217,12 @@ pub fn openSessions(gpa: std.mem.Allocator, uid: ids.Id, names: []const []const 
     }
     p.refilter();
     return p;
+}
+
+/// The session list's "open in a new window" line (none while no session
+/// is saved: nothing to open).
+fn showsHint(p: *const Peek) bool {
+    return p.kind == .session and p.branches.items.len > 0;
 }
 
 /// A list with only a title over it (focus, session): nothing to copy or
@@ -486,7 +495,7 @@ pub fn motion(p: *Peek, x: f32, y: f32, now: u64) bool {
         p.hover_ms = 0;
         p.hold = false;
     } else if (!p.hold) p.hover_ms = @max(now, 1); // rests from now
-    p.over = if (!inside) .none else if (p.copy_r.contains(x, y)) .copy else if (p.expand_r.contains(x, y)) .expand else if (p.close_r.contains(x, y)) .close else if (p.save_r.contains(x, y)) .save else .none;
+    p.over = if (!inside) .none else if (p.copy_r.contains(x, y)) .copy else if (p.expand_r.contains(x, y)) .expand else if (p.close_r.contains(x, y)) .close else if (p.save_r.contains(x, y)) .save else if (p.manage_r.contains(x, y)) .manage else .none;
     if (p.kind == .folder and p.over == .expand and was[2] != .expand and !p.expanded) p.toggleExpand();
     p.hover_row = p.rowAt(x, y);
     return was[0] != (p.leave_ms != 0) or !std.meta.eql(was[1], p.hover_row) or was[2] != p.over;
@@ -503,6 +512,7 @@ pub fn click(p: *Peek, x: f32, y: f32) Action {
     if (p.copy_r.contains(x, y)) return .copy;
     if (p.close_r.contains(x, y)) return .close;
     if (p.save_r.contains(x, y)) return .save;
+    if (p.manage_r.contains(x, y)) return .manage;
     if (p.expand_r.contains(x, y)) {
         p.toggleExpand();
         p.hold = true;
@@ -585,7 +595,8 @@ pub fn layout(p: *Peek, f: *const Gfx.Face, sf: *const Gfx.Face, ui: f32, bounds
 
     const copy_w = if (p.kind == .git) icon + gap else 0;
     const save_w = if (p.kind == .session) @round(icon + 3 * gap + Gfx.textWidth(f, save_label)) else 0;
-    var w = pad + copy_w + icon + 2 * gap + Gfx.textWidth(f, p.full) + 2 * gap + save_w + (if (save_w > 0) gap else 0) + icon + pad;
+    const manage_w = if (p.kind == .session) @round(icon + 3 * gap + Gfx.textWidth(f, manage_label)) else 0;
+    var w = pad + copy_w + icon + 2 * gap + Gfx.textWidth(f, p.full) + 2 * gap + manage_w + (if (manage_w > 0) gap else 0) + save_w + (if (save_w > 0) gap else 0) + icon + pad;
     var h = head_h + p.bar_h;
     var msg_lines: usize = 0;
     if (p.state == .busy or p.state == .ok or p.state == .err) {
@@ -597,7 +608,7 @@ pub fn layout(p: *Peek, f: *const Gfx.Face, sf: *const Gfx.Face, ui: f32, bounds
         w = @max(w, @max(longest + 2 * f.cell_w + 2 * pad, f.cell_w * 30));
         p.rows = @max(p.visibleRows(), 1);
         h += f.cell_h + @round(10 * ui) + @as(f32, @floatFromInt(p.rows)) * p.row_h + pad;
-        if (p.kind == .session) {
+        if (p.showsHint()) {
             w = @max(w, Gfx.textWidth(sf, new_window_hint) + 2 * pad);
             h += sf.cell_h + pad;
         }
@@ -621,6 +632,7 @@ pub fn layout(p: *Peek, f: *const Gfx.Face, sf: *const Gfx.Face, ui: f32, bounds
     p.expand_r = .{ .x = p.copy_r.x + icon + gap, .y = iy, .w = icon, .h = icon };
     p.close_r = .{ .x = x + w - pad - icon, .y = iy, .w = icon, .h = icon };
     p.save_r = if (save_w > 0) .{ .x = p.close_r.x - gap - save_w, .y = iy, .w = save_w, .h = icon } else .{};
+    p.manage_r = if (manage_w > 0) .{ .x = p.save_r.x - gap - manage_w, .y = iy, .w = manage_w, .h = icon } else .{};
     // Folder: no copy button (a click on the path copies).
     if (p.kind == .folder) {
         p.copy_r = .{};
@@ -633,7 +645,7 @@ pub fn layout(p: *Peek, f: *const Gfx.Face, sf: *const Gfx.Face, ui: f32, bounds
         p.expand_r = .{};
         tx = x + pad + gap;
     }
-    const head_end = if (save_w > 0) p.save_r.x else p.close_r.x;
+    const head_end = if (manage_w > 0) p.manage_r.x else p.close_r.x;
     p.text_r = .{ .x = tx, .y = y, .w = @max(head_end - 2 * gap - tx, 0), .h = head_h };
 
     var cy = y + head_h;
@@ -643,7 +655,7 @@ pub fn layout(p: *Peek, f: *const Gfx.Face, sf: *const Gfx.Face, ui: f32, bounds
         p.list_r = .{ .x = x + pad, .y = cy, .w = w - 2 * pad, .h = @as(f32, @floatFromInt(p.rows)) * p.row_h };
         cy += p.list_r.h + pad;
         p.hint_r = .{};
-        if (p.kind == .session) {
+        if (p.showsHint()) {
             p.hint_r = .{ .x = x + pad, .y = cy - @round(2 * ui), .w = w - 2 * pad, .h = sf.cell_h };
             cy += sf.cell_h + pad;
         }
@@ -669,7 +681,8 @@ pub fn draw(p: *const Peek, gfx: *Gfx, theme: *const Theme, f: *Gfx.Face, sf: *G
         expandIcon(gfx, p.expand_r, theme, ui, p.expanded, p.over == .expand);
     }
     JobWindow.closeIcon(gfx, p.close_r, theme, ui);
-    if (p.save_r.w > 0) saveButton(gfx, f, p.save_r, theme, ui, p.over == .save);
+    if (p.save_r.w > 0) headButton(gfx, f, p.save_r, theme, ui, p.over == .save, .save);
+    if (p.manage_r.w > 0) headButton(gfx, f, p.manage_r, theme, ui, p.over == .manage, .manage);
     gfx.clip(p.text_r);
     const hy = p.text_r.y + @round((p.text_r.h - f.cell_h) / 2);
     const tend = gfx.text(f, p.text_r.x, hy, p.full, if (p.listOnly()) theme.title_fg else theme.prompt_fg);
@@ -791,8 +804,9 @@ fn filterHint(p: *const Peek) []const u8 {
     };
 }
 
-/// The session list's save button's word.
+/// The session list's save / manage buttons' words.
 const save_label = "save";
+const manage_label = "manage";
 /// Under the session list: the modifier that opens a session in a new
 /// gtty (App's `newWindowMod`), as VS Code's recent list.
 const new_window_hint = if (builtin.os.tag == .macos)
@@ -800,19 +814,30 @@ const new_window_hint = if (builtin.os.tag == .macos)
 else
     "Ctrl+click / Ctrl+Enter: open in a new window";
 
-/// The session list's save button: a floppy disk and "save" on a light
-/// face (as the title bar's actions), lighter with a frame under the mouse.
-fn saveButton(gfx: *Gfx, f: *Gfx.Face, r: Rect, theme: *const Theme, ui: f32, hot: bool) void {
+/// The session list's header buttons: an icon and a word on a light face
+/// (as the title bar's actions), lighter with a frame under the mouse.
+/// save: a floppy disk; manage: a list (the Session Manager).
+fn headButton(gfx: *Gfx, f: *Gfx.Face, r: Rect, theme: *const Theme, ui: f32, hot: bool, which: enum { save, manage }) void {
     gfx.fill(r, theme.title_bg.mix(theme.fg, if (hot) 0.22 else 0.12));
     const t = @max(@round(ui), 1);
     if (hot) gfx.outline(r, theme.title_fg, t);
-    // The disk: a square, the shutter on top, the label below.
     const s = @round(r.h * 0.62);
     const d: Rect = .{ .x = r.x + @round((r.h - s) / 2), .y = r.y + @round((r.h - s) / 2), .w = s, .h = s };
-    gfx.outline(d, theme.title_fg, t);
-    gfx.fill(.{ .x = d.x + @round(s * 0.25), .y = d.y, .w = @round(s * 0.45), .h = @round(s * 0.3) }, theme.title_fg);
-    gfx.outline(.{ .x = d.x + @round(s * 0.18), .y = d.y + @round(s * 0.55), .w = s - 2 * @round(s * 0.18), .h = s - @round(s * 0.55) }, theme.title_fg, t);
-    _ = gfx.text(f, r.x + r.h, r.y + @round((r.h - f.cell_h) / 2), save_label, theme.title_fg);
+    switch (which) {
+        // The disk: a square, the shutter on top, the label below.
+        .save => {
+            gfx.outline(d, theme.title_fg, t);
+            gfx.fill(.{ .x = d.x + @round(s * 0.25), .y = d.y, .w = @round(s * 0.45), .h = @round(s * 0.3) }, theme.title_fg);
+            gfx.outline(.{ .x = d.x + @round(s * 0.18), .y = d.y + @round(s * 0.55), .w = s - 2 * @round(s * 0.18), .h = s - @round(s * 0.55) }, theme.title_fg, t);
+        },
+        // Three rows, each a dot and a line.
+        .manage => for (0..3) |k| {
+            const y = d.y + @round(@as(f32, @floatFromInt(k)) * (s - t) / 2);
+            gfx.fill(.{ .x = d.x, .y = y, .w = t * 2, .h = t }, theme.title_fg);
+            gfx.fill(.{ .x = d.x + t * 3, .y = y, .w = s - t * 3, .h = t }, theme.title_fg);
+        },
+    }
+    _ = gfx.text(f, r.x + r.h, r.y + @round((r.h - f.cell_h) / 2), if (which == .save) save_label else manage_label, theme.title_fg);
 }
 
 /// A chevron: up (grow into the list) while collapsed, down once expanded.
@@ -947,4 +972,9 @@ test "session peek: opens expanded on the last used (bottom); a pick restores it
     _ = p.motion(130, 8, 1);
     try t.expectEqual(Part.save, p.over);
     try t.expectEqual(Action.save, p.click(130, 8));
+    // The manage button: the Session Manager.
+    p.manage_r = .{ .x = 60, .y = 2, .w = 55, .h = 16 };
+    _ = p.motion(70, 8, 2);
+    try t.expectEqual(Part.manage, p.over);
+    try t.expectEqual(Action.manage, p.click(70, 8));
 }

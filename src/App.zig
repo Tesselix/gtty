@@ -519,7 +519,6 @@ pub fn create(gpa: std.mem.Allocator, opts: Options) !*App {
         var pbuf: [4096]u8 = undefined;
         if (Sessions.path(&pbuf)) |sp| app.sessions.open(sp);
     }
-    JobWindow.has_sessions = app.sessions.list.items.len > 0;
     app.prompt.pinned = opts.cfg.prompt_pinned;
     menu_app = app;
     JobWindow.sync_hook = .{ .ctx = app, .f = syncMirror };
@@ -3538,14 +3537,8 @@ fn saveSessions(app: *App) void {
 }
 
 /// The sessions changed (here, in the manager, or in another gtty): the
-/// session chip shows while there are some; the manager's list and an
-/// open session list follow.
+/// manager's list and an open session list follow.
 fn sessionsChanged(app: *App) void {
-    const has = app.sessions.list.items.len > 0;
-    if (has != JobWindow.has_sessions) {
-        JobWindow.has_sessions = has;
-        for (app.jobs.items) |w| w.layoutChips(&app.gfx);
-    }
     if (app.sessions_win) |sw| sw.listChanged();
     if (app.peek) |pk| if (pk.kind == .session) app.closePeek();
     app.dirty = true;
@@ -3910,6 +3903,15 @@ fn openSessionsWindow(app: *App) void {
     };
 }
 
+/// The Session Manager closes; gtty's window comes to the front.
+fn closeSessionsWindow(app: *App) void {
+    const sw = app.sessions_win orelse return;
+    sw.close();
+    app.sessions_win = null;
+    if (app.script_target == .sessions) app.script_target = .main;
+    _ = c.SDL_RaiseWindow(app.window);
+}
+
 /// Each frame: the file read again when another gtty changed it (at most
 /// once a second), the manager's requests and drawing, the restore steps.
 fn tickSessions(app: *App) void {
@@ -3921,18 +3923,16 @@ fn tickSessions(app: *App) void {
     }
     if (app.sessions_win) |sw| {
         if (sw.want_close) {
-            sw.close();
-            app.sessions_win = null;
-            if (app.script_target == .sessions) app.script_target = .main;
-            _ = c.SDL_RaiseWindow(app.window);
+            app.closeSessionsWindow();
         } else {
             if (sw.changed) {
                 sw.changed = false;
                 app.sessionsChanged();
             }
+            // A restore closes the manager first (the user's rule).
             if (sw.takeRestore()) |id| {
                 defer app.gpa.free(id);
-                _ = c.SDL_RaiseWindow(app.window);
+                app.closeSessionsWindow();
                 app.restoreSession(id, .auto);
             }
             if (app.sessions_win) |s| {
@@ -4027,6 +4027,11 @@ fn peekAction(app: *App, a: Peek.Action, new_window: bool) void {
         },
         // The session list's save button: ask for a name.
         .save => return app.askSnapshot(),
+        // Its manage button: the Session Manager.
+        .manage => {
+            app.closePeek();
+            return app.openSessionsWindow();
+        },
         // A session picked in the session chip's list: it replaces this
         // gtty's windows; ⌘ (Linux Ctrl) held, a new gtty opens it.
         .restore => {
