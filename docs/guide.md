@@ -88,7 +88,8 @@ Sessions are shared by every gtty on the machine.
   running something else its command line ("gtty, k8s_infra, htop";
   rename it in the Session Manager).
 - **Session ▸** the last 7 sessions used: pick one to restore it.
-- The **session chip** (after the focus chip, while any session is saved):
+- The **session chip** (after the focus chip; with nothing saved yet its list is empty but
+  its save button works):
   hover or click it and its list opens at once, the last used at the
   bottom. Type to filter; a click or **Enter**
   restores it here, replacing this gtty's windows (asking first if some
@@ -96,14 +97,15 @@ Sessions are shared by every gtty on the machine.
   new gtty instead. Its **save** button (top
   right) saves this gtty's windows as a new session: it asks for a name,
   that name already filled in and selected, so you can edit it or type
-  another.
+  another. Its **manage** button, next to save, opens the Session
+  Manager.
 - **Session ▸ Session Manager…** opens a window with every saved session
   on the left and, on the right, a picture of the selected one's screen:
   each window where it was, with its command (zsh, bash, ssh), the host
   for an ssh session, and its folder. Hover a window for all it saved.
   Each session's **⋮** opens its menu: **Restore** (or Enter, or a
-  double click), **Rename** (F2), **Delete** (pick it, or press Delete,
-  twice).
+  double click; the manager closes), **Rename** (F2), **Delete** (pick
+  it, or press Delete, twice).
 
 **Restoring opens the session in a new gtty window**, so what you have
 open stays as it is. Only a gtty you haven't used yet (just opened or
