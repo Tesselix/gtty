@@ -12,6 +12,19 @@ const Config = @import("core/Config.zig");
 pub fn main(init: std.process.Init.Minimal) !void {
     const gpa = std.heap.c_allocator;
 
+    // `gtty ext ...`: no window.
+    var cli = init.args.iterate();
+    _ = cli.next();
+    if (cli.next()) |first| if (std.mem.eql(u8, first, "ext")) {
+        var rest: [8][]const u8 = undefined;
+        var n: usize = 0;
+        while (cli.next()) |a| : (n += 1) {
+            if (n == rest.len) break;
+            rest[n] = a;
+        }
+        c.exit(@import("core/ExtCli.zig").run(rest[0..n]));
+    };
+
     // Settings file first; then GTTY_* variables and options win for this
     // run. A test script reads (and writes) one only with GTTY_CONFIG, so
     // the user's settings never change a test's picture.
@@ -64,6 +77,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
         } else if (std.mem.eql(u8, a, "-h") or std.mem.eql(u8, a, "--help")) {
             std.debug.print(
                 \\usage: gtty [-c command] [--script file] [--scrollback lines]
+                \\       gtty ext logs [-f] [--pid N] [extension]
                 \\  -c, --command cmd   run cmd at start as if typed at the prompt
                 \\                      (default and "": s, your shell; gtty always
                 \\                      opens your shell if the command starts nothing)
@@ -116,4 +130,16 @@ test {
     _ = @import("core/FocusFolders.zig");
     _ = @import("core/Sessions.zig");
     _ = @import("core/Update.zig");
+    _ = @import("chips/Host.zig");
+    _ = @import("core/ExtStorage.zig");
+    _ = @import("core/ExtLog.zig");
+    _ = @import("core/ExtCli.zig");
+    _ = @import("core/shells.zig");
+    _ = @import("chips/list.zig");
+    _ = @import("chips/folder.zig");
+    _ = @import("chips/focus.zig");
+    _ = @import("chips/git.zig");
+    _ = @import("ui/ChipUi.zig");
+    _ = @import("ui/text.zig");
+    _ = @import("ui/Dialog.zig");
 }

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The Session Manager (Session ▸ Session Manager…): an OS window of its
+//! The Session Manager (the session list's manage button): an OS window of its
 //! own, like the settings window. On the left the saved gtty-sessions
 //! (core/Sessions.zig), the last used first; on the right a picture of
 //! the selected one's gtty screen as it was: the windows area's tiles
@@ -483,7 +483,7 @@ pub fn render(s: *SessionsWindow, theme: *const Theme) void {
     };
     if (n == 0) {
         _ = g.text(f, pad, list_r.y + pad, "No saved sessions", theme.dim);
-        _ = g.text(small, pad, list_r.y + pad + f.cell_h + @round(4 * ui), "Session ▸ Take Snapshot saves one", theme.dim);
+        _ = g.text(small, pad, list_r.y + pad + f.cell_h + @round(4 * ui), "the session chip's save button saves one", theme.dim);
     }
     g.clip(list_r);
     var k = s.top;

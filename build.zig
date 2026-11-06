@@ -27,6 +27,13 @@ pub fn build(b: *std.Build) void {
         .strip = strip,
     });
     configure(b, mod, target, optimize, sdl);
+    // The extension SDK: the standard chips (src/chips/) use it too.
+    const sdk = b.createModule(.{
+        .root_source_file = b.path("sdks/zig/src/gtty.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    mod.addImport("gtty", sdk);
     // The version for --version, SDL's app metadata and the update check:
     // build.zig.zon's .version (releases write the tag's there first);
     // -Dversion overrides it.
@@ -53,6 +60,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     configure(b, test_mod, target, optimize, sdl);
+    test_mod.addImport("gtty", sdk);
     test_mod.addOptions("build_options", options);
     const tests = b.addTest(.{ .root_module = test_mod });
     const test_step = b.step("test", "Run unit tests");

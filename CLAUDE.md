@@ -225,7 +225,8 @@ the shell. Users expect it to behave like a shell in a terminal.
     newest at the bottom** next to the chip (ties: more uses), shown as
     `~/…`, the current one green, the selection on the newest other one
     (bottom); a pick = `Action.cd` as the folder peek. **Use** = a command started in the folder (`Screen.cmd_seq` →
-    `JobWindow.use_seq` / `use_dir`, the folder reported at that prompt)
+    `JobWindow.started_seq` / `started_dir`, the folder reported at that
+    prompt → `command_started`, `src/chips/focus.zig`)
     that isn't a look-up or bookkeeping (`FocusFolders.countsAsUse`:
     not cd, ls family, find, pwd, echo, nor what only reports on the
     file system: du, df, file, stat, ncdu, lsblk, mdls, GetFileInfo, …,
@@ -233,8 +234,7 @@ the shell. Users expect it to behave like a shell in a terminal.
     `lookup_forms`: `diskutil list`, `hdiutil info`, `tmutil listbackups`,
     `mdutil -s`, `xattr` without -w / -d / -c; the user's rule
     2026-10-28); only folders strictly
-    under `$HOME` (`underHome`), none from ssh / mosh windows
-    (`App.tickFocus`). Kept: uses within 90 days of the newest use
+    under `$HOME` (`underHome`), none from ssh / mosh windows. Kept: uses within 90 days of the newest use
     (`keep_s`, relative, so time away doesn't empty it), ≤ 200 (the
     least recently used go);
     folders that are gone (stat: ENOENT / ENOTDIR / not a folder; no
@@ -263,13 +263,15 @@ the shell. Users expect it to behave like a shell in a terminal.
     for clicks; `peekAction`'s `new_window`): `.new`, a new gtty. A dim
     line under the list says so (`Peek.hint_r`, `new_window_hint`:
     "⌘-click / ⌘Enter: open in a new window", Linux Ctrl; as VS Code's
-    recent list; not under an empty list, `showsHint`). Its header's
+    recent list; not under an empty list, `showsHint`). The chip is the
+    only way in (the Session menu is gone, 2026-11-04, the user's
+    rule). Its header's
     **save** button (2026-10-31; floppy + "save" left of ×, `save_r`,
-    `Action.save`) → `App.askSnapshot`: the modal "Save the current
-    session" with the field = `snapshotName`, all selected (typing replaces
-    it), 30 s, Cancel safe (`ModalJob.snapshot`; empty name: red line,
-    stays open) → `takeSnapshot(name)`; the menu's Take Snapshot still
-    saves at once (`takeSnapshot(null)`). Test: `test/session-save.gt`.
+    `Action.save`) → `App.askSnapshot` → a click to the session chip
+    (`src/chips/session.zig`, `data` = `snapshotName`): a dialog, "Save the
+    current session", the name all selected (typing replaces it), 30 s
+    (empty name: red line, stays open) → `takeSnapshot(name)`. Test:
+    `test/session-save.gt`.
     Left of save, **manage** (2026-11-02; a list icon + "manage",
     `manage_r`, `Action.manage`, `Peek.headButton` draws both): the
     peek closes, `openSessionsWindow`.
@@ -281,7 +283,7 @@ the shell. Users expect it to behave like a shell in a terminal.
     (and still acts). Esc closes any peek, folded or expanded, and stops
     there (never reaches the job; the keyboard is the focused window's
     again; `onKey`, 2026-10-20, `test/peek-esc.gt`).
-  - **Expanded peek:** `git for-each-ref` list (current marked green),
+  - **Epeek (the open list):** `git for-each-ref` list (current marked green),
     filter box with the keyboard (prompt label says so), ↑/↓/PgUp/PgDn/
     Enter/Esc, wheel; picking runs `git switch` in the background
     (`git.Run`, on a PTY): green border, closes after 1 s; failure: red
@@ -304,8 +306,7 @@ the shell. Users expect it to behave like a shell in a terminal.
   (`remoteCwd` when the link knew it), command line (the front ssh's argv,
   quoted only when needed, `writeArg`; mosh: `mosh <dest>`), local folder
   = `link_cwd`. Name (2026-11-01; `App.snapshotName` →
-  `Sessions.defaultName`, unit-tested; Take Snapshot and the save
-  field's suggestion): the saved windows in the snapshot's order
+  `Sessions.defaultName`, unit-tested; the save field's suggestion): the saved windows in the snapshot's order
   (`snapshotWindows`), joined with ", ": a shell at its prompt (or with
   no other program in front) gives its folder's base name ("/" for the
   root), anything else its command line as typed (the hooks' last
@@ -317,14 +318,10 @@ the shell. Users expect it to behave like a shell in a terminal.
   escaped); every change = `reload` + change + `save` (temp + rename);
   `refresh` (stat: mtime + size) once a second (`tickSessions`) →
   `sessionsChanged` (manager list, an open session peek closes); ≤ 100 kept (least recently used go); script runs only with
-  `GTTY_SESSIONS` (else in memory). **Session menu** (top level, between
-  gtty and Help; `GTTY_MENU_SNAPSHOT` / `_SESSIONS` / `_SESSION_FIRST`
-  + 0…6): Take Snapshot (dimmed with nothing to save), Session
-  Manager…, separator, the last 7 used (macOS: rebuilt in
-  `menuNeedsUpdate:` through `gtty_menu_install`'s `title` callback,
-  `App.menuTitle`; the drawn bar: `barRows(.session)`; both from
-  `fillMenuSessions`, ids kept in `menu_sessions` for the pick).
-  **Restore** (`restoreSession(.auto)`: the Session menu, the manager;
+  `GTTY_SESSIONS` (else in memory). No Session menu (removed 2026-11-04,
+  the user's rule): saving, the manager and the last 7 sessions are all
+  in the session chip's list.
+  **Restore** (`restoreSession(.auto)`: the manager;
   the session chip's list is `.here` / `.new`, see above; the user's
   rule, 2026-10-31): **in a
   new gtty** (`restoreInNew`: `gtty_open_new_instance` with `restore` =
@@ -766,9 +763,8 @@ the shell. Users expect it to behave like a shell in a terminal.
   it would open (`test/show.gt`). Linux side compiles but is untested
   (picker: mimeinfo.cache, `gio launch` / `gtk-launch`).
 - **Menu bar** (mouse; shortcuts could clash with the jobs' keys): menus
-  **gtty** (About gtty, Settings…, New Window, New Shell, Run command, Sync Typing),
-  **Session** (Take Snapshot, Session Manager…, the last 7 sessions; see
-  "gtty-sessions") and **Help** (gtty Help, ⌘? on macOS; see "Help"). **No Edit
+  **gtty** (About gtty, Settings…, New Window, New Shell, Run command, Sync Typing)
+  and **Help** (gtty Help, ⌘? on macOS; see "Help"). **No Edit
   menu** (removed 2026-10-07: with several job windows its Copy / Paste
   were confusing): ⌘C / ⌘V / ⌘A (Linux Ctrl+Shift+C / V / A) are plain
   keys (`copySelection`, `pasteKey`, `selectAll`). **About gtty** (`GTTY_MENU_ABOUT`; macOS: SDL's
@@ -1077,10 +1073,9 @@ decisions; items marked *open* are undecided.
   is typed into the prompt; hooks run directly: `/wait ms`, `/shot x.bmp`
   (screenshot; convert with `sips -s format png`), `/type text` (text + Enter
   through the real keyboard path), `/click x y` (real mouse event, window coords), `/dclick x y` (double click), `/down x y` / `/up x y` (left button), `/rclick x y` (right click), `/move x y` (mouse move, no button: hover / tooltips), `/drag x1 y1 x2 y2` (press, move, release), `/text text` (typed, no Enter; each ASCII character's key down first, as a keyboard sends it, `scriptTyping`),
-  `/key ctrl+shift+left` (a key with modifiers: ctrl shift alt cmd + left right up down home end backspace delete enter escape tab c v x insert a n t f period pageup pagedown f2 1 2 3 4), `/resize w h`
-  (gtty's OS window), `/menu run|settings|new-shell|new-window|sync-typing|about|help|snapshot|sessions|session-N` (a menu pick; macOS
-  menus can't be clicked from a script; session-N = the Session menu's
-  Nth session), `/target main|settings|sessions` (where
+  `/key ctrl+shift+left` (a key with modifiers: ctrl shift alt cmd + left right up down home end backspace delete enter escape tab c v x insert a n t f period pageup pagedown f2 space 1 2 3 4), `/resize w h`
+  (gtty's OS window), `/menu run|settings|new-shell|new-window|sync-typing|about|help` (a menu pick; macOS
+  menus can't be clicked from a script), `/target main|settings|sessions` (where
   the next /click /move /drag /text /key /type /shot go), `/mods
   cmd+shift|none` (modifier keys held, via SDL_SetModState), `/quit`. macOS blocks synthetic keystrokes (osascript), so use
   these. A shell window needs ~1.5 s (`/wait 1500`) before typing into it.
@@ -1110,7 +1105,7 @@ decisions; items marked *open* are undecided.
   on one screen only at that height).
   README order (2026-10-21, the user's): everyday shell work first (edit,
   copy, files), then focus, sessions (2026-10-28: `sessions.gt`, three
-  shells run pwd, snapshot, `/close all`, the session chip's list
+  shells run pwd, the chip's save, `/close all`, the session chip's list
   restores them, pwd again; the session chip ~400,644 in `shop`), the
   folder / git chips, windows, sync.
   Needs a display (the window shows while it records; keep the mouse off
@@ -1145,7 +1140,7 @@ decisions; items marked *open* are undecided.
   changes). Keep that ownership there.
 - `src/ui/Prompt.zig` — 2-line command area (hide ▾ / pin on its border); `src/ui/StatusBar.zig` — status
   bar: the file opener's help line on the left, short notices on the right.
-- `src/ui/Peek.zig` — a chip's peek / expanded peek (git branches: filter,
+- `src/ui/Peek.zig` — the open peek / epeek of a chip, from what it described (filter,
   switch); App owns it and routes mouse / keys to it.
 - `src/ui/Modal.zig` — the modal dialog (reusable; added 2026-10-07):
   title, body lines, ≤ 3 buttons (`Kind` normal / primary / danger),
@@ -1166,6 +1161,82 @@ decisions; items marked *open* are undecided.
   `src/sys/gtty_finder.{m,c}` — Show in Finder / Get Info (see "Finder
   rows");
   `src/sys/gtty_copy.c` — copying dropped files in the background.
+- **Standard chips** (2026-11-05; `src/chips/`): folder, git, focus and
+  session are extensions on the Zig SDK (`sdks/zig/src/gtty.zig`, imported
+  as `gtty`) that run inside gtty. `Host.zig`: a connection per chip and
+  window (`windowStarted`, `windowClosed`); `fire` queues an event (nothing
+  when no chip listens; `max_queued`, then dropped); `pump`, once a frame in
+  `App.run`, hands out `pump_max`. Each chip registers in `onWindowStart`
+  and sets its own text (`win.ui.set` → `App.chipChanged` →
+  `JobWindow.setChip`; no text = not shown). Events (`App.fireChipEvents`):
+  `window_changed` (at start, then only on a change: `changed_seq`, set in
+  `tickRest`) and `command_started` (`started_seq`, in `pump`). Still in
+  the window / App, as before: reading the folder and branch
+  (`refreshChips`), peeks, drawing, the sessions file (`tickSessions`), the
+  focus file's sync (`tickFocus`). `GTTY_TRACE` ends with the totals
+  (events, handler calls, dropped, time in handlers). `src/chips/hooks.zig`:
+  what chips ask of App beyond the SDK.
+- **Peeks and text** (2026-11-05; `src/ui/Peek.zig`, `ChipUi.zig`,
+  `text.zig`, `src/chips/list.zig`, the design in `docs/extensions.md`):
+  `Peek.zig` knows no chip: it draws what the extension described
+  (`ChipUi`, one per window and chip, `JobWindow.chipUi`) and returns
+  `Action`s (`fire`, `filter`, `expanded`, `items`). App: `pressChip`
+  (click, shortcut), `showChipPeek`, `displayModeSet`, `peekAction`;
+  `chip_hover` fires the chip's `onhover`. What the folder, git, focus and
+  session peeks do lives in `src/chips/` (git's two runs polled by
+  `git.tick`, from `tickPeek`); what they need of gtty is in `hooks.zig`.
+  Where the sections above name `Peek.openFolder`, `Action.cd` and the
+  like, read the chip's file. Every text is `sdk.Text` (`newText`), drawn by
+  `text.draw` (bold: struck twice, one face; `size` 50–200 %). Standard
+  chip handlers call into App at once, so `Host.pump` goes by index: a
+  handler can open windows. Filter changes merge in the queue
+  (`filterChanged`). `state` `ok` closes the epeek after 1 s (`ok_ms`).
+  Test: `test/peek.gt` with `/dialog peek` (`.ext`, an extension's chip
+  slot after the standard ones, drawn with no icon or key-cap).
+- **Storage and shell** (2026-11-05; `src/core/ExtStorage.zig`,
+  `core/shells.zig`, docs/extensions.md "Storage"): `win.ephemeral` (per
+  instance, under gtty's tmp, gone with the window) and `win.stateful`
+  (`<extensions>/<name>/data`, one for all instances and all gttys).
+  `$GTTY_EXTENSIONS`, else `$XDG_DATA_HOME/gtty/extensions`, else
+  `~/.local/share/gtty/extensions`; locks `$GTTY_LOCKS`, else
+  `$XDG_STATE_HOME/gtty/locks`, else `~/.local/state/gtty/locks` (a script
+  run without them: in the temp folder). flock on `<name>.lock`, a `.gate`
+  so readers queue behind a waiting write; a write goes to `.w-…` and is
+  renamed at close. Held 30 s (`hold_ms`, `tick`): closed, the write
+  dropped. `Host.close` / `stop` close what is left. Every gtty holds
+  `locks/running` shared: the last out, or the first in, empties the
+  folder. Config `extension-storage-mb` (Settings → General). Force
+  unlock: `forceUnlock`, for now `/unlock extension [file]`, until the
+  extension manager exists (its own OS window, like the Session Manager;
+  not built). On gtty's thread a timeout counts as 0
+  (`Host.waitMs`). `App.chipShell`. Test: `test/storage.gt`.
+- **Extension logs** (2026-11-06; `src/core/ExtLog.zig`, `ExtCli.zig`,
+  docs/extensions.md "Logs"): `win.log` / `ext.log` (`sdk.Logger`) →
+  `Host.say` → `<tmp>/ext.log`, one line each (time, level, extension,
+  window, message; control characters escaped), 8 MB then `ext.log.1`.
+  `Host.report` logs a callback's error, `pump` dropped events (as
+  `gtty`). `gtty ext logs [-f] [--pid N] [extension]`, handled first in
+  `main`, no window: scans `$TMPDIR/gtty-<pid>` for this user's live
+  gttys, the newest log wins. At run time third-party extensions will
+  be child processes of gtty; in development (`gtty ext`) the IDE may
+  start them (the user's rule, 2026-11-06). Not built. Test:
+  `test/ext-log.gt` with `/dialog logLine|logFail`.
+- **Dialogs** (2026-11-05; `src/ui/Dialog.zig`, App "dialogs" section; the
+  design in `docs/extensions.md`): `win.ui.set(.{ .dialog = … })` →
+  `App.dialogSet` (`JobWindow.dialogs`, one per extension and window),
+  `showDialog` → `dialogShow` (`dialog_open`, others wait in `dialog_wait`),
+  `closeDialog` → `dropDialog`. Centered in `dialogArea` (under the title
+  bar, which stays usable), drawn last in `JobWindow.draw`, so it clips and
+  moves with its window. Modal to the window: `send` / `typeBytes` drop
+  input, `dialogClick` / `dialogMotion` / `onWheel` keep the mouse from what
+  is under it, chip keys beep. `Dialog.keyboard`: only when opened from a
+  user's click (`ChipHost.from_user`) or clicked (`dialogKeys`). Buttons
+  only report (`dialogPress` → `chips.click`, `locked` until the chip
+  answers); × / timeout / the window closing = `dialogKill`, `id` `kill` or
+  `timeout`, no `fields`. Limits: `Dialog.max_timeout_s`. No mouse selection
+  in its text boxes yet (a click places the cursor). Test: `test/dialog.gt`
+  with `/dialog form|grid|table|yesno|unasked|peek|peekOpen|peekClose|shellName|storageWrite|storageRead|storageHold|storageTry|logLine|logFail` (the
+  test extension `src/chips/dialog_test.zig`).
 - `src/core/Sessions.zig` — gtty-sessions: the saved snapshots and their
   shared file (pure + file, unit-tested); `src/ui/SessionsWindow.zig` —
   the Session Manager window.
@@ -1342,6 +1413,20 @@ decisions; items marked *open* are undecided.
   short animation per feature, no AI (not ready yet). The full user guide
   is `docs/guide.md`, the AI's docs wait in `docs/ai.md` (not linked),
   building / testing / source layout in `HACKING.md`.
+- **Extensions** (only the standard chips so far, see "Standard chips"): read
+  `docs/extensions-ai.md` before writing an extension or working on the
+  extension system (chips, peeks, dialogs, their commands and rules). The
+  developer guide is `docs/extensions.md`; keep the two in step. Extensions
+  will mostly be written with AI: each SDK ships an `AGENTS.md` that stands
+  alone and lists only what exists (`sdks/zig/AGENTS.md`, plus a `CLAUDE.md`
+  pointing at it) and a complete example its tests compile
+  (`examples/hosts.zig`). **Any change to the SDK updates AGENTS.md too.**
+  SDKs
+  live in `sdks/<language>/` (only `zig`);
+  `scripts/package-sdks.sh` (run by package.sh) packs each into
+  `dist/gtty-sdk-<language>-<v>.tar.gz` with the LICENSE and the version;
+  release.yml uploads it to stable and edge releases (a new language
+  means adding its file to the steps there).
 
 ## License
 

@@ -30,10 +30,16 @@
 /wait 500
 /click 1026 22
 /wait 800
-/menu snapshot
+/key cmd+4
+/wait 600
+/click 318 557
+/wait 500
+/key enter
 /wait 800
 /shot ssh1-chip.bmp
-/menu sessions
+/key cmd+4
+/wait 600
+/click 240 536
 /wait 800
 /target sessions
 /shot ssh2-manager.bmp
@@ -43,7 +49,9 @@
 /close all
 /wait 1800
 /shot ssh3-untouched.bmp
-/menu session-1
+/key cmd+4
+/wait 600
+/key enter
 /wait 8000
 /shot ssh4-restored.bmp
 /quit

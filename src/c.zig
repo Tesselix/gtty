@@ -25,6 +25,8 @@ pub const c = @cImport({
     @cInclude("pwd.h");
     @cInclude("sys/stat.h");
     @cInclude("dirent.h");
+    @cInclude("fcntl.h");
+    @cInclude("sys/file.h");
     @cInclude("time.h");
     @cInclude("signal.h");
 });

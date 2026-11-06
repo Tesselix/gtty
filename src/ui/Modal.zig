@@ -144,22 +144,7 @@ pub fn key(m: *Modal, k: c.SDL_Keycode, mod: c.SDL_Keymod, now: u64) ?usize {
         else => {},
     }
     if (m.edit) |*e| {
-        const shift = mod & c.SDL_KMOD_SHIFT != 0;
-        const cmd = mod & c.SDL_KMOD_GUI != 0;
-        const word = mod & (c.SDL_KMOD_ALT | c.SDL_KMOD_CTRL) != 0;
-        switch (k) {
-            c.SDLK_LEFT => e.move(if (cmd) .home else if (word) .word_left else .left, shift),
-            c.SDLK_RIGHT => e.move(if (cmd) .end else if (word) .word_right else .right, shift),
-            c.SDLK_HOME, c.SDLK_UP => e.move(.home, shift),
-            c.SDLK_END, c.SDLK_DOWN => e.move(.end, shift),
-            c.SDLK_BACKSPACE => if (cmd) {
-                e.move(.home, true);
-                e.backspace(false);
-            } else e.backspace(word),
-            c.SDLK_DELETE => e.delete(word),
-            c.SDLK_A => if (cmd or mod & c.SDL_KMOD_CTRL != 0) e.selectAll() else return null,
-            else => return null,
-        }
+        if (!editKey(e, k, mod)) return null;
         m.err.set("");
         m.opened_ms = now;
         return null;
@@ -172,25 +157,52 @@ pub fn key(m: *Modal, k: c.SDL_Keycode, mod: c.SDL_Keymod, now: u64) ?usize {
     return null;
 }
 
+/// A text field's editing key. True when it was one.
+pub fn editKey(e: *LineEdit, k: c.SDL_Keycode, mod: c.SDL_Keymod) bool {
+    const shift = mod & c.SDL_KMOD_SHIFT != 0;
+    const cmd = mod & c.SDL_KMOD_GUI != 0;
+    const word = mod & (c.SDL_KMOD_ALT | c.SDL_KMOD_CTRL) != 0;
+    switch (k) {
+        c.SDLK_LEFT => e.move(if (cmd) .home else if (word) .word_left else .left, shift),
+        c.SDLK_RIGHT => e.move(if (cmd) .end else if (word) .word_right else .right, shift),
+        c.SDLK_HOME, c.SDLK_UP => e.move(.home, shift),
+        c.SDLK_END, c.SDLK_DOWN => e.move(.end, shift),
+        c.SDLK_BACKSPACE => if (cmd) {
+            e.move(.home, true);
+            e.backspace(false);
+        } else e.backspace(word),
+        c.SDLK_DELETE => e.delete(word),
+        c.SDLK_A => if (cmd or mod & c.SDL_KMOD_CTRL != 0) e.selectAll() else return false,
+        else => return false,
+    }
+    return true;
+}
+
 /// A left click: the button under it, if any.
 pub fn click(m: *const Modal, x: f32, y: f32) ?usize {
     for (m.btn_r[0..m.n], 0..) |r, i| if (r.contains(x, y)) return i;
     return null;
 }
 
+/// The first character shown in a field `cols` wide (the cursor stays in
+/// view).
+pub fn fieldFirst(e: *const LineEdit, cols: usize) usize {
+    return if (e.cursor + 1 > cols) e.cursor + 1 - cols else 0;
+}
+
 /// The input field: its text (scrolled to keep the cursor in view), the
-/// selection, the cursor.
-fn drawField(e: *const LineEdit, gfx: *Gfx, t: *const Theme, font: *Gfx.Face, r: Rect, ui: f32, restore: Rect) void {
+/// selection, the cursor (`active`: it has the keyboard).
+pub fn drawField(e: *const LineEdit, gfx: *Gfx, t: *const Theme, font: *Gfx.Face, r: Rect, ui: f32, restore: Rect, active: bool) void {
     gfx.fill(r, t.prompt_bg);
-    gfx.outline(r, t.focus, @max(@round(ui), 1));
+    gfx.outline(r, if (active) t.focus else t.divider, @max(@round(ui), 1));
     const inner = r.inset(@round(6 * ui));
     gfx.clip(inner);
     defer gfx.clip(restore);
     const cols: usize = @intFromFloat(@max(@floor(inner.w / font.cell_w), 1));
-    const first: usize = if (e.cursor + 1 > cols) e.cursor + 1 - cols else 0;
+    const first = fieldFirst(e, cols);
     const ty = r.y + @round((r.h - font.cell_h) / 2);
     const sel = e.selection();
-    if (sel[1] > sel[0]) {
+    if (active and sel[1] > sel[0]) {
         const a = @max(sel[0], first);
         if (sel[1] > a) gfx.fill(.{
             .x = inner.x + @as(f32, @floatFromInt(a - first)) * font.cell_w,
@@ -205,6 +217,7 @@ fn drawField(e: *const LineEdit, gfx: *Gfx, t: *const Theme, font: *Gfx.Face, r:
         gfx.glyphAt(font, x, ty, cp, t.prompt_fg);
         x += font.cell_w;
     }
+    if (!active) return;
     const cx = inner.x + @as(f32, @floatFromInt(e.cursor - first)) * font.cell_w;
     gfx.fill(.{ .x = cx, .y = ty, .w = @max(@round(2 * ui), 1), .h = font.cell_h }, t.cursor);
 }
@@ -272,7 +285,7 @@ pub fn draw(m: *Modal, gfx: *Gfx, t: *const Theme, font: *Gfx.Face, small: *Gfx.
     }
     if (m.edit) |*e| {
         const fr: Rect = .{ .x = box.x + pad, .y = y + pad * 0.3, .w = box.w - 2 * pad, .h = @round(font.cell_h * 1.7) };
-        drawField(e, gfx, t, font, fr, ui, box);
+        drawField(e, gfx, t, font, fr, ui, box, true);
         y += field_h;
     }
     if (m.err.len > 0) {

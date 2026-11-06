@@ -91,6 +91,8 @@ palette: [16]Rgb = (color.Theme{}).palette,
 /// Left-edge marks (typed / AI rows): shown, width in px, colors.
 marks: bool = true,
 mark_width: u64 = 4,
+/// Most megabytes in one extension's storage.
+ext_storage_mb: u64 = 100,
 mark_input: Rgb = (color.Theme{}).mark_input,
 mark_ai: Rgb = (color.Theme{}).mark_ai,
 /// File and folder names in job windows: outlined on hover, double-click
@@ -150,7 +152,7 @@ pub fn setCommand(cfg: *Config, s: []const u8) void {
 /// window and the parser keep it in.
 pub const Num = struct {
     key: []const u8,
-    field: enum { font_pt, scrollback, anim_ms, tip_ms, chip_hover_ms, peek_close_ms, kill_grace_ms, mark_width },
+    field: enum { font_pt, scrollback, anim_ms, tip_ms, chip_hover_ms, peek_close_ms, kill_grace_ms, mark_width, ext_storage_mb },
     min: f64,
     max: f64,
     step: f64,
@@ -165,6 +167,7 @@ pub const nums = [_]Num{
     .{ .key = "peek-close-ms", .field = .peek_close_ms, .min = 1000, .max = 60_000, .step = 500 },
     .{ .key = "kill-grace-ms", .field = .kill_grace_ms, .min = 500, .max = 10_000, .step = 500 },
     .{ .key = "mark-width", .field = .mark_width, .min = 1, .max = 8, .step = 1 },
+    .{ .key = "extension-storage-mb", .field = .ext_storage_mb, .min = 1, .max = 100_000, .step = 10 },
 };
 
 pub fn numIndex(key: []const u8) ?usize {
@@ -182,6 +185,7 @@ pub fn getNum(cfg: *const Config, i: usize) f64 {
         .peek_close_ms => @floatFromInt(cfg.peek_close_ms),
         .kill_grace_ms => @floatFromInt(cfg.kill_grace_ms),
         .mark_width => @floatFromInt(cfg.mark_width),
+        .ext_storage_mb => @floatFromInt(cfg.ext_storage_mb),
     };
 }
 
@@ -199,6 +203,7 @@ pub fn setNum(cfg: *Config, i: usize, v_in: f64) void {
         .peek_close_ms => cfg.peek_close_ms = u,
         .kill_grace_ms => cfg.kill_grace_ms = u,
         .mark_width => cfg.mark_width = u,
+        .ext_storage_mb => cfg.ext_storage_mb = u,
     }
 }
 

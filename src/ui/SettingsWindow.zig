@@ -453,6 +453,8 @@ pub fn render(s: *SettingsWindow, theme: *const Theme) void {
             const cfw = 9 * f.cell_w;
             y = s.colorRow(f, theme, y, row_h, label_x, ctl_x, Config.mark_color_first, "Typed (input)", sw, cfw);
             y = s.colorRow(f, theme, y, row_h, label_x, ctl_x, Config.mark_color_first + 1, "AI", sw, cfw);
+            y += @round(row_h * 0.3);
+            y = s.numRow(f, small, theme, y, row_h, label_x, ctl_x, Config.numIndex("extension-storage-mb").?, "Storage per extension", "MB");
         },
         1 => {
             const sw = @round(row_h * 0.62);

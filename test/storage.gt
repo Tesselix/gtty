@@ -1,0 +1,53 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# win.shell() and the extensions' storage, through the test extension.
+# Run in a scratch folder with its own storage:
+#   GTTY_EXTENSIONS=$PWD/ext GTTY_LOCKS=$PWD/locks gtty --script $REPO/test/storage.gt
+# The status bar of each shot says (st = the shot):
+#   st1 shell: zsh; st2 shell: bash (bash inside zsh); st3 shell: zsh (cat
+#   in front, not a shell: the window's own shell); st4 storage: read
+#   'hello from a window', files: note; st5 (a second window) stateful: 'hello
+#   from a window', ephemeral here: no; st6 storage: held open; st7 (the first
+#   window) storage: FileInUse; st8 after /unlock: storage: NoFile.
+# Afterwards ext/test/data/note is there and locks/ is empty.
+/s zsh
+/wait 1500
+/dialog shellName
+/wait 300
+/shot st1-zsh.bmp
+/type bash
+/wait 900
+/dialog shellName
+/wait 300
+/shot st2-bash.bmp
+/type cat
+/wait 500
+/dialog shellName
+/wait 300
+/shot st3-cat.bmp
+/key ctrl+c
+/wait 300
+/type exit
+/wait 500
+/dialog storageWrite
+/wait 300
+/shot st4-write.bmp
+/s zsh
+/wait 1500
+/dialog storageRead
+/wait 300
+/shot st5-other.bmp
+/dialog storageHold
+/wait 300
+/shot st6-held.bmp
+/focus 1
+/wait 300
+/dialog storageTry
+/wait 300
+/shot st7-inuse.bmp
+/unlock test held
+/wait 300
+/dialog storageTry
+/wait 300
+/shot st8-unlocked.bmp
+/quit

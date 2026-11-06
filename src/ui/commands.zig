@@ -38,10 +38,6 @@ pub const MenuPick = union(enum) {
     about,
     check_updates,
     help,
-    snapshot,
-    sessions,
-    /// Session ▸ the saved session N (1 = the last used).
-    session: u8,
 };
 
 pub const Command = union(enum) {
@@ -95,10 +91,15 @@ pub const Command = union(enum) {
     drag: [4]f32,
     /// /resize <w> <h> — resize gtty's OS window (window coordinates).
     resize: [2]f32,
-    /// /menu run | settings | new-shell | new-window | sync-typing | about | check-updates | help |
-    /// snapshot | sessions | session-N — pick a menu entry, as the
-    /// menu bar would (for scripts: macOS menus can't be clicked).
+    /// /menu run | settings | new-shell | new-window | sync-typing | about | check-updates | help
+    /// — pick a menu entry, as the menu bar would (for scripts: macOS menus can't be clicked).
     menu: MenuPick,
+    /// /dialog form | grid | table | yesno | unasked — open a test dialog
+    /// (src/chips/dialog_test.zig).
+    dialog: []const u8,
+    /// /unlock extension [file] — remove stuck storage locks (until the
+    /// extension manager has it).
+    unlock: []const u8,
     /// /mods cmd+shift | none — the modifier keys held from now on, as if
     /// pressed (for scripts: hover / click with ⌘ etc.).
     mods: []const u8,
@@ -323,8 +324,10 @@ pub fn parseGtty(text: []const u8, explicit: bool) Command {
     if (eq(sub, "text")) return .{ .text = rest };
     if (eq(sub, "key")) return if (rest.len > 0) .{ .key = rest } else .{ .bad = "/key ctrl+shift+left" };
     if (eq(sub, "wait")) return .{ .wait = std.fmt.parseInt(u32, rest, 10) catch 500 };
+    if (eq(sub, "dialog")) return .{ .dialog = rest };
+    if (eq(sub, "unlock")) return .{ .unlock = rest };
     if (eq(sub, "menu")) {
-        const usage = "/menu run | settings | new-shell | new-window | sync-typing | about | check-updates | help | snapshot | sessions | session-N";
+        const usage = "/menu run | settings | new-shell | new-window | sync-typing | about | check-updates | help";
         if (eq(rest, "run")) return .{ .menu = .run };
         if (eq(rest, "settings")) return .{ .menu = .settings };
         if (eq(rest, "new-shell")) return .{ .menu = .new_shell };
@@ -333,12 +336,6 @@ pub fn parseGtty(text: []const u8, explicit: bool) Command {
         if (eq(rest, "about")) return .{ .menu = .about };
         if (eq(rest, "check-updates")) return .{ .menu = .check_updates };
         if (eq(rest, "help")) return .{ .menu = .help };
-        if (eq(rest, "snapshot")) return .{ .menu = .snapshot };
-        if (eq(rest, "sessions")) return .{ .menu = .sessions };
-        if (std.mem.startsWith(u8, rest, "session-")) {
-            const n = std.fmt.parseInt(u8, rest["session-".len..], 10) catch return .{ .bad = usage };
-            if (n >= 1) return .{ .menu = .{ .session = n } };
-        }
         return .{ .bad = usage };
     }
     if (eq(sub, "mods")) return if (rest.len > 0) .{ .mods = rest } else .{ .bad = "/mods cmd+shift | none" };
@@ -460,9 +457,7 @@ test "parse prompt lines and gtty commands" {
     try t.expect(parseGtty("settings", false) == .settings);
     try t.expect(parse("/menu run").menu == .run);
     try t.expect(parse("/menu help").menu == .help);
-    try t.expect(parse("/menu snapshot").menu == .snapshot);
-    try t.expectEqual(@as(u8, 3), parse("/menu session-3").menu.session);
-    try t.expect(parse("/menu session-x") == .bad);
+    try t.expect(parse("/menu snapshot") == .bad);
     try t.expect(parse("/menu sub 0") == .bad);
     try t.expect(parse("/menu x") == .bad);
     try t.expect(parseGtty("menu run", false) == .unknown);
