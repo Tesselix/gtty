@@ -15,13 +15,23 @@
 /wait 1500
 /type cd ~/alpha
 /wait 300
-/menu snapshot
+/key cmd+4
+/wait 600
+/click 520 557
+/wait 500
+/key enter
 /wait 1100
 /type cd ~/beta
 /wait 300
-/menu snapshot
+/key cmd+4
 /wait 600
-/menu sessions
+/click 512 536
+/wait 500
+/key enter
+/wait 600
+/key cmd+4
+/wait 600
+/click 435 512
 /wait 800
 /target sessions
 /click 283 107

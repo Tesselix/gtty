@@ -7,6 +7,7 @@
 # - gtty_<v>_amd64.deb        Ubuntu / Debian      } /usr/bin/gtty, a launcher and
 # - gtty-<v>-1.x86_64.rpm     Fedora               } icons (src/assets/gtty-icon.png)
 # - gtty-<v>-linux-x86_64.tar.gz  the same files, for any other distro
+# - gtty-sdk-<language>-<v>.tar.gz  what extensions import (package-sdks.sh)
 # The version is build.zig.zon's .version (0.0.0-dev in git; releases
 # write the tag's there first), the one the binary reports; GTTY_VERSION
 # overrides the packages' version only.
@@ -172,5 +173,9 @@ echo "gtty installed in $PREFIX/bin"
 EOF
 chmod +x "$T/install.sh"
 tar -C "$STAGE" -czf "dist/gtty-$VERSION-linux-x86_64.tar.gz" "gtty-$VERSION-linux-x86_64"
+
+# ---- SDKs -------------------------------------------------------------------
+echo "== SDKs"
+scripts/package-sdks.sh
 
 ls -l dist/

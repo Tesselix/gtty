@@ -107,7 +107,9 @@ src/
                       handles resize / zoom / HiDPI and tells the PTY the new size
   ui/Prompt.zig       2-line command area
   ui/StatusBar.zig    status bar (short notices)
-  ui/Peek.zig         a chip's peek / expanded peek (git branches: filter, switch)
+  ui/Peek.zig         the open peek / epeek of a chip, drawn from what it described
+  ui/ChipUi.zig       what a chip described for a window (peek, epeek)
+  ui/text.zig         draws a text: its parts, each with its attributes
   ui/Menu.zig         pop-up menus: right-click (Copy / Paste), app picker,
                       the menus of the drawn menu bar (Linux)
   ui/SettingsWindow.zig the settings window (an OS window of its own, tabs)

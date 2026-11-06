@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# win.log and `gtty ext logs`, through the test extension. While this
+# runs, from another shell:
+#   gtty --script test/ext-log.gt &
+#   sleep 1; gtty ext logs -f test
+# Printed: "started" (no window), debug / info / warn / err lines, the
+# warn line on one line with \n and \x1b escaped, then "onEvent returned
+# BrokenOnPurpose". -f ends with "gtty closed" when the script quits.
+/s zsh
+/wait 2500
+/dialog logLine
+/wait 500
+/dialog logFail
+/wait 3000
+/quit

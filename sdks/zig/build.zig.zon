@@ -1,0 +1,12 @@
+// SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+.{
+    .name = .gtty_sdk,
+    .fingerprint = 0xdd729014cfe05ef5,
+    // 0.0.0-dev in git; scripts/package-sdks.sh writes the release's here.
+    .version = "0.0.0-dev",
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{},
+    .paths = .{ "build.zig", "build.zig.zon", "src", "examples", "README.md", "AGENTS.md", "CLAUDE.md", "LICENSE" },
+}

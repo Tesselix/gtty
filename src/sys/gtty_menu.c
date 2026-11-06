@@ -10,10 +10,9 @@ bool gtty_app_yield_to(int pid) {
 }
 bool gtty_app_activate(void) { return true; }
 
-bool gtty_menu_install(uint32_t event_type, gtty_menu_enabled_fn enabled, gtty_menu_checked_fn checked, gtty_menu_title_fn title) {
+bool gtty_menu_install(uint32_t event_type, gtty_menu_enabled_fn enabled, gtty_menu_checked_fn checked) {
     (void)event_type;
     (void)enabled;
     (void)checked;
-    (void)title;
     return false;
 }

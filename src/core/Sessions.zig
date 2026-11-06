@@ -373,7 +373,7 @@ fn mkdirs(dir: []const u8) void {
 }
 
 pub fn format(s: *const Sessions, w: *std.Io.Writer) !void {
-    try w.writeAll("# gtty sessions (Session menu): S id created used aspect name / W place x y w h kind shell uid user folder host remote-folder command\n");
+    try w.writeAll("# gtty sessions: S id created used aspect name / W place x y w h kind shell uid user folder host remote-folder command\n");
     for (s.list.items) |*x| {
         try w.print("S\t{s}\t{d}\t{d}\t{d:.4}\t", .{ x.id, x.created, x.used, x.aspect });
         try escape(w, x.name);

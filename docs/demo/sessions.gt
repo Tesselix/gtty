@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
 # SPDX-License-Identifier: GPL-3.0-or-later
-# gtty-sessions: three shells (shop, api, blog) each run pwd, Session ▸
-# Take Snapshot saves them (the session chip appears), every window is
+# gtty-sessions: three shells (shop, api, blog) each run pwd, the session
+# chip's save button saves them (the modal's name kept), every window is
 # closed (a fresh shell opens), the session chip's list brings the three
 # back at once, in their folders and places, and pwd runs in each again.
 /resize 1200 760
@@ -23,7 +23,13 @@
 /click 900 480
 /type pwd
 /wait 700
-/menu snapshot
+/glide 1000 644 500
+/wait 900
+/glide 1125 575 400
+/wait 300
+/click 1125 575
+/wait 1200
+/key enter
 /wait 1800
 /close all
 /wait 1800

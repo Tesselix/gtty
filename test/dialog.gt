@@ -1,0 +1,79 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Dialogs (docs/extensions.md, src/ui/Dialog.zig), through the SDK with
+# the test extension (src/chips/dialog_test.zig). Run in a scratch folder:
+#   mkdir -p w && cd w && gtty --script $REPO/test/dialog.gt
+# Expected: d1 the form, "work" selected; d2 the drop box filtered to
+# gamma; d3 the values changed; d4 "dialog: ok name=hello … keep=false
+# host=gamma" in the status bar, dialog gone; d5 grid, side by side;
+# d6 table, 2 × 2; d7 a red line, dialog still open (name "bad"); d8
+# closed by Esc; d9 yes / no counting down; d10 gone by itself, "dialog:
+# timeout"; d11 × killed it: "dialog: kill"; d12 no keyboard, the frame gray
+# and nothing typed in it or the shell; d13 a click gave it the keyboard.
+/s zsh
+/wait 1500
+/dialog form
+/wait 300
+/shot d1-form.bmp
+/text hello
+/key tab
+/key space
+/key tab
+/key space
+/text ga
+/wait 300
+/shot d2-list.bmp
+/key enter
+/wait 300
+/shot d3-picked.bmp
+/key enter
+/wait 300
+/shot d4-reported.bmp
+/dialog grid
+/wait 300
+/shot d5-grid.bmp
+/key enter
+/wait 300
+/dialog table
+/wait 300
+/shot d6-table.bmp
+/key escape
+/wait 300
+/dialog form
+/wait 300
+/text bad
+/key enter
+/wait 300
+/shot d7-rejected.bmp
+/key escape
+/wait 300
+/shot d8-escaped.bmp
+/dialog yesno
+/wait 300
+/shot d9-yesno.bmp
+/wait 3200
+/shot d10-timeout.bmp
+/dialog form
+/wait 300
+/click 715 229
+/wait 300
+/shot d11-killed.bmp
+/dialog unasked
+/wait 300
+/text typed
+/wait 300
+/shot d12-unasked.bmp
+/click 550 330
+/wait 300
+/text more
+/wait 300
+/shot d13-clicked.bmp
+/key enter
+/wait 300
+/shot d14-done.bmp
+/dialog form
+/wait 300
+/close 1
+/wait 800
+/shot d15-window-closed.bmp
+/quit

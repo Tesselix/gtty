@@ -16,12 +16,15 @@ const Rgb = color.Rgb;
 const Process = @import("core/Process.zig");
 const Screen = @import("core/Screen.zig");
 const Tee = @import("core/Tee.zig");
+const ExtLog = @import("core/ExtLog.zig");
 const Gfx = @import("render/Gfx.zig");
 const Rect = Gfx.Rect;
 const JobWindow = @import("ui/JobWindow.zig");
 const Prompt = @import("ui/Prompt.zig");
 const StatusBar = @import("ui/StatusBar.zig");
 const Peek = @import("ui/Peek.zig");
+const ExtStorage = @import("core/ExtStorage.zig");
+const shells = @import("core/shells.zig");
 const Menu = @import("ui/Menu.zig");
 const SettingsWindow = @import("ui/SettingsWindow.zig");
 const Config = @import("core/Config.zig");
@@ -44,6 +47,10 @@ const Update = @import("core/Update.zig");
 const SessionsWindow = @import("ui/SessionsWindow.zig");
 const remote = @import("core/remote.zig");
 const Handoff = @import("core/Handoff.zig");
+const ChipHost = @import("chips/Host.zig");
+const standard_chips = @import("chips/standard.zig");
+const sdk = @import("gtty");
+const Dialog = @import("ui/Dialog.zig");
 
 const App = @This();
 
@@ -140,6 +147,8 @@ scrollback: usize,
 /// Temp folder of this gtty instance: every job's full output (null if it
 /// could not be made: then only the memory window is kept).
 tmp: ?Tee.Dir = null,
+/// `gtty ext logs` reads it.
+ext_log: ?ExtLog = null,
 /// The shell hook files are in `tmp` (core/shell_hooks.zig).
 hooks: bool = false,
 scale: JobWindow.Scale = .{},
@@ -230,6 +239,10 @@ over_text: bool = false,
 /// The open peek of a chip (one at a time; Peek.zig), and the chip the
 /// mouse rests on (a peek opens after `chip_hover_ms`).
 peek: ?Peek = null,
+/// The extensions' files (core/ExtStorage.zig).
+ext_storage: ?ExtStorage = null,
+/// The ⋮ button whose popup list is open (in its chip's `ChipUi`).
+peek_button: ?*const sdk.Button = null,
 chip_hover: ?Tip = null,
 /// The open menu (Menu.zig): the right-click menu or `show`'s app picker.
 menu: ?Menu = null,
@@ -418,24 +431,22 @@ ai_return: ?ids_mod.Id = null,
 memory: Memory,
 memory_file: bool = false,
 memory_saved_ms: u64 = 0,
-/// The folders used lately (the focus chip): every job window's
-/// counted commands (`JobWindow.use_seq`); merged with the file shared by
+/// The standard chips (src/chips/), on the extension SDK.
+chips: ChipHost,
+/// The folders used lately (the focus chip counts the commands here);
+/// merged with the file shared by
 /// all gtty processes (`FocusFolders.sync`) only when `focus_file`
 /// (not in test scripts unless GTTY_FOCUS says where).
 focus_folders: FocusFolders,
 focus_file: bool = false,
 focus_synced_ms: u64 = 0,
-/// The saved gtty-sessions (Session menu, session chip, Session
-/// Manager), from the file shared by all gtty processes (read again when
+/// The saved gtty-sessions (session chip, Session Manager), from the file shared by all gtty processes (read again when
 /// it changed, `tickSessions`); kept only in memory in test scripts
 /// unless GTTY_SESSIONS says where.
 sessions: Sessions,
 sessions_checked_ms: u64 = 0,
 /// The Session Manager, while open.
 sessions_win: ?*SessionsWindow = null,
-/// The sessions the menus show (`fillMenuSessions`).
-menu_sessions: [Sessions.shown_max]MenuSession = @splat(.{}),
-menu_sessions_n: usize = 0,
 /// A restore's windows waiting to be typed into (ssh, sudo, remote cd).
 restore_steps: std.ArrayList(RestoreStep) = .empty,
 /// New Window: the new gtty's process, yielded the front to until this
@@ -483,7 +494,7 @@ pub fn create(gpa: std.mem.Allocator, opts: Options) !*App {
     // The gtty menu: in the system menu bar (macOS), else drawn by gtty.
     // GTTY_MENU_BAR=1 draws it on macOS too (to test the Linux look).
     const menu_event = c.SDL_RegisterEvents(1);
-    const native_menu = menu_event != 0 and c.getenv("GTTY_MENU_BAR") == null and c.gtty_menu_install(menu_event, menuEnabled, menuChecked, menuTitle);
+    const native_menu = menu_event != 0 and c.getenv("GTTY_MENU_BAR") == null and c.gtty_menu_install(menu_event, menuEnabled, menuChecked);
 
     const app = try gpa.create(App);
     app.* = .{
@@ -508,6 +519,7 @@ pub fn create(gpa: std.mem.Allocator, opts: Options) !*App {
         .chip_hover_ms = opts.cfg.chip_hover_ms,
         .memory = .init(gpa),
         .memory_file = opts.save_config or c.getenv("GTTY_AI_MEMORY") != null,
+        .chips = .init(gpa, &standard_chips.all),
         .focus_folders = .init(gpa),
         .focus_file = opts.save_config or c.getenv("GTTY_FOCUS") != null,
         .sessions = .init(gpa),
@@ -515,6 +527,30 @@ pub fn create(gpa: std.mem.Allocator, opts: Options) !*App {
     };
     if (app.memory_file) app.memory.load();
     if (app.focus_file) app.focus_folders.sync();
+    standard_chips.focus.folders = &app.focus_folders;
+    standard_chips.hooks.ctx = app;
+    standard_chips.hooks.notice = chipNotice;
+    standard_chips.hooks.saveSession = chipSaveSession;
+    standard_chips.hooks.gpa = gpa;
+    standard_chips.hooks.reaper = &app.reaper;
+    standard_chips.hooks.cd = chipCd;
+    standard_chips.hooks.cwd = chipCwd;
+    standard_chips.hooks.remoteDest = chipRemoteDest;
+    standard_chips.hooks.copy = chipCopy;
+    standard_chips.hooks.beep = chipBeep;
+    standard_chips.hooks.branchChanged = chipBranchChanged;
+    standard_chips.hooks.serial = chipSerial;
+    standard_chips.hooks.restore = chipRestore;
+    standard_chips.hooks.manage = chipManage;
+    standard_chips.hooks.askSave = chipAskSave;
+    standard_chips.hooks.syncFocus = chipSyncFocus;
+    standard_chips.hooks.recentSessions = chipRecentSessions;
+    app.chips.setSink(.{ .ctx = app, .setChip = chipChanged, .setDialog = dialogSet, .showDialog = dialogShow, .closeDialog = dialogClose, .setPeek = peekSet, .setEpeek = epeekSet, .setDisplayMode = displayModeSet, .shell = chipShell });
+    if (app.tmp) |d| {
+        app.ext_log = ExtLog.init(gpa, d.path) catch null;
+        if (app.ext_log) |*l| app.chips.log = l;
+    }
+    app.chips.start();
     if (opts.save_config or c.getenv("GTTY_SESSIONS") != null) {
         var pbuf: [4096]u8 = undefined;
         if (Sessions.path(&pbuf)) |sp| app.sessions.open(sp);
@@ -536,6 +572,7 @@ pub fn create(gpa: std.mem.Allocator, opts: Options) !*App {
     JobWindow.mark_pt = @floatFromInt(opts.cfg.mark_width);
     app.marksFromEnv();
     if (app.tmp) |d| app.hooks = shell_hooks.install(d.path);
+    if (app.tmp) |d| app.startStorage(d.path, opts.script != null, opts.cfg.ext_storage_mb);
     app.updateScale();
     if (opts.script) |path| try app.loadScript(path);
     app.listenCtl();
@@ -563,6 +600,12 @@ pub fn create(gpa: std.mem.Allocator, opts: Options) !*App {
 }
 
 pub fn destroy(app: *App) void {
+    app.chips.stop();
+    if (app.ext_log) |*l| l.deinit(app.gpa);
+    if (app.ext_storage) |*st| {
+        st.stop();
+        st.deinit();
+    }
     if (app.update_check) |k| k.destroy();
     if (app.ai_req) |r| r.destroy();
     if (app.ai_plan) |*p| p.deinit();
@@ -584,7 +627,7 @@ pub fn destroy(app: *App) void {
     if (app.adopt_from) |a| app.gpa.free(a.path);
     if (app.restore_from) |r| app.gpa.free(r);
     app.extras.deinit(app.gpa);
-    if (app.peek) |*pk| pk.deinit(&app.reaper);
+    if (app.peek) |*pk| pk.deinit();
     app.freePicker();
     for (app.paste_history.items) |t| app.gpa.free(t);
     app.paste_history.deinit(app.gpa);
@@ -677,6 +720,7 @@ pub fn run(app: *App) void {
                 if (app.hover_src == w.uid) rehover = true;
             }
             if (w.tick(&app.gfx, c.SDL_GetTicks())) app.dirty = true;
+            app.fireChipEvents(w);
             // The focused job ended: hand the keyboard back to the prompt.
             if (was_running and !w.running()) {
                 if (app.focus == i) app.clearFocus();
@@ -708,6 +752,7 @@ pub fn run(app: *App) void {
         app.tickChooser();
         app.tickDragOut();
         app.tickModal();
+        app.tickDialogs();
         app.tickPeek();
         app.updateSync();
         if (app.reject_until != 0 and c.SDL_GetTicks() > app.reject_until) {
@@ -738,6 +783,7 @@ pub fn run(app: *App) void {
         app.tickPrompt();
         app.tickFocus();
         app.ensureShell();
+        app.chips.pump();
         if (app.rec) |r| if (c.SDL_GetTicks() >= r.next) {
             app.dirty = true;
         };
@@ -1333,6 +1379,7 @@ fn openJob(app: *App, spec: JobWindow.Spec) void {
         w.destroy(&app.reaper);
         return;
     };
+    app.windowStarted(w);
     app.grid_scroll = 0;
     // It joins what is in the windows area (setFocus).
     app.setFocus(app.jobs.items.len - 1);
@@ -1654,6 +1701,10 @@ fn closeJob(app: *App, index: usize) void {
     const promoted: ?*JobWindow = if (app.main == index and app.extras.items.len > 0) app.extras.orderedRemove(0) else null;
     if (promoted != null) app.main_slot = 0;
     if (app.hover_src == w.uid) app.sendLeave();
+    if (app.peek) |pk| if (pk.uid == w.uid) app.closePeek();
+    w.dialog_wait.clearRetainingCapacity();
+    if (w.dialog_open) |chip| app.dialogKill(w, chip, "kill");
+    app.chips.windowClosed(w.uid);
     _ = app.jobs.orderedRemove(index);
     w.destroy(&app.reaper);
     const shift = struct {
@@ -2414,6 +2465,10 @@ fn menuRowPick(app: *App, row: usize) void {
             app.fileMenuPick(uid, m.codes[row], m.at);
             app.freeMenuFiles();
         },
+        .peek_items => |pi| {
+            app.peekItemPick(pi.uid, pi.chip, row);
+            app.closeMenu();
+        },
         .folder_chip => |uid| {
             app.closeMenu();
             const w = app.jobByUid(uid) orelse return;
@@ -2507,12 +2562,7 @@ fn menuPick(app: *App, code: i32) void {
             app.checkUpdates(true);
         },
         c.GTTY_MENU_HELP => app.openHelp(),
-        c.GTTY_MENU_SNAPSHOT => app.takeSnapshot(null),
-        c.GTTY_MENU_SESSIONS => app.openSessionsWindow(),
-        else => if (code >= c.GTTY_MENU_SESSION_FIRST and code < c.GTTY_MENU_SESSION_FIRST + c.GTTY_MENU_SESSION_MAX) {
-            app.closeMenu();
-            app.pickMenuSession(@intCast(code - c.GTTY_MENU_SESSION_FIRST));
-        },
+        else => {},
     }
 }
 
@@ -2534,7 +2584,6 @@ fn menuChecked(code: c_int) callconv(.c) bool {
 fn menuRowEnabled(app: *App, code: c_int) bool {
     return switch (code) {
         c.GTTY_MENU_SYNC_TYPING => app.sync_src != null or app.canSync(app.currentJob()),
-        c.GTTY_MENU_SNAPSHOT => app.snapshotCount() > 0,
         else => true,
     };
 }
@@ -2656,38 +2705,24 @@ fn chipShortcut(app: *App, n: u8) void {
         return app.say("no job window", app.theme.dim);
     };
     const w = app.jobs.items[i];
-    const kind: Peek.Kind = switch (n) {
+    if (w.dialog_open != null) return beep.beep();
+    const chip: JobWindow.Chip = switch (n) {
         1 => .folder,
         2 => .git,
         3 => .focus,
         else => .session,
     };
-    if (app.peek) |pk| if (pk.uid == w.uid and pk.kind == kind) return app.closePeek();
-    const r = switch (kind) {
-        .folder => w.folder_chip_r,
-        .git => w.git_chip_r,
-        .focus => w.focus_chip_r,
-        .session => w.session_chip_r,
-    };
-    if (r.w == 0 or (kind == .git and w.branch() == null)) {
+    if (app.peek) |pk| if (pk.uid == w.uid and pk.chip == @intFromEnum(chip)) return app.closePeek();
+    if (w.chipRect(chip).w == 0 or (chip == .git and w.branch() == null)) {
         beep.beep();
-        return app.say(switch (kind) {
+        return app.say(switch (chip) {
             .folder => "no folder chip here",
             .git => "not in a git repository",
             .focus => "no focus chip here",
-            .session => "no saved sessions (Session ▸ Take Snapshot)",
+            else => "no session chip here",
         }, app.theme.dim);
     }
-    switch (kind) {
-        .folder => app.openFolderPeek(i),
-        .git => app.openGitPeek(i),
-        .focus => app.openFocusPeek(i),
-        .session => app.openSessionPeek(i),
-    }
-    if (app.peek) |*pk| if (pk.uid == w.uid) {
-        pk.expand();
-        app.layoutPeek();
-    };
+    app.pressChip(w, chip, true);
 }
 
 /// A copy or paste shortcut: ⌘C / ⌘V, Ctrl+Shift+C / V, Shift+Insert.
@@ -2750,15 +2785,6 @@ fn barRows(app: *App, which: Menu.Bar, rows: *[Menu.max_rows]Menu.Row, codes: *[
             Add(rows, codes, &n, .{ .label = "New Shell", .key = Menu.new_shell_key }, c.GTTY_MENU_NEW_SHELL);
             Add(rows, codes, &n, .{ .label = "Run command" }, c.GTTY_MENU_RUN);
             Add(rows, codes, &n, .{ .label = "Sync typing", .key = if (app.sync_src != null) "✓" else "", .enabled = app.menuRowEnabled(c.GTTY_MENU_SYNC_TYPING) }, c.GTTY_MENU_SYNC_TYPING);
-        },
-        .session => {
-            Add(rows, codes, &n, .{ .label = "Take Snapshot", .enabled = app.menuRowEnabled(c.GTTY_MENU_SNAPSHOT) }, c.GTTY_MENU_SNAPSHOT);
-            Add(rows, codes, &n, .{ .label = "Session Manager…" }, c.GTTY_MENU_SESSIONS);
-            Add(rows, codes, &n, Menu.separator, 0);
-            app.fillMenuSessions();
-            if (app.menu_sessions_n == 0) Add(rows, codes, &n, .{ .label = "No saved sessions", .enabled = false }, 0);
-            for (app.menu_sessions[0..app.menu_sessions_n], 0..) |*m, k|
-                Add(rows, codes, &n, .{ .label = m.name[0..m.name_len] }, c.GTTY_MENU_SESSION_FIRST + @as(i32, @intCast(k)));
         },
         .help => Add(rows, codes, &n, .{ .label = "gtty Help" }, c.GTTY_MENU_HELP),
     }
@@ -2848,6 +2874,7 @@ fn applyChange(app: *App, ch: SettingsWindow.Change) void {
             .peek_close_ms => Peek.dismiss_ms = app.cfg.peek_close_ms,
             .kill_grace_ms => JobWindow.hard_kill_ms = app.cfg.kill_grace_ms,
             .mark_width => app.setMarks(app.cfg.marks, app.cfg.mark_width),
+            .ext_storage_mb => if (app.ext_storage) |*st| st.setLimit(app.cfg.ext_storage_mb),
         },
         .marks => app.setMarks(app.cfg.marks, app.cfg.mark_width),
         .file_opener => app.setFileOpener(app.cfg.file_opener),
@@ -3189,80 +3216,425 @@ fn openWithName(app: *App, path: [:0]const u8, id: ?[*:0]const u8, name: []const
 
 // ------------------------------------------------------------ chips & peeks
 
+/// A new window: the chips connect and register, then hear its state.
+fn windowStarted(app: *App, w: *JobWindow) void {
+    app.chips.windowStarted(w.uid);
+    app.fireWindowChanged(w);
+}
+
+fn fireWindowChanged(app: *App, w: *JobWindow) void {
+    app.chips.fire(w.uid, .{ .kind = .window_changed, .folder = w.cwd(), .branch = w.branch() orelse "", .remote = w.remoteDest().len > 0 });
+}
+
+/// What changed in a window since the last frame, as events.
+fn fireChipEvents(app: *App, w: *JobWindow) void {
+    if (w.changed_seq != w.changed_seen) {
+        w.changed_seen = w.changed_seq;
+        app.fireWindowChanged(w);
+    }
+    if (w.started_seq != w.started_seen) {
+        w.started_seen = w.started_seq;
+        app.chips.fire(w.uid, .{ .kind = .command_started, .folder = w.started_dir.items, .remote = w.remoteDest().len > 0, .command = w.started_cmd.items });
+    }
+}
+
+/// A chip changed its text (`ChipHost.ChipSink`).
+fn chipChanged(ctx: *anyopaque, uid: u32, chip: usize, update: sdk.ChipUpdate) void {
+    const app: *App = @ptrCast(@alignCast(ctx));
+    const w = app.jobByUid(uid) orelse return;
+    if (w.setChip(chipAt(chip), update)) {
+        w.layoutChips(&app.gfx);
+        app.dirty = true;
+    }
+}
+
+/// A chip's index in `standard_chips.all` (they are in `Chip`'s order).
+fn chipAt(chip: usize) JobWindow.Chip {
+    return @enumFromInt(chip);
+}
+
+fn appOf(ctx: *anyopaque) *App {
+    return @ptrCast(@alignCast(ctx));
+}
+
+fn peekSet(ctx: *anyopaque, uid: u32, chip: usize, update: ?sdk.PeekUpdate) sdk.Error!void {
+    const app = appOf(ctx);
+    const w = app.jobByUid(uid) orelse return error.WindowClosed;
+    const ui = w.chipUi(chipAt(chip));
+    if (!w.chips[chip].shown and update != null) return error.NoChip;
+    app.closeItemsOf(uid, chip);
+    ui.setPeek(update) catch return error.NoChip;
+    app.peekFollow(uid, chip);
+}
+
+fn epeekSet(ctx: *anyopaque, uid: u32, chip: usize, update: ?sdk.EpeekUpdate) sdk.Error!void {
+    const app = appOf(ctx);
+    const w = app.jobByUid(uid) orelse return error.WindowClosed;
+    const ui = w.chipUi(chipAt(chip));
+    if (!w.chips[chip].shown and update != null) return error.NoChip;
+    app.closeItemsOf(uid, chip);
+    ui.setEpeek(update) catch return error.NoChip;
+    app.peekFollow(uid, chip);
+}
+
+/// A ⋮ popup points into what is being replaced.
+fn closeItemsOf(app: *App, uid: u32, chip: usize) void {
+    if (app.menu) |m| if (m.purpose == .peek_items and m.purpose.peek_items.uid == uid and m.purpose.peek_items.chip == chip) app.closeMenu();
+}
+
+/// What an open peek shows changed.
+fn peekFollow(app: *App, uid: u32, chip: usize) void {
+    if (app.peek) |*pk| if (pk.uid == uid and pk.chip == chip) {
+        if (pk.ui.peek == null and pk.ui.epeek == null) return app.closePeek();
+        pk.refresh(c.SDL_GetTicks());
+        app.layoutPeek();
+        app.dirty = true;
+    };
+}
+
+/// `setDisplayMode`: only one is open; another chip's stays unless this
+/// comes from the user.
+fn displayModeSet(ctx: *anyopaque, uid: u32, chip: usize, mode: sdk.DisplayMode, from_user: bool) sdk.Error!void {
+    const app = appOf(ctx);
+    const w = app.jobByUid(uid) orelse return error.WindowClosed;
+    if (mode == .chip) {
+        if (app.peek) |pk| if (pk.uid == uid and pk.chip == chip) app.closePeek();
+        return;
+    }
+    const ui = w.chipUi(chipAt(chip));
+    if ((mode == .peek and ui.peek == null) or (mode == .epeek and ui.epeek == null)) return error.NoChip;
+    const m: Peek.Mode = if (mode == .peek) .peek else .epeek;
+    app.showChipPeek(w, chipAt(chip), m, from_user);
+}
+
+/// Open chip `chip`'s peek or epeek (the keyboard only for the user's
+/// action); already open: it changes to `mode`.
+fn showChipPeek(app: *App, w: *JobWindow, chip: JobWindow.Chip, mode: Peek.Mode, user: bool) void {
+    const k = @intFromEnum(chip);
+    if (w.dialog_open != null) return;
+    const i = app.indexOfWindow(w) orelse return;
+    if (!app.isShown(i) or w.chipRect(chip).w <= 0) return;
+    if (app.peek) |*pk| {
+        if (pk.uid == w.uid and pk.chip == k) {
+            if (pk.mode != mode) pk.setMode(mode, user);
+            pk.keys = pk.keys or (user and mode == .epeek);
+            app.layoutPeek();
+            app.dirty = true;
+            return;
+        }
+        if (!user) return;
+    }
+    app.closePeek();
+    app.hideTip();
+    app.chip_hover = null;
+    app.peek = Peek.open(app.gpa, w.uid, k, w.chipUi(chip), w.chipRect(chip), mode, user and mode == .epeek);
+    w.open_chip = chip;
+    app.layoutPeek();
+    // The mouse already on it (it grew over the chip): the rest counts
+    // from now.
+    if (app.mouse) |m| _ = app.peek.?.motion(m[0], m[1], c.SDL_GetTicks());
+    app.dirty = true;
+}
+
+/// A chip's click function, if it has one.
+fn fireChip(app: *App, w: *JobWindow, chip: JobWindow.Chip, function: []const u8) void {
+    if (function.len == 0) return;
+    const s = &w.chips[@intFromEnum(chip)];
+    app.chips.click(w.uid, @intFromEnum(chip), .{ .text = s.buf[0..s.len], .data = w.chipUi(chip).data, .function = function }, true);
+}
+
+/// The user pressed chip `chip`: its `onclick`, and its peek (else epeek)
+/// opens; `expanded`: the epeek at once (a chip's shortcut).
+fn pressChip(app: *App, w: *JobWindow, chip: JobWindow.Chip, expanded: bool) void {
+    const ui = w.chipUi(chip);
+    if (expanded and ui.peek != null and ui.epeek != null) {
+        app.showChipPeek(w, chip, .epeek, true);
+        if (app.peek) |*pk| pk.hold = true;
+        if (ui.peek) |k| if (k.onexpand.len > 0) app.chips.click(w.uid, @intFromEnum(chip), .{ .function = k.onexpand }, true);
+        return;
+    }
+    app.fireChip(w, chip, ui.onclick);
+    if (ui.peek != null) return app.showChipPeek(w, chip, .peek, true);
+    if (ui.epeek != null) app.showChipPeek(w, chip, .epeek, true);
+}
+
+/// The extensions' storage: `$GTTY_EXTENSIONS`, else the data folder;
+/// the locks `$GTTY_LOCKS`, else the state folder. A script run without
+/// them stays in the temp folder.
+fn startStorage(app: *App, tmp: []const u8, script: bool, limit_mb: u64) void {
+    var rbuf: [4096]u8 = undefined;
+    var lbuf: [4096]u8 = undefined;
+    const root = storageFolder(&rbuf, "GTTY_EXTENSIONS", "XDG_DATA_HOME", ".local/share", "extensions", tmp, script) orelse return;
+    const locks = storageFolder(&lbuf, "GTTY_LOCKS", "XDG_STATE_HOME", ".local/state", "locks", tmp, script) orelse return;
+    app.ext_storage = ExtStorage.init(app.gpa, root, locks, tmp, limit_mb) catch return;
+    app.ext_storage.?.start();
+    app.chips.storage = &app.ext_storage.?;
+}
+
+fn storageFolder(buf: []u8, env: [*:0]const u8, xdg: [*:0]const u8, home_rel: []const u8, leaf: []const u8, tmp: []const u8, script: bool) ?[]const u8 {
+    if (c.getenv(env)) |v| return std.fmt.bufPrint(buf, "{s}", .{std.mem.span(v)}) catch null;
+    if (script) return std.fmt.bufPrint(buf, "{s}/script-{s}", .{ tmp, leaf }) catch null;
+    if (c.getenv(xdg)) |v| if (v[0] != 0) return std.fmt.bufPrint(buf, "{s}/gtty/{s}", .{ std.mem.span(v), leaf }) catch null;
+    const home = c.getenv("HOME") orelse return null;
+    return std.fmt.bufPrint(buf, "{s}/{s}/gtty/{s}", .{ std.mem.span(home), home_rel, leaf }) catch null;
+}
+
+/// `win.shell()`: the shell in front (any the system knows), else the
+/// shell running under the window.
+fn chipShell(ctx: *anyopaque, uid: u32, buf: []u8) sdk.Error![]const u8 {
+    const w = appOf(ctx).jobByUid(uid) orelse return error.WindowClosed;
+    var ebuf: [8192]u8 = undefined;
+    var etc: []const u8 = "";
+    if (c.fopen("/etc/shells", "r")) |fp| {
+        defer _ = c.fclose(fp);
+        etc = ebuf[0..c.fread(&ebuf, 1, ebuf.len, fp)];
+    }
+    const front = shells.baseName(frontName(w));
+    const under = if (w.kind == .shell) shells.baseName(w.title) else shells.baseName(userShell());
+    const name = if (shells.isShell(front, etc)) front else under;
+    const n = @min(name.len, buf.len);
+    @memcpy(buf[0..n], name[0..n]);
+    return buf[0..n];
+}
+
+fn chipCd(ctx: *anyopaque, uid: u32, dir: []const u8) bool {
+    const w = appOf(ctx).jobByUid(uid) orelse return false;
+    if (!w.atPrompt()) return false;
+    w.cdTo(dir);
+    return true;
+}
+
+fn chipCwd(ctx: *anyopaque, uid: u32) []const u8 {
+    const w = appOf(ctx).jobByUid(uid) orelse return "";
+    return w.cwd();
+}
+
+fn chipRemoteDest(ctx: *anyopaque, uid: u32) []const u8 {
+    const w = appOf(ctx).jobByUid(uid) orelse return "";
+    return w.remoteDest();
+}
+
+fn chipCopy(ctx: *anyopaque, text: []const u8, row: bool) void {
+    const app = appOf(ctx);
+    const z = app.gpa.dupeZ(u8, text) catch return;
+    defer app.gpa.free(z);
+    app.pushPasteHistory(z);
+    _ = c.SDL_SetClipboardText(z.ptr);
+    if (app.peek) |*pk| pk.flashText(row);
+    app.sayFmt("copied {s}", .{text}, app.theme.ok);
+}
+
+fn chipBeep(_: *anyopaque) void {
+    beep.beep();
+}
+
+fn chipBranchChanged(ctx: *anyopaque, uid: u32) void {
+    if (appOf(ctx).jobByUid(uid)) |w| w.refreshChipsSoon();
+}
+
+fn chipSerial(ctx: *anyopaque, uid: u32) u32 {
+    const w = appOf(ctx).jobByUid(uid) orelse return 0;
+    return w.serial;
+}
+
+fn chipRestore(ctx: *anyopaque, id: []const u8, new_window: bool) void {
+    var ibuf: [64]u8 = undefined;
+    const n = @min(id.len, ibuf.len);
+    @memcpy(ibuf[0..n], id[0..n]);
+    appOf(ctx).restoreSession(ibuf[0..n], if (new_window) .new else .here);
+}
+
+fn chipManage(ctx: *anyopaque) void {
+    const app = appOf(ctx);
+    app.closePeek();
+    app.openSessionsWindow();
+}
+
+fn chipAskSave(ctx: *anyopaque, uid: u32) void {
+    appOf(ctx).askSnapshot(uid);
+}
+
+/// A quick look first: folders removed since are forgotten (`sync` takes
+/// them out of the file too).
+fn chipSyncFocus(ctx: *anyopaque) void {
+    const app = appOf(ctx);
+    if (app.focus_file) {
+        app.focus_folders.sync();
+        app.focus_synced_ms = c.SDL_GetTicks();
+    } else _ = app.focus_folders.dropMissing();
+}
+
+/// The sessions used last, the last used last.
+fn chipRecentSessions(ctx: *anyopaque, out: []standard_chips.hooks.SessionRow) usize {
+    const app = appOf(ctx);
+    _ = app.sessions.refresh();
+    var buf: [Sessions.shown_max]*Sessions.Session = undefined;
+    const list = app.sessions.recent(&buf);
+    const n = @min(list.len, out.len);
+    for (list[0..n], 0..) |x, k| out[n - 1 - k] = .{ .name = x.name, .id = x.id };
+    return n;
+}
+
+fn chipNotice(ctx: *anyopaque, text: []const u8, kind: standard_chips.hooks.Notice) void {
+    const app: *App = @ptrCast(@alignCast(ctx));
+    app.say(text, switch (kind) {
+        .plain => app.theme.dim,
+        .ok => app.theme.ok,
+        .err => app.theme.stderr_accent,
+    });
+}
+
+fn chipSaveSession(ctx: *anyopaque, name: []const u8) void {
+    const app: *App = @ptrCast(@alignCast(ctx));
+    app.takeSnapshot(name);
+}
+
+// ------------------------------------------------------------ dialogs
+
+fn dialogSet(ctx: *anyopaque, uid: u32, chip: usize, update: sdk.DialogUpdate) sdk.Error!void {
+    const app: *App = @ptrCast(@alignCast(ctx));
+    const w = app.jobByUid(uid) orelse return error.WindowClosed;
+    const d = w.dialogs[chip] orelse blk: {
+        const n = Dialog.create(app.gpa, standard_chips.all[chip].name) catch return error.NoDialog;
+        w.dialogs[chip] = n;
+        break :blk n;
+    };
+    d.apply(update);
+    app.dirty = true;
+}
+
+fn dialogShow(ctx: *anyopaque, uid: u32, chip: usize, from_user: bool) sdk.Error!void {
+    const app: *App = @ptrCast(@alignCast(ctx));
+    const w = app.jobByUid(uid) orelse return error.WindowClosed;
+    if (w.dialogs[chip] == null) return error.NoDialog;
+    if (w.dialog_open == chip) return;
+    // One at a time: the next waits.
+    if (w.dialog_open != null) {
+        if (std.mem.indexOfScalar(usize, w.dialog_wait.items, chip) == null) w.dialog_wait.append(app.gpa, chip) catch {};
+        return;
+    }
+    app.openDialog(w, chip, from_user);
+}
+
+fn openDialog(app: *App, w: *JobWindow, chip: usize, from_user: bool) void {
+    w.dialog_open = chip;
+    w.dialogs[chip].?.show(c.SDL_GetTicks(), from_user);
+    if (from_user) if (app.indexOfWindow(w)) |i| if (app.isShown(i) and app.focus != i) app.setFocus(i);
+    app.dirty = true;
+}
+
+fn dialogClose(ctx: *anyopaque, uid: u32, chip: usize) sdk.Error!void {
+    const app: *App = @ptrCast(@alignCast(ctx));
+    const w = app.jobByUid(uid) orelse return error.WindowClosed;
+    app.dropDialog(w, chip);
+}
+
+/// A dialog goes, and the next one waiting opens.
+fn dropDialog(app: *App, w: *JobWindow, chip: usize) void {
+    const d = w.dialogs[chip] orelse return;
+    d.destroy();
+    w.dialogs[chip] = null;
+    if (std.mem.indexOfScalar(usize, w.dialog_wait.items, chip)) |k| _ = w.dialog_wait.orderedRemove(k);
+    if (w.dialog_open == chip) {
+        w.dialog_open = null;
+        if (w.dialog_wait.items.len > 0) app.openDialog(w, w.dialog_wait.orderedRemove(0), false);
+    }
+    app.dirty = true;
+}
+
+/// gtty closes a dialog without asking: `id` is `kill` or `timeout`.
+fn dialogKill(app: *App, w: *JobWindow, chip: usize, id: []const u8) void {
+    if (w.dialogs[chip]) |d| if (d.onclick) |f| app.chips.click(w.uid, chip, .{ .id = id, .function = f }, false);
+    app.dropDialog(w, chip);
+}
+
+/// A button: reported to the chip, which closes the dialog. With no
+/// function to call, nobody would: gtty closes it.
+fn dialogPress(app: *App, w: *JobWindow, chip: usize, b: Dialog.Button) void {
+    const d = w.dialogs[chip] orelse return;
+    const f = d.onclick orelse return app.dropDialog(w, chip);
+    var arena: std.heap.ArenaAllocator = .init(app.gpa);
+    defer arena.deinit();
+    app.chips.click(w.uid, chip, .{ .id = @tagName(b), .text = b.label(), .function = f, .fields = d.values(arena.allocator()) }, true);
+}
+
+fn dialogAct(app: *App, w: *JobWindow, o: Dialog.Outcome) void {
+    const chip = w.dialog_open orelse return;
+    switch (o) {
+        .none, .handled => {},
+        .press => |b| app.dialogPress(w, chip, b),
+        .kill => app.dialogKill(w, chip, "kill"),
+    }
+    app.dirty = true;
+}
+
+/// The window whose dialog has the keyboard.
+fn dialogKeys(app: *App) ?*JobWindow {
+    const w = app.jobs.items[app.focus orelse return null];
+    const d = w.openDialog() orelse return null;
+    return if (d.keyboard) w else null;
+}
+
+/// The window with a dialog showing, under the title bar, at x, y.
+fn dialogWindowAt(app: *App, x: f32, y: f32) ?usize {
+    if (app.maximizedShown()) |m| {
+        const w = app.jobs.items[m];
+        return if (w.openDialog() != null and w.dialogArea().contains(x, y)) m else null;
+    }
+    for (app.jobs.items, 0..) |w, i| {
+        if (app.isShown(i) and w.grid_r == null and w.openDialog() != null and w.dialogArea().contains(x, y)) return i;
+    }
+    return null;
+}
+
+/// A click over a window with a dialog: it goes no further (the window is
+/// modal); it gives the dialog the keyboard.
+fn dialogClick(app: *App, x: f32, y: f32, button: u8) bool {
+    const i = app.dialogWindowAt(x, y) orelse return false;
+    const w = app.jobs.items[i];
+    const d = w.openDialog().?;
+    if (app.focus != i) app.setFocus(i);
+    d.keyboard = true;
+    app.dirty = true;
+    if (button == c.SDL_BUTTON_LEFT and d.contains(x, y)) {
+        const m = w.dialogMetrics(&app.gfx) orelse return true;
+        app.dialogAct(w, d.click(x, y, m, c.SDL_GetTicks()));
+    }
+    return true;
+}
+
+fn dialogMotion(app: *App, x: f32, y: f32) bool {
+    for (app.jobs.items) |w| if (w.openDialog()) |d| {
+        d.mouse = null;
+    };
+    const i = app.dialogWindowAt(x, y) orelse return false;
+    app.jobs.items[i].openDialog().?.mouse = .{ x, y };
+    app.dirty = true;
+    return true;
+}
+
+fn tickDialogs(app: *App) void {
+    const now = c.SDL_GetTicks();
+    for (app.jobs.items) |w| if (w.openDialog()) |d| {
+        app.dirty = true; // the countdown
+        if (d.expired(now)) app.dialogKill(w, w.dialog_open.?, "timeout");
+    };
+}
+
 /// The window the open peek belongs to, while its chip is on screen
 /// (in the windows area, not under a maximized window).
 fn peekWindow(app: *App) ?*JobWindow {
     const pk = if (app.peek) |*p| p else return null;
     for (app.jobs.items, 0..) |w, i| if (w.uid == pk.uid) {
-        if (!app.isShown(i) or peekChip(w, pk.kind).w <= 0) return null;
+        if (!app.isShown(i) or w.chipRect(chipAt(pk.chip)).w <= 0) return null;
         if (app.maximizedShown()) |m| if (m != i) return null;
         return w;
     };
     return null;
 }
 
-/// The chip a peek of `kind` grows from.
-fn peekChip(w: *const JobWindow, kind: Peek.Kind) Gfx.Rect {
-    return switch (kind) {
-        .git => w.git_chip_r,
-        .folder => w.folder_chip_r,
-        .focus => w.focus_chip_r,
-        .session => w.session_chip_r,
-    };
-}
-
-/// Open the peek of window `i`'s folder chip (hover or click; closing any
-/// other peek): the full path (a click copies it); the mouse resting on
-/// it, or its expand button, grows it into the list.
-fn openFolderPeek(app: *App, i: usize) void {
-    const w = app.jobs.items[i];
-    if (w.cwd().len == 0) return;
-    if (app.peek) |pk| if (pk.uid == w.uid and pk.kind == .folder) return;
-    app.closePeek();
-    app.hideTip();
-    app.chip_hover = null;
-    app.peek = Peek.openFolder(app.gpa, w.uid, w.cwd(), w.folder_chip_r) catch return;
-    w.folder_peek_open = true;
-    app.layoutPeek();
-    // The mouse already on it (it grew over the chip): the hover expand
-    // counts from now.
-    if (app.mouse) |m| _ = app.peek.?.motion(m[0], m[1], c.SDL_GetTicks());
-    app.dirty = true;
-}
-
-/// Open the list of window `i`'s focus chip, expanded at once (closing
-/// any other peek): the history window, the newest at the bottom (other
-/// gtty processes' uses come in with `sync`).
-fn openFocusPeek(app: *App, i: usize) void {
-    const w = app.jobs.items[i];
-    if (app.peek) |pk| if (pk.uid == w.uid and pk.kind == .focus) return;
-    app.closePeek();
-    app.hideTip();
-    app.chip_hover = null;
-    // A quick look first: folders removed since are forgotten (`sync`
-    // takes them out of the file too).
-    if (app.focus_file) {
-        app.focus_folders.sync();
-        app.focus_synced_ms = c.SDL_GetTicks();
-    } else _ = app.focus_folders.dropMissing();
-    const home = if (c.getenv("HOME")) |h| std.mem.span(h) else "";
-    var buf: [FocusFolders.shown_max][]const u8 = undefined;
-    const list = app.focus_folders.top(home, &buf);
-    app.peek = Peek.openFocus(app.gpa, w.uid, w.cwd(), list, w.focus_chip_r) catch return;
-    w.focus_peek_open = true;
-    app.layoutPeek();
-    app.dirty = true;
-}
-
-/// Each frame: a command that counts as a use (`JobWindow.use_seq`, not
-/// in a remote session) goes to the focus folders; the file is synced
-/// at most every 10 s.
+/// Each frame: the focus folders' file is synced at most every 10 s.
 fn tickFocus(app: *App) void {
-    const home = if (c.getenv("HOME")) |h| std.mem.span(h) else "";
-    for (app.jobs.items) |w| if (w.use_seq != w.use_seen) {
-        w.use_seen = w.use_seq;
-        if (w.remoteDest().len == 0) app.focus_folders.use(w.use_dir.items, home);
-    };
     const now = c.SDL_GetTicks();
     if (app.focus_file and app.focus_folders.dirty and now -| app.focus_synced_ms > 10_000) {
         app.focus_synced_ms = now;
@@ -3297,15 +3669,6 @@ const restore_prompt_ms = 20_000;
 const restore_nohooks_ms = 4_000;
 /// The ssh login (a password, a slow network) has this long.
 const restore_remote_ms = 600_000;
-
-/// The session menu's list as last shown (the system menu asks the rows
-/// one by one; a pick names its row): ids and names.
-const MenuSession = struct {
-    id: [64]u8 = undefined,
-    id_len: usize = 0,
-    name: [160]u8 = undefined,
-    name_len: usize = 0,
-};
 
 /// A window that goes into a snapshot: a running shell, or a running
 /// window with an ssh / mosh session in front. Finished windows and
@@ -3464,11 +3827,10 @@ fn namePart(a: std.mem.Allocator, w: *JobWindow) ?Sessions.NamePart {
     return .{ .command = aw.written() };
 }
 
-/// Session ▸ Take Snapshot (named by `snapshotName`), or the session
-/// list's save button (`name` from `askSnapshot`): every shell window of
-/// this gtty (in the windows area and in the job grid), saved as a new
-/// session in the file all gttys share.
-fn takeSnapshot(app: *App, given: ?[]const u8) void {
+/// The session list's save button (`name` from `askSnapshot`): every
+/// shell window of this gtty (in the windows area and in the job grid),
+/// saved as a new session in the file all gttys share.
+fn takeSnapshot(app: *App, name: []const u8) void {
     app.closeMenu();
     var arena = std.heap.ArenaAllocator.init(app.gpa);
     defer arena.deinit();
@@ -3498,8 +3860,6 @@ fn takeSnapshot(app: *App, given: ?[]const u8) void {
         s.place = .main;
         break;
     };
-    var nbuf: [200]u8 = undefined;
-    const name = given orelse app.snapshotName(&nbuf);
     var ibuf: [64]u8 = undefined;
     const id = app.sessions.newId(&ibuf);
     app.sessions.reload();
@@ -3512,24 +3872,18 @@ fn takeSnapshot(app: *App, given: ?[]const u8) void {
     app.sayFmt("session saved: {s} ({d} window{s})", .{ name, specs.items.len, if (specs.items.len == 1) "" else "s" }, app.theme.ok);
 }
 
-/// The session list's save button: a modal with the name the snapshot
-/// would get (`snapshotName`), all selected so typing replaces it; Save
-/// takes the snapshot (`takeSnapshot`).
-fn askSnapshot(app: *App) void {
+/// The session list's save button: the session chip asks for a name in
+/// a dialog, the name the snapshot would get (`snapshotName`) suggested
+/// in the click's `data`; it calls `takeSnapshot`.
+fn askSnapshot(app: *App, uid: u32) void {
     if (snapshotCount(app) == 0) {
         beep.beep();
         return app.say("snapshot: no shell window to save", app.theme.stderr_accent);
     }
     var nbuf: [200]u8 = undefined;
-    app.openModal(.{
-        .title = "Save the current session",
-        .body = "Type a name, or keep this one · Esc leaves it unsaved",
-        .buttons = &.{ .{ .label = "Cancel" }, .{ .label = "Save", .kind = .primary } },
-        .default = 1,
-        .safe = 0,
-        .timeout_ms = 30_000,
-        .input = app.snapshotName(&nbuf),
-    }, .{ .snapshot = .{ .window = 0 } });
+    const name = app.snapshotName(&nbuf);
+    app.closePeek();
+    app.chips.click(uid, @intFromEnum(JobWindow.Chip.session), .{ .id = "save", .text = "save", .data = name, .function = "askName" }, true);
 }
 
 fn saveSessions(app: *App) void {
@@ -3540,7 +3894,7 @@ fn saveSessions(app: *App) void {
 /// manager's list and an open session list follow.
 fn sessionsChanged(app: *App) void {
     if (app.sessions_win) |sw| sw.listChanged();
-    if (app.peek) |pk| if (pk.kind == .session) app.closePeek();
+    if (app.peek) |pk| if (pk.chip == @intFromEnum(JobWindow.Chip.session)) app.closePeek();
     app.dirty = true;
 }
 
@@ -3550,7 +3904,7 @@ fn sessionsChanged(app: *App) void {
 /// windows. Jobs still working there (a shell still starting) are named
 /// in a question first.
 /// Where a restore opens: `auto` in this gtty while untouched, else a new
-/// one (the Session menu, the manager); `here` replaces this gtty's
+/// one (the manager); `here` replaces this gtty's
 /// windows; `new` always a new gtty (the session chip's list; ⌘ held).
 const RestoreWhere = enum { auto, here, new };
 
@@ -3786,50 +4140,6 @@ fn restoreStep(app: *App, st: *RestoreStep, now: u64) bool {
     }
 }
 
-/// The session list of the menus (system menu bar and drawn bar), the
-/// last used first, as of now.
-fn fillMenuSessions(app: *App) void {
-    _ = app.sessions.refresh();
-    var buf: [Sessions.shown_max]*Sessions.Session = undefined;
-    const list = app.sessions.recent(&buf);
-    app.menu_sessions_n = list.len;
-    for (list, 0..) |x, k| {
-        const m = &app.menu_sessions[k];
-        m.id_len = @min(x.id.len, m.id.len);
-        @memcpy(m.id[0..m.id_len], x.id[0..m.id_len]);
-        m.name_len = @min(x.name.len, m.name.len);
-        while (m.name_len > 0 and m.name_len < x.name.len and x.name[m.name_len] & 0xC0 == 0x80) m.name_len -= 1;
-        @memcpy(m.name[0..m.name_len], x.name[0..m.name_len]);
-    }
-}
-
-/// The system menu asks for its session rows when it opens (the first
-/// row reads the list).
-fn menuTitle(code: c_int, buf: [*c]u8, len: c_int) callconv(.c) bool {
-    const app = menu_app orelse return false;
-    const k = code - c.GTTY_MENU_SESSION_FIRST;
-    if (k < 0 or k >= c.GTTY_MENU_SESSION_MAX or len < 1) return false;
-    if (k == 0) app.fillMenuSessions();
-    const i: usize = @intCast(k);
-    if (i >= app.menu_sessions_n) return false;
-    const name = app.menu_sessions[i].name[0..app.menu_sessions[i].name_len];
-    const n = @min(name.len, @as(usize, @intCast(len - 1)));
-    @memcpy(buf[0..n], name[0..n]);
-    buf[n] = 0;
-    return true;
-}
-
-/// Session ▸ a session row (k: its place on the menu, the last used
-/// first).
-fn pickMenuSession(app: *App, k: usize) void {
-    if (k >= app.menu_sessions_n) return;
-    const m = &app.menu_sessions[k];
-    var ibuf: [64]u8 = undefined;
-    const id = ibuf[0..m.id_len];
-    @memcpy(id, m.id[0..m.id_len]);
-    app.restoreSession(id, .auto);
-}
-
 /// Nothing was done in this gtty yet: only shells, none sent anything
 /// (`JobWindow.used`: keys, a paste, a cd gtty typed, the AI; a session's
 /// restore steps don't count). A restore may replace its windows then.
@@ -3869,30 +4179,8 @@ fn tickRestoreFrom(app: *App) void {
     if (app.jobs.items.len == 0) app.openShell(null);
 }
 
-/// Open the list of the session chip of window `i`, expanded at once:
-/// the sessions used last, the last used at the bottom (by the chip).
-fn openSessionPeek(app: *App, i: usize) void {
-    const w = app.jobs.items[i];
-    if (app.peek) |pk| if (pk.uid == w.uid and pk.kind == .session) return;
-    app.closePeek();
-    app.hideTip();
-    app.chip_hover = null;
-    _ = app.sessions.refresh();
-    var buf: [Sessions.shown_max]*Sessions.Session = undefined;
-    const list = app.sessions.recent(&buf);
-    var names: [Sessions.shown_max][]const u8 = undefined;
-    var keys: [Sessions.shown_max][]const u8 = undefined;
-    for (list, 0..) |x, k| {
-        names[list.len - 1 - k] = x.name;
-        keys[list.len - 1 - k] = x.id;
-    }
-    app.peek = Peek.openSessions(app.gpa, w.uid, names[0..list.len], keys[0..list.len], w.session_chip_r) catch return;
-    w.session_peek_open = true;
-    app.layoutPeek();
-    app.dirty = true;
-}
-
-/// Session ▸ Session Manager… (or bring it to the front).
+/// The session list's manage button: the Session Manager (or bring it
+/// to the front).
 fn openSessionsWindow(app: *App) void {
     app.closeMenu();
     if (app.sessions_win) |sw| return sw.raise();
@@ -3962,32 +4250,16 @@ test "an ssh argument quoted only when it needs it" {
     try t.expectEqualStrings("me@box '-oProxyCommand=nc %h 22'", w.buffered());
 }
 
-/// Open the peek of window `i`'s git chip (closing any other peek).
-fn openGitPeek(app: *App, i: usize) void {
-    const w = app.jobs.items[i];
-    const b = w.branch() orelse return;
-    // The branch of a remote folder: switching would run git here, in the
-    // wrong folder.
-    if (w.remoteDest().len > 0) return app.sayFmt("{s} on {s} (switching branches there: not yet)", .{ b, w.remoteDest() }, app.theme.dim);
-    if (app.peek) |pk| if (pk.uid == w.uid and pk.kind == .git) return;
-    app.closePeek();
-    app.hideTip();
-    app.chip_hover = null;
-    app.peek = Peek.open(app.gpa, w.uid, w.cwd(), b, w.git_chip_r) catch return;
-    w.git_peek_open = true;
-    app.layoutPeek();
-    app.dirty = true;
-}
-
 fn closePeek(app: *App) void {
     var pk = app.peek orelse return;
+    if (app.menu) |m| if (m.purpose == .peek_items) app.closeMenu();
     for (app.jobs.items) |w| if (w.uid == pk.uid) {
-        w.git_peek_open = false;
-        w.folder_peek_open = false;
-        w.focus_peek_open = false;
-        w.session_peek_open = false;
+        w.open_chip = null;
     };
-    pk.deinit(&app.reaper);
+    // The list goes back to all its lines for the next time.
+    if (pk.filter.items.len > 0) if (pk.filterDesc()) |f| if (f.onclick.len > 0)
+        app.chips.filterChanged(pk.uid, pk.chip, .{ .id = "filter", .text = "", .function = f.onclick });
+    pk.deinit();
     app.peek = null;
     app.dirty = true;
 }
@@ -3996,100 +4268,67 @@ fn closePeek(app: *App) void {
 fn layoutPeek(app: *App) void {
     const pk = if (app.peek) |*p| p else return;
     const f, _ = app.promptFaces();
-    pk.layout(f, app.statusFace(), app.scale.ui, .{ .x = 0, .y = 0, .w = app.width_px, .h = app.height_px });
+    pk.layout(&app.gfx, f, app.statusFace(), app.scale.ui, .{ .x = 0, .y = 0, .w = app.width_px, .h = app.height_px });
 }
 
-/// Act on what the peek returned for a click or a key.
-/// `new_window`: the pick was made with `newWindowMod` held.
-fn peekAction(app: *App, a: Peek.Action, new_window: bool) void {
+/// Act on what the peek returned for a click or a key. `command`: done
+/// with ⌘ (Linux Ctrl) held.
+fn peekAction(app: *App, a: Peek.Action, command: bool) void {
     const pk = if (app.peek) |*p| p else return;
     switch (a) {
         .none, .redraw => {},
         .close => return app.closePeek(),
-        .copy => {
-            const z = app.gpa.dupeZ(u8, pk.full) catch return;
-            defer app.gpa.free(z);
-            app.pushPasteHistory(z);
-            _ = c.SDL_SetClipboardText(z.ptr);
-            pk.flashText();
-            app.sayFmt("copied {s}", .{pk.full}, app.theme.ok);
-        },
-        // A folder picked in the folder chip's peek: cd there, if the
-        // shell waits at its prompt.
-        .cd => if (app.jobByUid(pk.uid)) |w| {
-            if (w.atPrompt()) {
-                w.cdTo(pk.target);
-                pk.cdDone(true, "");
-            } else {
-                pk.cdDone(false, "the shell is busy: cd only at its prompt");
-                beep.beep();
-            }
-        },
-        // The session list's save button: ask for a name.
-        .save => return app.askSnapshot(),
-        // Its manage button: the Session Manager.
-        .manage => {
-            app.closePeek();
-            return app.openSessionsWindow();
-        },
-        // A session picked in the session chip's list: it replaces this
-        // gtty's windows; ⌘ (Linux Ctrl) held, a new gtty opens it.
-        .restore => {
-            var ibuf: [64]u8 = undefined;
-            const n = @min(pk.target.len, ibuf.len);
-            @memcpy(ibuf[0..n], pk.target[0..n]);
-            app.closePeek();
-            return app.restoreSession(ibuf[0..n], if (new_window) .new else .here);
-        },
+        .fire => |f| app.chips.click(pk.uid, pk.chip, .{ .id = f.id, .text = f.text, .data = f.data, .function = f.function, .command = command }, true),
+        .filter => if (pk.filterDesc()) |f| if (f.onclick.len > 0)
+            app.chips.filterChanged(pk.uid, pk.chip, .{ .id = "filter", .text = pk.filter.items, .function = f.onclick }),
+        .expanded => if (pk.ui.peek) |k| if (k.onexpand.len > 0) app.chips.click(pk.uid, pk.chip, .{ .function = k.onexpand }, true),
+        .items => |it| app.openPeekItems(it.button, it.at),
     }
     app.layoutPeek();
     app.dirty = true;
 }
 
-/// Once a frame: open a peek the mouse rested on, follow its chip (the
-/// window may move or its branch change), run its timers and git runs.
+/// A ⋮ button's popup list: `peek_button` until a pick or it closes.
+fn openPeekItems(app: *App, b: *const sdk.Button, at: [2]f32) void {
+    const pk = if (app.peek) |*p| p else return;
+    var m: Menu = .{ .purpose = .{ .peek_items = .{ .uid = pk.uid, .chip = pk.chip } }, .at = at };
+    for (b.items, 0..) |*it, i| {
+        if (i >= app.sub_labels.len) break;
+        m.add(.{ .label = it.text.plain(&app.sub_labels[i]) });
+    }
+    app.peek_button = b;
+    app.popMenu(m);
+}
+
+/// A row of a ⋮ popup: the item's fields, the button's `onclick`.
+fn peekItemPick(app: *App, uid: u32, chip: usize, row: usize) void {
+    const b = app.peek_button orelse return;
+    if (row >= b.items.len) return;
+    const it = &b.items[row];
+    var buf: [512]u8 = undefined;
+    app.chips.click(uid, chip, .{ .id = it.id, .text = it.text.plain(&buf), .data = it.data, .function = b.onclick }, true);
+}
+
+/// Once a frame: the chip the mouse rested on hears it, the peek follows
+/// its chip (the window may move) and runs its timers; the git chip's runs.
 fn tickPeek(app: *App) void {
     const now = c.SDL_GetTicks();
+    standard_chips.git.tick();
+    if (app.ext_storage) |*st| st.tick();
     if (app.chip_hover) |h| if (now -| h.since >= app.chip_hover_ms) {
         app.chip_hover = null;
-        for (app.jobs.items, 0..) |w, i| if (w.uid == h.uid) {
-            switch (h.hit) {
-                .folder_chip => app.openFolderPeek(i),
-                .session_chip => app.openSessionPeek(i),
-                else => app.openGitPeek(i),
-            }
-        };
+        if (app.jobByUid(h.uid)) |w| if (JobWindow.chipOf(h.hit)) |chip| app.fireChip(w, chip, w.chipUi(chip).onhover);
     };
     if (app.peek == null) return;
     const w = app.peekWindow() orelse return app.closePeek();
     const pk = &app.peek.?;
-    if (!std.meta.eql(pk.anchor, peekChip(w, pk.kind))) {
-        pk.anchor = peekChip(w, pk.kind);
+    const r = w.chipRect(chipAt(pk.chip));
+    if (!std.meta.eql(pk.anchor, r)) {
+        pk.anchor = r;
         app.dirty = true;
     }
-    switch (pk.kind) {
-        // Out of the repo: the chip is disabled, its peek goes.
-        .git => if (pk.state != .busy) if (w.branch()) |b| pk.setFull(b) else return app.closePeek(),
-        // The shell went elsewhere (not by this peek): its list is stale.
-        .folder => if (pk.state == .idle and !std.mem.eql(u8, w.cwd(), pk.full)) return app.closePeek(),
-        .focus => if (pk.state == .idle and !std.mem.eql(u8, w.cwd(), pk.dir)) return app.closePeek(),
-        .session => {},
-    }
-    switch (pk.tick(now, &app.reaper)) {
-        .none => {},
-        .redraw => app.dirty = true,
-        .close => app.closePeek(),
-        .switched => {
-            // Show the new branch on the chip at once.
-            w.refreshChipsSoon();
-            pk.setFull(pk.target);
-            app.sayFmt("#{d}: switched to {s}", .{ w.serial, pk.target }, app.theme.ok);
-        },
-        .failed => {
-            beep.beep();
-            app.sayFmt("#{d}: git: {s}", .{ w.serial, pk.errorLine() }, app.theme.stderr_accent);
-        },
-    }
+    const a = pk.tick(now);
+    if (a == .redraw) app.dirty = true else if (a != .none) app.peekAction(a, false);
 }
 
 // ------------------------------------------------------------ AI
@@ -4637,6 +4876,15 @@ fn execGtty(app: *App, cmd_parsed: commands.Command) void {
         .show => |sh| app.showFile(sh.path, sh.pick),
         .list => app.listJobs(),
         .settings => app.openSettings(),
+        .unlock => |rest| if (app.ext_storage) |*st| {
+            var it = std.mem.tokenizeScalar(u8, rest, ' ');
+            const ext = it.next() orelse return app.say("unlock: which extension?", app.theme.dim);
+            st.forceUnlock(ext, it.next());
+            app.sayFmt("unlocked {s}", .{rest}, app.theme.ok);
+        },
+        .dialog => |name| if (app.currentJob()) |w| {
+            app.chips.click(w.uid, standard_chips.test_index, .{ .function = name }, !std.mem.eql(u8, name, "unasked") and !std.mem.eql(u8, name, "peekOpen"));
+        },
         .menu => |pick| app.menuPick(switch (pick) {
             .run => c.GTTY_MENU_RUN,
             .settings => c.GTTY_MENU_SETTINGS,
@@ -4646,12 +4894,6 @@ fn execGtty(app: *App, cmd_parsed: commands.Command) void {
             .about => c.GTTY_MENU_ABOUT,
             .check_updates => c.GTTY_MENU_CHECK_UPDATES,
             .help => c.GTTY_MENU_HELP,
-            .snapshot => c.GTTY_MENU_SNAPSHOT,
-            .sessions => c.GTTY_MENU_SESSIONS,
-            .session => |k| blk: {
-                app.fillMenuSessions();
-                break :blk c.GTTY_MENU_SESSION_FIRST + @as(i32, k) - 1;
-            },
         }),
         .mods => |spec| {
             var mod: c.SDL_Keymod = 0;
@@ -4801,6 +5043,7 @@ fn keySpec(spec: []const u8) ?struct { key: c.SDL_Keycode, mod: c.SDL_Keymod } {
         .{ .name = "tab", .v = c.SDLK_TAB },             .{ .name = "c", .v = c.SDLK_C },
         .{ .name = "v", .v = c.SDLK_V },                 .{ .name = "insert", .v = c.SDLK_INSERT },
         .{ .name = "a", .v = c.SDLK_A },                 .{ .name = "period", .v = c.SDLK_PERIOD },
+        .{ .name = "space", .v = c.SDLK_SPACE },
         .{ .name = "n", .v = c.SDLK_N },                 .{ .name = "t", .v = c.SDLK_T },
         .{ .name = "pageup", .v = c.SDLK_PAGEUP },       .{ .name = "pagedown", .v = c.SDLK_PAGEDOWN },
         .{ .name = "x", .v = c.SDLK_X },                 .{ .name = "f2", .v = c.SDLK_F2 },
@@ -4977,12 +5220,12 @@ fn onText(app: *App, text: []const u8) void {
         app.dirty = true;
         return;
     }
-    if (app.peek) |*pk| if (pk.wantsKeys()) {
-        pk.text(text);
-        app.layoutPeek();
+    if (app.dialogKeys()) |w| {
+        w.openDialog().?.typed(text, c.SDL_GetTicks());
         app.dirty = true;
         return;
-    };
+    }
+    if (app.peek) |*pk| if (pk.wantsKeys()) return app.peekAction(pk.text(text), false);
     if (app.findTarget()) |w| {
         w.find_text.?.insert(text);
         app.dirty = true;
@@ -5032,11 +5275,33 @@ fn onKey(app: *App, key: c.SDL_Keycode, mod: c.SDL_Keymod) void {
         if (m.key(key, mod, c.SDL_GetTicks())) |p| app.resolveModal(p, .picked);
         return;
     }
+    // A dialog with the keyboard: what it doesn't use goes on (gtty's own
+    // keys; the window takes no typing while it is open).
+    if (app.dialogKeys()) |w| {
+        const d = w.openDialog().?;
+        if ((key == c.SDLK_V or key == c.SDLK_C or key == c.SDLK_X) and (cmd or (ctrl and shift))) {
+            var sbuf: [1024]u8 = undefined;
+            const sel = d.selectedText(sbuf[0 .. sbuf.len - 1]);
+            if (key != c.SDLK_V and sel.len > 0) {
+                sbuf[sel.len] = 0;
+                _ = c.SDL_SetClipboardText(@ptrCast(&sbuf));
+                if (key == c.SDLK_X) d.typed("", c.SDL_GetTicks());
+            }
+            if (key == c.SDLK_V) if (c.SDL_GetClipboardText()) |t| {
+                defer c.SDL_free(t);
+                d.typed(std.mem.span(t), c.SDL_GetTicks());
+            };
+            app.dirty = true;
+            return;
+        }
+        const o = d.key(key, mod, c.SDL_GetTicks());
+        if (o != .none) return app.dialogAct(w, o);
+    }
     // Esc cancels a remote copy in progress (its modal is up).
     if (key == c.SDLK_ESCAPE and app.fetch != null) return app.cancelFetch("copy cancelled");
 
-    // The paste menu: ↑ / ↓ choose a row, Enter picks it.
-    if (app.menu) |*m| if (m.purpose == .paste_files) switch (key) {
+    // The paste menu and a ⋮ popup: ↑ / ↓ choose a row, Enter picks it.
+    if (app.menu) |*m| if (m.purpose == .paste_files or m.purpose == .peek_items) switch (key) {
         c.SDLK_UP, c.SDLK_DOWN => {
             m.step(if (key == c.SDLK_UP) -1 else 1);
             app.dirty = true;
@@ -5061,9 +5326,9 @@ fn onKey(app: *App, key: c.SDL_Keycode, mod: c.SDL_Keymod) void {
     // the box has the keyboard it takes the typing and its editing keys.
     if (findKeyPressed(key, mod)) return app.openFind();
     if (app.findTarget()) |w| if (app.findBoxKey(w, key, ctrl, cmd, alt, shift)) return;
-    // An expanded peek has the keyboard (its filter box and list).
-    // ⌘Enter in the session list: restore in a new gtty.
-    if (app.peek) |*pk| if (pk.wantsKeys() and (!cmd or (pk.kind == .session and (key == c.SDLK_RETURN or key == c.SDLK_KP_ENTER))))
+    // An epeek has the keyboard (its filter box and list). ⌘Enter is a
+    // pick too (`command` in the click).
+    if (app.peek) |*pk| if (pk.wantsKeys() and (!cmd or key == c.SDLK_RETURN or key == c.SDLK_KP_ENTER))
         return app.peekAction(pk.key(key), newWindowMod(mod));
 
     // File actions on the name the mouse has (or the selected names).
@@ -5333,7 +5598,7 @@ fn onClick(app: *App, x: f32, y: f32, button: u8, clicks: u8) void {
         if (pk.contains(x, y)) {
             if (button == c.SDL_BUTTON_LEFT) app.peekAction(pk.click(x, y), newWindowMod(c.SDL_GetModState()));
             // The folder peek: the chip's menu (the peek goes).
-            if (button == c.SDL_BUTTON_RIGHT and pk.kind == .folder) {
+            if (button == c.SDL_BUTTON_RIGHT and pk.chip == @intFromEnum(JobWindow.Chip.folder)) {
                 const uid = pk.uid;
                 app.closePeek();
                 var fbuf: [4096]u8 = undefined;
@@ -5395,6 +5660,7 @@ fn onClick(app: *App, x: f32, y: f32, button: u8, clicks: u8) void {
         if (button == c.SDL_BUTTON_LEFT) app.updateClick(app.updatePartAt(x, y));
         return;
     }
+    if (app.dialogClick(x, y, button)) return;
     // The drawn menu bar: its "gtty" button opens the gtty menu.
     if (app.menubar_r.contains(x, y)) {
         if (button == c.SDL_BUTTON_LEFT) if (app.barButtonAt(x, y)) |i| app.openBarMenu(@enumFromInt(i));
@@ -5480,14 +5746,8 @@ fn clickJob(app: *App, i: usize, x: f32, y: f32, button: u8, clicks: u8) void {
         .sync => if (button == c.SDL_BUTTON_LEFT) app.toggleSync(w),
         .files => app.openFolder(w),
         .scroller => if (button == c.SDL_BUTTON_LEFT) w.scrollerDown(y),
-        // The git chip: its peek at once (no focus change).
-        .git_chip => app.openGitPeek(i),
-        // The folder chip: the folders above, at once.
-        .folder_chip => app.openFolderPeek(i),
-        // The focus chip: its list, expanded at once.
-        .focus_chip => app.openFocusPeek(i),
-        // The session chip: the saved sessions, expanded at once.
-        .session_chip => app.openSessionPeek(i),
+        // A chip: its peek at once (no focus change).
+        .git_chip, .folder_chip, .focus_chip, .session_chip, .ext_chip => app.pressChip(w, JobWindow.chipOf(hit).?, false),
         .minimize => app.minimizeJob(i),
         .maximize => app.toggleMaximize(i),
         // Anywhere else: the job becomes (or stays) the current job window.
@@ -5576,6 +5836,13 @@ fn onMotion(app: *App, x: f32, y: f32) void {
             }
         }
     }
+    // Over a window with a dialog: nothing under it reacts.
+    if (app.dialogMotion(x, y)) {
+        app.mouse = .{ x, y };
+        app.hoverChip(null);
+        if (app.hover_src != null) app.sendLeave();
+        return;
+    }
     const in_menu = (if (app.menu) |*m| m.contains(x, y) else false) or (if (app.sub_menu) |*m| m.contains(x, y) else false);
     app.updateLinkHover(x, y, in_menu);
     if (app.menu) |*m| if (m.motion(x, y)) {
@@ -5587,9 +5854,10 @@ fn onMotion(app: *App, x: f32, y: f32) void {
     };
     // Over the peek or the menu: nothing under them reacts.
     const in_peek = in_menu or (if (app.peek) |*pk| pk.contains(x, y) else false);
-    if (app.peek) |*pk| if (pk.motion(x, y, c.SDL_GetTicks())) {
-        app.dirty = true;
-    };
+    if (app.peek) |*pk| {
+        if (pk.motion(x, y, c.SDL_GetTicks())) app.dirty = true;
+        app.peekAction(pk.takeMotion(), false);
+    }
     app.hoverChip(if (in_peek) null else .{ x, y });
     const over_btn = app.barButtonAt(x, y);
     if (over_btn != app.over_menubar_btn) {
@@ -6041,6 +6309,7 @@ fn receiveWindow(app: *App, m: *Handoff.Incoming, at: ?[2]f32) ?*JobWindow {
         w.destroy(&app.reaper);
         return null;
     };
+    app.windowStarted(w);
     app.startup = null;
     if (app.main) |mi| app.jobs.items[mi].maximized = false;
     app.grid_scroll = 0;
@@ -6470,7 +6739,6 @@ const ModalJob = union(enum) {
     restore: struct { id: []u8, window: ids_mod.Id },
     /// Save this gtty's windows as a session named as the field says?
     /// 0 Cancel, 1 Save (`window` 0: centered on gtty's window).
-    snapshot: struct { window: ids_mod.Id },
 
     /// The window it is about.
     fn window(j: ModalJob) ?ids_mod.Id {
@@ -6484,7 +6752,7 @@ const ModalJob = union(enum) {
 /// Free what a modal's job owns.
 fn freeModalJob(app: *App, job: ModalJob) void {
     switch (job) {
-        .none, .snapshot => {},
+        .none => {},
         .copy_drop => |d| {
             app.freePaths(d.paths);
             app.gpa.free(d.dest);
@@ -6519,27 +6787,12 @@ fn resolveModal(app: *App, pick: usize, how: ModalHow) void {
         app.dirty = true;
         return;
     }
-    // A snapshot's name: not empty (the dialog says so and stays open).
-    var nbuf: [512]u8 = undefined;
-    var name: []const u8 = "";
-    if (job == .snapshot and pick == 1 and how == .picked) if (app.modal) |*m| {
-        name = std.mem.trim(u8, m.inputText(&nbuf), " \t");
-        if (name.len == 0) {
-            m.setError("a session needs a name", c.SDL_GetTicks());
-            app.dirty = true;
-            return;
-        }
-    };
     app.modal = null;
     app.modal_job = .none;
     app.dirty = true;
     defer app.freeModalJob(job);
     switch (job) {
         .none, .rename => {},
-        .snapshot => {
-            if (pick != 1) return app.say(if (how == .timeout) "no answer: session not saved" else "session not saved", app.theme.dim);
-            app.takeSnapshot(name);
-        },
         .restore => |d| {
             if (pick != 1) return app.say(if (how == .timeout) "no answer: restore cancelled" else "restore cancelled", app.theme.dim);
             app.doRestore(d.id);
@@ -7577,14 +7830,9 @@ fn hoverChip(app: *App, pt: ?[2]f32) void {
         const i = app.windowAt(p[0], p[1]) orelse break :blk null;
         const w = app.jobs.items[i];
         const part = w.hit(p[0], p[1]);
-        const kind: Peek.Kind = switch (part) {
-            .git_chip => .git,
-            .folder_chip => .folder,
-            // Its list opens expanded at once.
-            .session_chip => .session,
-            else => break :blk null,
-        };
-        if (app.peek) |pk| if (pk.uid == w.uid and pk.kind == kind) break :blk null;
+        const chip = JobWindow.chipOf(part) orelse break :blk null;
+        if (w.chipUi(chip).onhover.len == 0) break :blk null;
+        if (app.peek) |pk| if (pk.uid == w.uid and pk.chip == @intFromEnum(chip)) break :blk null;
         break :blk .{ .uid = w.uid, .hit = part, .since = c.SDL_GetTicks() };
     };
     if (app.chip_hover) |h| if (now) |n| if (h.uid == n.uid and h.hit == n.hit) return;
@@ -7848,6 +8096,12 @@ fn onMouseLeave(app: *App) void {
 
 fn onWheel(app: *App, x: f32, y: f32, dy: f32) void {
     if (app.modal != null) return;
+    if (app.dialogWindowAt(x, y)) |i| {
+        const w = app.jobs.items[i];
+        if (w.dialogMetrics(&app.gfx)) |m| w.openDialog().?.wheel(dy, m);
+        app.dirty = true;
+        return;
+    }
     app.closeMenu();
     if (app.peek) |*pk| if (pk.contains(x, y)) {
         pk.wheel(dy);
@@ -8031,11 +8285,7 @@ fn render(app: *App) void {
     const peek_keys = if (app.peek) |pk| pk.wantsKeys() else false;
     const find_w = app.findTarget();
     if (peek_keys) {
-        label = switch (app.peek.?.kind) {
-            .git => "typing goes to the branch filter — Esc closes it",
-            .session => "typing goes to the session filter — Enter restores — Esc closes it",
-            else => "typing goes to the folder filter — Esc closes it",
-        };
+        label = if (app.peek.?.filterDesc() != null) "typing goes to the filter — Enter picks — Esc closes it" else "↑ ↓ and Enter pick — Esc closes it";
     } else if (find_w) |w| {
         label = std.fmt.bufPrint(&label_buf, "typing goes to find in #{d} — Enter: done, Esc closes it", .{w.serial}) catch "›";
     } else if (job) |w| {
@@ -8077,6 +8327,7 @@ fn render(app: *App) void {
                 .job => |uid| app.jobByUid(uid) != null,
             },
             .folder_history, .files, .folder_chip => |uid| app.jobByUid(uid) != null,
+            .peek_items => |pi| app.jobByUid(pi.uid) != null,
             .open_with, .bar => true,
         };
         if (alive) {

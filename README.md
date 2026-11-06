@@ -130,15 +130,15 @@ gtty window, kept between sessions.
 
 ### Sessions: save your screen, bring it back
 
-![Three shells in shop, api and blog run pwd; Session ▸ Take Snapshot saves them; all closed, one fresh shell; the session chip's list brings the three back in their folders and places, and pwd says so](docs/images/sessions.webp)
+![Three shells in shop, api and blog run pwd; the session chip's save button saves them; all closed, one fresh shell; the session chip's list brings the three back in their folders and places, and pwd says so](docs/images/sessions.webp)
 
-**Session ▸ Take Snapshot** saves the shells on your screen: each one's
-folder, where it sat, and for an ssh window the connection and the
+The **session** chip's **save** button saves the shells on your screen:
+each one's folder, where it sat, and for an ssh window the connection and the
 folder on the other side. Later, pick the session from the **session**
-chip (or ⌘4, or the Session menu) and they're all back at once: the
+chip (or ⌘4) and they're all back at once: the
 same shells in the same folders, side by side as before; an ssh window
 connects again (a password is still yours to type) and goes back to its
-folder. **Session Manager…** shows each saved
+folder. Its **manage** button shows each saved
 session as a picture of its screen. Sessions are shared by every gtty
 on the machine.
 
@@ -177,7 +177,8 @@ machines or folders at once.
 - Text reflows when you resize.
 - Paste history and folder history (`cd` back) in the right-click menu.
 
-More in the [user guide](docs/guide.md).
+More in the [user guide](docs/guide.md). Planned: extensions, see the
+[developer guide](docs/extensions.md).
 
 ## What it doesn't do
 

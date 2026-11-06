@@ -1,0 +1,62 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# An extension's chip, peek and epeek (src/chips/dialog_test.zig): styled
+# text, both dots, buttons, the filter and its help list, hover events,
+# and opening by itself without the keyboard. Run from a window 1100 wide
+# with four standard chips (the extension's chip about x 470, y 618):
+#   gtty --script test/peek.gt
+# Expected: pk1 a bold + yellow chip; pk2 a peek, its "line" struck through,
+# ⋯ and ×; status "said: … data=chip". pk3 status data=horizontal. pk4 the
+# list: add / hosts / save, ⋮ on beta, ⋯ on gamma, save on delta. pk5
+# "alpha" and "alpine" offered, the list's "al" marked. pk6 Tab: "alpha".
+# pk7 the popup Rename / Delete. pk8 status id=delete. pk9 status
+# id=epsilon (a hover). pk10 the list open, the filter box dim, the prompt
+# label says #1. pk11 closed, "x" typed in the shell.
+/s zsh
+/wait 1500
+/dialog peek
+/wait 400
+/shot pk1-chip.bmp
+/click 470 618
+/wait 400
+/shot pk2-peek.bmp
+/click 544 612
+/wait 300
+/shot pk3-dots.bmp
+/click 436 612
+/wait 500
+/shot pk4-epeek.bmp
+/text al
+/wait 400
+/shot pk5-filter.bmp
+/key tab
+/wait 300
+/shot pk6-tab.bmp
+/key backspace
+/key backspace
+/key backspace
+/key backspace
+/key backspace
+/wait 300
+/click 641 433
+/wait 400
+/shot pk7-menu.bmp
+/key down
+/key down
+/key enter
+/wait 300
+/shot pk8-picked.bmp
+/move 470 500
+/wait 800
+/shot pk9-hover.bmp
+/key escape
+/wait 300
+/dialog peekOpen
+/wait 400
+/shot pk10-unasked.bmp
+/text x
+/wait 300
+/dialog peekClose
+/wait 400
+/shot pk11-closed.bmp
+/quit

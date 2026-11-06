@@ -83,23 +83,20 @@ user it runs as. A window in an **ssh** (or mosh) session also keeps its
 inside a shell (a build, an editor) is not saved: only the shell.
 Sessions are shared by every gtty on the machine.
 
-- **Session ▸ Take Snapshot** saves this gtty's windows as a new session,
-  named after its windows: a shell gives its folder's name, a window
-  running something else its command line ("gtty, k8s_infra, htop";
-  rename it in the Session Manager).
-- **Session ▸** the last 7 sessions used: pick one to restore it.
 - The **session chip** (after the focus chip; with nothing saved yet its list is empty but
   its save button works):
-  hover or click it and its list opens at once, the last used at the
-  bottom. Type to filter; a click or **Enter**
+  hover or click it (or ⌘4) and its list opens at once: the last 7
+  sessions used, the last used at the bottom. Type to filter; a click or **Enter**
   restores it here, replacing this gtty's windows (asking first if some
   are still working); **⌘-click** / **⌘Enter** (Linux Ctrl) opens it in a
   new gtty instead. Its **save** button (top
   right) saves this gtty's windows as a new session: it asks for a name,
-  that name already filled in and selected, so you can edit it or type
+  with one made from its windows already filled in and selected (a shell
+  gives its folder's name, a window running something else its command
+  line: "gtty, k8s_infra, htop"), so you can keep it, edit it or type
   another. Its **manage** button, next to save, opens the Session
   Manager.
-- **Session ▸ Session Manager…** opens a window with every saved session
+- The **Session Manager** is a window with every saved session
   on the left and, on the right, a picture of the selected one's screen:
   each window where it was, with its command (zsh, bash, ssh), the host
   for an ssh session, and its folder. Hover a window for all it saved.
@@ -288,8 +285,6 @@ Linux gtty shows a thin menu bar at the top of its window:
   Ctrl+Shift+N: another gtty), **New Shell** (⌘T; Linux Ctrl+Shift+T:
   your shell in the current window's folder) and **Run
   command** (back to the prompt, ready to type).
-- **Session** → **Take Snapshot**, **Session Manager…** and the last
-  sessions used (see "Sessions").
 
 Copy, paste and select all are keys, not menu rows (with several job
 windows a menu's Copy didn't say which one): ⌘C, ⌘V, ⌘A (Linux

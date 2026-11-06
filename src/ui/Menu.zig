@@ -63,6 +63,8 @@ pub const Target = union(enum) { job: ids.Id, prompt };
 
 /// What the menu is for (App acts on the row picked accordingly).
 pub const Purpose = union(enum) {
+    /// A ⋮ button's popup list (the pick is the chip's).
+    peek_items: struct { uid: ids.Id, chip: usize },
     /// The right-click menu: rows `edit_copy`, `edit_paste`.
     edit: Target,
     /// `show`'s app picker, or the file menu's Open With ▸ submenu: row
@@ -94,8 +96,8 @@ pub const Purpose = union(enum) {
 pub const open_with_other = -1;
 
 /// The drawn menu bar's menus, left to right.
-pub const Bar = enum { gtty, session, help };
-pub const bar_titles = [_][]const u8{ "gtty", "Session", "Help" };
+pub const Bar = enum { gtty, help };
+pub const bar_titles = [_][]const u8{ "gtty", "Help" };
 
 /// The right-click menu's rows, as `codes[i]` (a row's place depends on
 /// which rows the menu has).

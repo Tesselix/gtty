@@ -1,15 +1,15 @@
 # SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
 # SPDX-License-Identifier: GPL-3.0-or-later
-# gtty-sessions: Session ▸ Take Snapshot saves the shell windows (the
-# windows area's tiles and the job grid), the session chip shows, the
-# Session Manager draws the picture (a tile's details on hover), and a
+# gtty-sessions: the session list's save button saves the shell windows
+# (the windows area's tiles and the job grid), its manage button opens
+# the Session Manager, which draws the picture (a tile's details on hover), and a
 # restore replaces the windows with the saved ones, each in its folder
 # (after `close all`: the new shell is untouched, so the restore happens
 # here; in a used gtty it opens a new one, test/session-manager.gt).
 # Run with a scratch home and sessions file:
 #   S=$(mktemp -d); mkdir -p $S/home/alpha $S/home/beta $S/home/gamma
 #   cd $S && HOME=$S/home GTTY_SESSIONS=$S/sessions gtty --script $REPO/test/sessions.gt
-# Shots go to $S: 1 the chip after the snapshot, 2 the manager, 3 a
+# Shots go to $S: 1 the windows after the save, 2 the manager, 3 a
 # tile's details, 4 the chip's list, 5 the windows after the restore
 # (gamma on top, beta and alpha under it), 6 ⌘4: the chip's list again.
 /s bash
@@ -24,10 +24,16 @@
 /wait 300
 /focus 1
 /wait 300
-/menu snapshot
+/key cmd+4
+/wait 600
+/click 1035 558
+/wait 500
+/key enter
 /wait 1200
 /shot sessions1-chip.bmp
-/menu sessions
+/key cmd+4
+/wait 600
+/click 958 537
 /wait 800
 /target sessions
 /shot sessions2-manager.bmp
