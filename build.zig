@@ -83,6 +83,7 @@ fn configure(b: *std.Build, mod: *std.Build.Module, target: std.Build.ResolvedTa
     mod.addCSourceFile(.{ .file = b.path("src/sys/gtty_copy.c"), .flags = &.{ "-std=gnu11", "-Wall" } });
     // Job windows moved between gtty processes: the control socket.
     mod.addCSourceFile(.{ .file = b.path("src/sys/gtty_ctl.c"), .flags = &.{ "-std=gnu11", "-Wall" } });
+    mod.addCSourceFile(.{ .file = b.path("src/sys/gtty_ext.c"), .flags = &.{ "-std=gnu11", "-Wall" } });
 
     if (target.result.os.tag == .macos) {
         // The gtty menu in the system menu bar (Cocoa).

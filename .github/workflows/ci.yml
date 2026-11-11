@@ -38,6 +38,31 @@ jobs:
       - name: Build
         run: zig build -Dbundled-sdl
 
+  # The SDKs (sdks/): Zig's tests, then every language's hosts example
+  # through the shared stand-in for gtty (sdks/conformance/fake_gtty.py).
+  # Python, Node and Go are the runner image's own.
+  sdks:
+    name: SDKs (Zig, Python, JavaScript, Go)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+      - name: Zig SDK tests and example
+        working-directory: sdks/zig
+        run: zig build test && zig build
+      - name: Go SDK vet and example
+        working-directory: sdks/go
+        run: go vet ./... && go build -o "$RUNNER_TEMP/hosts-go" ./examples/hosts
+      - name: Conformance
+        working-directory: sdks
+        run: |
+          python3 conformance/fake_gtty.py -- zig/zig-out/bin/hosts
+          python3 conformance/fake_gtty.py -- python3 python/examples/hosts.py
+          python3 conformance/fake_gtty.py -- node javascript/examples/hosts.js
+          python3 conformance/fake_gtty.py -- "$RUNNER_TEMP/hosts-go"
+
   # What release.yml builds, on the same runner: build-bin.sh (macOS arm64
   # + Linux x86_64, ReleaseSafe, stripped) and package.sh (dmg, deb, rpm,
   # tar.gz). Without secrets: the app is signed ad hoc, not notarized.
@@ -73,15 +98,16 @@ jobs:
   # dependency check are.
   build-and-test:
     name: build-and-test
-    needs: [build, release-build, deps]
+    needs: [build, sdks, release-build, deps]
     if: always()
     runs-on: ubuntu-24.04
     steps:
       - name: All checks passed
         env:
           BUILD: ${{ needs.build.result }}
+          SDKS: ${{ needs.sdks.result }}
           RELEASE: ${{ needs.release-build.result }}
           DEPS: ${{ needs.deps.result }}
         run: |
-          echo "build: $BUILD, release build: $RELEASE, deps: $DEPS"
-          [ "$BUILD" = success ] && [ "$RELEASE" = success ] && [ "$DEPS" = success ]
+          echo "build: $BUILD, sdks: $SDKS, release build: $RELEASE, deps: $DEPS"
+          [ "$BUILD" = success ] && [ "$SDKS" = success ] && [ "$RELEASE" = success ] && [ "$DEPS" = success ]

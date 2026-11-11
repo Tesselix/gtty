@@ -98,10 +98,11 @@ bool gtty_menu_install(uint32_t event_type, gtty_menu_enabled_fn enabled, gtty_m
             }
         }
         [app insertItem:item(@"Settings…", GTTY_MENU_SETTINGS, @",") atIndex:at];
-        [app insertItem:item(@"New Window", GTTY_MENU_NEW_WINDOW, @"n") atIndex:at + 1];
-        [app insertItem:item(@"New Shell", GTTY_MENU_NEW_SHELL, @"t") atIndex:at + 2];
-        [app insertItem:item(@"Run Command", GTTY_MENU_RUN, @"") atIndex:at + 3];
-        [app insertItem:item(@"Sync Typing", GTTY_MENU_SYNC_TYPING, @"") atIndex:at + 4];
+        [app insertItem:item(@"Extensions…", GTTY_MENU_EXTENSIONS, @"") atIndex:at + 1];
+        [app insertItem:item(@"New Window", GTTY_MENU_NEW_WINDOW, @"n") atIndex:at + 2];
+        [app insertItem:item(@"New Shell", GTTY_MENU_NEW_SHELL, @"t") atIndex:at + 3];
+        [app insertItem:item(@"Run Command", GTTY_MENU_RUN, @"") atIndex:at + 4];
+        [app insertItem:item(@"Sync Typing", GTTY_MENU_SYNC_TYPING, @"") atIndex:at + 5];
 
         // Help ▸ gtty Help (⌘?), last in the bar as on every Mac app; the
         // system adds its search field to it.

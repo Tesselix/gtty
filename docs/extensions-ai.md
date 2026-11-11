@@ -1,9 +1,10 @@
 # gtty extensions: reference for AI assistants
 
 Read this before changing the extension system. It covers the whole
-design, built or not. **To write an extension, use the SDK's own guide,
-[sdks/zig/AGENTS.md](../sdks/zig/AGENTS.md), which lists only what exists,
-and its compiled example [hosts.zig](../sdks/zig/examples/hosts.zig).** The
+design, built or not. **To write an extension, use the SDK's own guide, which lists only what
+exists, and its example: [Zig](../sdks/zig/AGENTS.md),
+[Python](../sdks/python/AGENTS.md), [JavaScript](../sdks/javascript/AGENTS.md),
+[Go](../sdks/go/AGENTS.md).** The wire format is [protocol.md](protocol.md). The
 guide for people is [extensions.md](extensions.md).
 
 **Status: partly built.** Working today: `sdks/zig/src/gtty.zig`, the
@@ -11,9 +12,11 @@ standard chips in `src/chips/`, the four lifecycle functions, `onEvent`,
 `registerEvent`, `unregisterEvent`, `dispatch`, `newText`, `win.ui.set` for
 chips, peeks, epeeks and dialogs, `setDisplayMode`, `showDialog`,
 `closeDialog`, `win.shell()`, `win.ephemeral`, `win.stateful`, `win.log`,
-`ext.log`, `gtty ext logs`, and the
-events `window_changed`, `command_started` and `button_click`. Everything
-else here (icon files, `windowText`, labels, installed extensions) is design
+`ext.log`, installed extensions as child processes (`src/chips/Proc.zig`,
+`src/core/Extensions.zig`), the four SDKs, `gtty ext`, the extension
+manager (`src/ui/ExtensionsWindow.zig`), and the
+events `window_changed`, `command_started`, `key` and `button_click`. Everything
+else here (icon files, `windowText`, labels) is design
 only: don't tell a user it works, and check
 the code before relying on a name. `test/dialog.gt` and `test/peek.gt` with
 `src/chips/dialog_test.zig` exercise every layout, widget and button. Items marked `[proposed]` are not decided: use
@@ -70,8 +73,17 @@ in the event. `ext` has only `ui`, covering all windows.
 ## Events
 
 Register at any time with `win.events.registerEvent(...)`; events aren't in
-the manifest. The only events are `window_changed`, `command_started` and
-`button_click` (`EventKind`; clicks need no registering). **Don't invent event names**; add one only when a chip needs
+the manifest. The only events are `window_changed`, `command_started`,
+`key` and `button_click` (`EventKind`; clicks need no registering).
+`key` (2026-11-11, the user asked for keyboard events): every key pressed
+while a window has the keyboard (`App.keyPressed` in `onKey`, after the
+modal / dialog / menu checks, not for an epeek filter or the find box;
+text joined by `textTyped`, `key_wait`, `flushKey` once a frame), fields
+`key` (`App.keyName`), `text`, `ctrl` / `shift` / `alt` / `cmd`. A notice
+only, never held back. Not while the PTY is in line mode with echo off
+(`gtty_pty_secret`: a password prompt; raw mode, zle / vim / ssh, can't be
+told). Counts as the user's, like a click (`Host.pump`'s `from_user`,
+`Proc.sendEvent`). **Don't invent event names**; add one only when a chip needs
 it and no existing event can carry the case.
 
 ```
@@ -263,27 +275,50 @@ SDK's `zig build test`.
 
 ## Processes and developer tools
 
-Third-party extensions run as separate programs (decided). At run time each
-is a **child process of gtty**, so it ends when that gtty closes. In
-development (`gtty ext`) the IDE may start it under its debugger, and it
-connects to gtty; it isn't gtty's child then. Not built yet: the protocol,
-starting them, and the rest of `gtty ext`.
+Third-party extensions run as separate programs (decided, built). At run
+time each is a **child process of gtty**, so it ends when that gtty closes
+(the SDKs exit when the socket closes; Linux also PR_SET_PDEATHSIG). In
+development the IDE starts it under its debugger and it connects to gtty;
+it isn't gtty's child then (built 2026-11-11, docs/protocol.md
+"Development").
 
-- Built: `gtty ext logs [-f] [--pid N] [extension]` (`src/core/ExtCli.zig`)
-  reads `<tmp>/ext.log` (`src/core/ExtLog.zig`); no socket.
-- `[proposed]` `gtty ext load / reload / unload`, a same-user socket, off
-  unless developer mode is on; a launched extension ends when its
-  connection to gtty closes; `--wait-debugger` holds the extension at
-  its first line until the IDE attaches by pid; the extension's stdout and
-  stderr go to the same log; relaxed limits (queue, dialog timeout, 30 s
-  storage hold) for a loaded extension.
+- gtty side: `Extensions.scan` (once a second, `App.tickExtensions`) →
+  `Host.syncInstalled` → `Proc.start` (`gtty_ext_spawn`: socket on fd 3,
+  stdout / stderr to the log). `Host.procLine` turns messages into the same
+  `Sink` calls the standard chips make; `sdk.wire` decodes them, the Zig SDK
+  encodes with it. One chip slot per running extension (`Host.max_chips`).
+- Calls that answer (`shell`, storage) are request / reply; waiting
+  opens retry each frame until their timeout (`Host.waiting`), gtty never
+  blocks. `from_user` for a mode / dialog comes from the `ev` it cites
+  (`Proc.fromUser`, a user's click in the last 5 s).
+- `gtty ext install | uninstall | enable | disable | list | logs`
+  (`src/core/ExtCli.zig`); `logs` reads `<tmp>/ext.log`.
+- Developer socket (`src/chips/DevSocket.zig`; `gtty_ext_listen` /
+  `gtty_ext_accept` in `src/sys/gtty_ext.c`, this user's processes only):
+  each gtty on `<tmp>/ext.sock`, the newest also at the shared
+  `$TMPDIR/gtty-dev-<uid>/ext.sock` (a link; not in `--script` runs; taken
+  back by another gtty once a second, `Host.tickDev`). `Host.acceptDev` →
+  `Proc.accept` (state `attaching`, `dev`) → the first line `attach`
+  (`Host.attach` / `attachAs`: name or the manifest in `dir`, else
+  `refused`) → `greet`. The installed copy stops (`Proc.replaced`) and
+  starts again when the debugged one ends (`Host.rescan` → App runs
+  `syncInstalled`). Never signalled or reaped (`Proc.reap`'s dev branch).
+  Wider limits: `Proc.dev_max_out`, `dev_user_click_ms`,
+  `ExtStorage.dev_hold_ms` (`setDev`). `gtty ext socket [--pid N]`.
+  The SDKs: no `GTTY_EXT_FD` → `GTTY_EXT_SOCKET` or the shared address
+  (folder checked: this user's, 0700), send `attach`, exit 1 on `refused`;
+  the conformance check covers it (`dev_check`).
+- A new language: implement docs/protocol.md with its standard library,
+  port `examples/hosts`, pass `sdks/conformance/fake_gtty.py`, add it to
+  `ci.yml`'s `sdks` job and `release.yml`'s list.
 
 ## Packaging
 
-A zip or tar holding the program and `manifest.json`. Required: `name`,
-`main`. Optional: `icon`. gtty extracts it into a subfolder with a short
-unique id under the extensions folder, and asks the user before running
-it.
+A folder, zip, tar or tar.gz with `manifest.json`: `name`, `main` (a
+string or a map by platform), `runtime` (`python3` / `node`), `version`,
+`description`. gtty unpacks it into `<extensions>/<name>/code/` (no links,
+nothing outside); the manager asks before installing. See
+docs/extensions.md "Packaging" and "Installing".
 
 ## Not decided
 
@@ -291,6 +326,6 @@ Don't settle these on your own; ask the user. The proposal is what
 `docs/extensions.md` shows.
 
 - YAML as well as JSON
-- `main` per platform, a required manifest `id`
+- Chip icons from the package
 - The event list, and how `labels` are read
 - Ending an extension left running after gtty closed

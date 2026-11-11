@@ -26,6 +26,9 @@ const ExtStorage = @This();
 
 /// How long a file can stay open before gtty closes it.
 pub const hold_ms: u64 = 30_000;
+/// The same for an extension being debugged (`setDev`): it may sit at a
+/// breakpoint with the file open.
+pub const dev_hold_ms: u64 = 30 * 60 * 1000;
 const poll_us = 2000;
 const name_max = 200;
 
@@ -43,6 +46,7 @@ const Open = struct {
     path: [:0]u8,
     tmp: ?[:0]u8,
     opened_ms: u64,
+    hold: u64 = hold_ms,
     /// What the folder holds without this file, and what was written.
     used: u64 = 0,
     written: u64 = 0,
@@ -59,6 +63,8 @@ next_id: u32 = 0,
 /// Extensions may call from their own threads; held only for a moment.
 busy: std.atomic.Value(bool) = .init(false),
 running_fd: c_int = -1,
+/// Extensions being debugged (`setDev`): their files may stay open longer.
+dev: [8]?[64]u8 = @splat(null),
 
 pub fn init(gpa: std.mem.Allocator, root: []const u8, locks: []const u8, tmp: []const u8, limit_mb: u64) !ExtStorage {
     const r = try gpa.dupeZ(u8, root);
@@ -74,6 +80,29 @@ pub fn deinit(s: *ExtStorage) void {
     s.gpa.free(s.root);
     s.gpa.free(s.locks);
     s.gpa.free(s.tmp);
+}
+
+/// `ext` is being debugged (on) or not any more.
+pub fn setDev(s: *ExtStorage, ext: []const u8, on: bool) void {
+    if (ext.len > 63) return;
+    s.lock();
+    defer s.unlock();
+    for (&s.dev) |*d| if (d.*) |n| if (std.mem.eql(u8, std.mem.sliceTo(&n, 0), ext)) {
+        if (!on) d.* = null;
+        return;
+    };
+    if (!on) return;
+    for (&s.dev) |*d| if (d.* == null) {
+        var n: [64]u8 = @splat(0);
+        @memcpy(n[0..ext.len], ext);
+        d.* = n;
+        return;
+    };
+}
+
+fn isDev(s: *const ExtStorage, ext: []const u8) bool {
+    for (s.dev) |d| if (d) |n| if (std.mem.eql(u8, std.mem.sliceTo(&n, 0), ext)) return true;
+    return false;
 }
 
 pub fn setLimit(s: *ExtStorage, limit_mb: u64) void {
@@ -201,9 +230,10 @@ pub fn open(s: *ExtStorage, ext: []const u8, uid: u32, kind: sdk.StorageKind, na
     s.lock();
     s.next_id +%= 1;
     const id = s.next_id;
+    const hold = if (s.isDev(ext)) dev_hold_ms else hold_ms;
     s.unlock();
 
-    var f: Open = .{ .id = id, .uid = uid, .kind = kind, .mode = mode, .fd = -1, .lock_fd = lock_fd, .path = path, .tmp = null, .opened_ms = nowMs() };
+    var f: Open = .{ .id = id, .uid = uid, .kind = kind, .mode = mode, .fd = -1, .lock_fd = lock_fd, .path = path, .tmp = null, .opened_ms = nowMs(), .hold = hold };
     if (mode == .read) {
         f.fd = c.open(path.ptr, c.O_RDONLY | c.O_CLOEXEC | c.O_NOFOLLOW);
         if (f.fd < 0) return error.NoFile;
@@ -324,7 +354,7 @@ fn expire(s: *ExtStorage, now: u64) void {
     defer s.unlock();
     var i: usize = 0;
     while (i < s.files.items.len) {
-        if (now -| s.files.items[i].opened_ms >= hold_ms) {
+        if (now -| s.files.items[i].opened_ms >= s.files.items[i].hold) {
             _ = s.finish(s.files.swapRemove(i), false);
         } else i += 1;
     }

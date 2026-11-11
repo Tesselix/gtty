@@ -6,3 +6,4 @@ zig-pkg/
 bin/
 test/fake-ssh/bin/
 dist/
+test/shots/

@@ -148,7 +148,9 @@ jobs:
           cp "gtty-$v-1.x86_64.rpm" gtty.x86_64.rpm
           cp "gtty-$v-linux-x86_64.tar.gz" gtty-linux-x86_64.tar.gz
           cp "gtty-$v-macos.dmg" gtty-macos.dmg
-          cp "gtty-sdk-zig-$v.tar.gz" gtty-sdk-zig.tar.gz
+          for lang in zig python javascript go; do
+            cp "gtty-sdk-$lang-$v.tar.gz" "gtty-sdk-$lang.tar.gz"
+          done
 
       # SHA256SUMS for users; the same lines, base64, are the provenance's
       # subjects.
@@ -159,9 +161,9 @@ jobs:
           cd dist
           shasum -a 256 "gtty-$v-macos.dmg" "gtty_${v}_amd64.deb" \
             "gtty-$v-1.x86_64.rpm" "gtty-$v-linux-x86_64.tar.gz" \
-            "gtty-sdk-zig-$v.tar.gz" \
+            gtty-sdk-*.tar.gz \
             gtty-macos.dmg gtty_amd64.deb gtty.x86_64.rpm \
-            gtty-linux-x86_64.tar.gz gtty-sdk-zig.tar.gz > SHA256SUMS
+            gtty-linux-x86_64.tar.gz > SHA256SUMS
           cat SHA256SUMS
           echo "hashes=$(base64 < SHA256SUMS | tr -d '\n')" >> "$GITHUB_OUTPUT"
 
@@ -173,9 +175,9 @@ jobs:
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
             "dist/gtty-$v-macos.dmg" "dist/gtty_${v}_amd64.deb" \
             "dist/gtty-$v-1.x86_64.rpm" "dist/gtty-$v-linux-x86_64.tar.gz" \
-            "dist/gtty-sdk-zig-$v.tar.gz" \
+            dist/gtty-sdk-*.tar.gz \
             dist/gtty-macos.dmg dist/gtty_amd64.deb dist/gtty.x86_64.rpm \
-            dist/gtty-linux-x86_64.tar.gz dist/gtty-sdk-zig.tar.gz dist/SHA256SUMS
+            dist/gtty-linux-x86_64.tar.gz dist/SHA256SUMS
 
   # SLSA build provenance for the Signed-Releases check, uploaded to the
   # release as gtty.intoto.jsonl. The generator must be referenced by tag,

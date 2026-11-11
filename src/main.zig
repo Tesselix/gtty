@@ -134,6 +134,8 @@ test {
     _ = @import("core/ExtStorage.zig");
     _ = @import("core/ExtLog.zig");
     _ = @import("core/ExtCli.zig");
+    _ = @import("core/Archive.zig");
+    _ = @import("core/Extensions.zig");
     _ = @import("core/shells.zig");
     _ = @import("chips/list.zig");
     _ = @import("chips/folder.zig");

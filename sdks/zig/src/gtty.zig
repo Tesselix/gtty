@@ -14,6 +14,13 @@
 
 const std = @import("std");
 
+/// The JSON form of these types (docs/protocol.md).
+pub const wire = @import("wire.zig");
+
+/// Run an extension as its own program, from `main` (needs libc):
+/// `try gtty.run(@This());`. Returns when gtty closes the connection.
+pub const run = @import("run.zig").run;
+
 /// The version of the extension API this SDK speaks.
 pub const api_version: u32 = 1;
 
@@ -153,6 +160,11 @@ pub const EventKind = enum(u5) {
     window_changed,
     /// A command started in the window's shell.
     command_started,
+    /// A key pressed while the window has the keyboard (`Event.key`,
+    /// `text`, the modifier flags). Not while the terminal hides what is
+    /// typed (a password prompt), and not while a gtty dialog, menu, peek
+    /// or the find box has the keyboard.
+    key,
     /// A button of this extension was pressed (`Event.button`); comes
     /// without registering, and only to the extension that owns it.
     button_click,
@@ -176,6 +188,21 @@ pub const Event = struct {
     remote: bool = false,
     /// `command_started`: the command line.
     command: []const u8 = "",
+    /// `key`: the key's name: the character on it, unshifted (`a`, `1`,
+    /// `/`), or `enter`, `escape`, `tab`, `backspace`, `delete`, `space`,
+    /// `left`, `right`, `up`, `down`, `home`, `end`, `pageup`, `pagedown`,
+    /// `insert`, `f1`…`f24`, else the system's name in lowercase. Empty
+    /// for text that came with no key (an input method).
+    key: []const u8 = "",
+    /// `key`: what it typed (`A` with Shift, `é`), empty for keys that
+    /// type nothing (arrows, Ctrl+C).
+    text: []const u8 = "",
+    /// `key`: the modifier keys held. `cmd` is ⌘ on macOS, the Super
+    /// (Windows) key on Linux.
+    ctrl: bool = false,
+    shift: bool = false,
+    alt: bool = false,
+    cmd: bool = false,
     /// `button_click`.
     button: ?ButtonClick = null,
 };
@@ -769,6 +796,10 @@ const Fake = struct {
     }
     const conn: Connection = .{ .setChip = setChip, .setPeek = setPeek, .setEpeek = setEpeek, .setDisplayMode = setMode, .registerEvent = none, .unregisterEvent = none, .setDialog = setDialog, .showDialog = noop, .closeDialog = noop, .shell = shell, .storageOpen = stOpen, .storageRead = stRead, .storageWrite = stWrite, .storageClose = stClose, .storageDelete = stDelete, .storageList = stList };
 };
+
+test {
+    _ = wire;
+}
 
 test "log: formats, and a long message is cut" {
     const Sink = struct {

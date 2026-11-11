@@ -1,0 +1,7 @@
+{
+  "name": "hosts",
+  "version": "1.0.0",
+  "description": "A chip that keeps a list of hosts",
+  "main": "hosts.js",
+  "runtime": "node"
+}

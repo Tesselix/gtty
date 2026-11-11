@@ -21,5 +21,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     example.addImport("gtty", mod);
+    // The example as a program gtty can start: zig-out/bin/hosts.
+    b.installArtifact(b.addExecutable(.{ .name = "hosts", .root_module = example }));
     step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = example })).step);
 }

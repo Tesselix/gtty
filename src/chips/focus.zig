@@ -106,6 +106,7 @@ pub fn onEvent(win: *sdk.Window, ev: *const sdk.Event) !void {
             if (ev.remote or ev.folder.len == 0 or !FocusFolders.countsAsUse(ev.command)) return;
             if (folders) |f| f.use(ev.folder, homeDir());
         },
+        .key => {},
         .button_click => try sdk.dispatch(Actions, win, ev),
     }
 }
