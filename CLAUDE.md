@@ -1470,6 +1470,15 @@ decisions; items marked *open* are undecided.
   `dist/gtty-sdk-<language>-<v>.tar.gz` with the LICENSE, a VERSION file
   and the conformance check; release.yml uploads every `gtty-sdk-*` (its
   fixed-name copies list the languages: add a new one there).
+  **`extension-examples/`** (2026-11-11): real extensions built on the
+  SDKs, one folder per language, the SDK taken from `sdks/` by relative
+  path (`package.sh` copies it into the package). `history/`: a chip
+  listing the commands worth running again (`command_started`; a flag,
+  no cd / ls / find; the rules in its README and `cases.tsv`, which every
+  language's tests read); a pick copies through pbcopy / wl-copy / xclip
+  / xsel (the SDK can't type into a window). `history/check.py` drives
+  one through the conformance `Fake`; ci.yml's `sdks` job runs the tests
+  and the check for all four. Change the four together.
 
 ## License
 

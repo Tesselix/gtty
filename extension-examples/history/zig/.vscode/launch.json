@@ -1,0 +1,13 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "gtty extension",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/zig-out/bin/history",
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "zig build"
+    }
+  ]
+}

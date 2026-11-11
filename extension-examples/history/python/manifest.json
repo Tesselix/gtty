@@ -1,0 +1,7 @@
+{
+  "name": "history",
+  "version": "1.0.0",
+  "description": "Commands worth running again: the ones with a flag, no cd, ls or find",
+  "main": "history.py",
+  "runtime": "python3"
+}
