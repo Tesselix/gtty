@@ -3,7 +3,8 @@
 
 //! A complete extension: a chip that keeps a list of hosts. It shows every
 //! part of the SDK in use and is compiled by `zig build test`, so it can't
-//! fall behind. Start a new extension from a copy of this file.
+//! fall behind. Start a new extension from a copy of this file, with
+//! `examples/manifest.json`. `zig build` makes `zig-out/bin/hosts`.
 
 const std = @import("std");
 const gtty = @import("gtty");
@@ -15,9 +16,17 @@ const State = struct { filter: [64]u8 = undefined, filter_len: usize = 0 };
 var windows: std.AutoHashMapUnmanaged(u32, State) = .empty;
 const gpa = std.heap.c_allocator;
 
+/// gtty starts the program; `run` calls the functions below until gtty
+/// closes.
+pub fn main() !void {
+    try gtty.run(@This());
+}
+
 pub fn onWindowStart(win: *gtty.Window) !void {
     try windows.put(gpa, win.id, .{});
     try win.events.registerEvent(.window_changed);
+    // Keys: F6 opens the list. The key still reaches the program too.
+    try win.events.registerEvent(.key);
     // A UI needs a chip. Hover opens nothing by itself: `onhover` does.
     try win.ui.set(.{ .chip = .{ .text = "hosts", .onhover = "open" } });
     try win.ui.set(.{ .peek = .{
@@ -38,6 +47,8 @@ pub fn onEvent(win: *gtty.Window, ev: *const gtty.Event) !void {
         .button_click => try gtty.dispatch(Actions, win, ev),
         // Registered above: only the folder is of interest here.
         .window_changed => try win.ui.set(.{ .chip = .{ .dimmed = ev.remote } }),
+        .key => if (std.mem.eql(u8, ev.key, "f6") and !(ev.ctrl or ev.shift or ev.alt or ev.cmd))
+            try win.ui.setDisplayMode(.epeek),
         .command_started => {},
     }
 }

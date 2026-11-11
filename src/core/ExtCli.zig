@@ -1,21 +1,29 @@
 // SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! `gtty ext ...`, the command line for extension developers, for IDE
-//! tasks and AI tools. It runs without a window. Today only `logs`: it
-//! reads ExtLog's file of a running gtty, the one logged to last, or
-//! `--pid`'s. Only folders of this user count.
+//! `gtty ext ...`, the command line for extensions, for IDE tasks and AI
+//! tools. It runs without a window. `logs` reads ExtLog's file of a
+//! running gtty, the one logged to last, or `--pid`'s (only folders of
+//! this user count). `install`, `uninstall`, `enable`, `disable` and
+//! `list` change the extensions folder; every running gtty notices within
+//! a second.
 
 const std = @import("std");
 const c = @import("../c.zig").c;
 const ExtLog = @import("ExtLog.zig");
+const Extensions = @import("Extensions.zig");
 
 const usage =
-    \\usage: gtty ext logs [-f] [--pid N] [extension]
+    \\usage: gtty ext install <folder | file.zip | file.tar.gz>
+    \\       gtty ext uninstall <name>     (its data too)
+    \\       gtty ext enable | disable <name>
+    \\       gtty ext list
+    \\       gtty ext logs [-f] [--pid N] [extension]
+    \\       gtty ext socket [--pid N]     (where an extension you debug connects)
+    \\  install again to update; running gttys restart it within a second
     \\  -f, --follow   keep printing new lines until gtty closes
     \\  --pid N        the gtty with this process id (default: the one
-    \\                 logged to last)
-    \\  extension      only this extension's lines
+    \\                 logged to last; for socket, the newest)
     \\
 ;
 
@@ -49,12 +57,14 @@ fn parse(args: []const []const u8) ?Options {
 
 /// The exit code.
 pub fn run(args: []const []const u8) u8 {
+    if (args.len > 0 and std.mem.eql(u8, args[0], "socket")) return socket(args[1..]);
+    if (args.len > 0 and !std.mem.eql(u8, args[0], "logs")) return manage(args);
     const o = parse(args) orelse {
         say(usage);
         return 2;
     };
     var buf: [4096]u8 = undefined;
-    const found = find(&buf, o.pid) orelse {
+    const found = find(&buf, o.pid, ExtLog.file_name, c.S_IFREG) orelse {
         if (o.pid) |p| {
             var m: [80]u8 = undefined;
             say(std.fmt.bufPrint(&m, "no gtty with pid {d}\n", .{p}) catch "no such gtty\n");
@@ -64,9 +74,89 @@ pub fn run(args: []const []const u8) u8 {
     return show(found.path, found.pid, o);
 }
 
+/// `gtty ext socket [--pid N]`: the developer socket's path, for
+/// `GTTY_EXT_SOCKET` (docs/protocol.md "Development").
+fn socket(args: []const []const u8) u8 {
+    var pid: ?c.pid_t = null;
+    if (args.len == 2 and std.mem.eql(u8, args[0], "--pid")) {
+        pid = std.fmt.parseInt(c.pid_t, args[1], 10) catch null;
+        if (pid == null) {
+            say(usage);
+            return 2;
+        }
+    } else if (args.len != 0) {
+        say(usage);
+        return 2;
+    }
+    var buf: [4096]u8 = undefined;
+    const found = find(&buf, pid, "ext.sock", c.S_IFSOCK) orelse {
+        say(if (pid != null) "no gtty with that pid\n" else "no gtty is running\n");
+        return 1;
+    };
+    out(found.path);
+    out("\n");
+    return 0;
+}
+
+fn manage(args: []const []const u8) u8 {
+    var rbuf: [4096]u8 = undefined;
+    const root = Extensions.defaultRoot(&rbuf) orelse {
+        say("no home folder\n");
+        return 1;
+    };
+    var arena: std.heap.ArenaAllocator = .init(std.heap.c_allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const cmd = args[0];
+    var m: [512]u8 = undefined;
+    if (std.mem.eql(u8, cmd, "list") and args.len == 1) {
+        const list = Extensions.scan(a, root) catch &.{};
+        if (list.len == 0) say("no extensions installed\n");
+        for (list) |x| print(&m, "{s}\t{s}\t{s}\t{s}\n", .{ x.manifest.name, if (x.manifest.version.len > 0) x.manifest.version else "-", if (x.enabled) "on" else "off", x.manifest.description });
+        return 0;
+    }
+    if (args.len != 2) {
+        say(usage);
+        return 2;
+    }
+    if (std.mem.eql(u8, cmd, "install")) {
+        const name = Extensions.install(a, root, args[1]) catch |e| {
+            print(&m, "not installed: {s}\n", .{Extensions.explain(e)});
+            return 1;
+        };
+        print(&m, "installed {s} in {s}/{s}\n", .{ name, root, name });
+        return 0;
+    }
+    if (std.mem.eql(u8, cmd, "uninstall")) {
+        if (!(Extensions.uninstall(a, root, args[1]) catch false)) {
+            print(&m, "{s} isn't installed\n", .{args[1]});
+            return 1;
+        }
+        print(&m, "uninstalled {s}, and its data\n", .{args[1]});
+        return 0;
+    }
+    if (std.mem.eql(u8, cmd, "enable") or std.mem.eql(u8, cmd, "disable")) {
+        const list = Extensions.scan(a, root) catch &.{};
+        for (list) |x| if (std.mem.eql(u8, x.manifest.name, args[1])) {
+            Extensions.setEnabled(a, root, args[1], cmd[0] == 'e') catch return 1;
+            return 0;
+        };
+        print(&m, "{s} isn't installed\n", .{args[1]});
+        return 1;
+    }
+    say(usage);
+    return 2;
+}
+
+fn print(buf: []u8, comptime fmt: []const u8, args: anytype) void {
+    out(std.fmt.bufPrint(buf, fmt, args) catch return);
+}
+
 const Found = struct { path: [:0]const u8, pid: c.pid_t };
 
-fn find(buf: []u8, want: ?c.pid_t) ?Found {
+/// The newest live gtty folder of this user holding `file` (of type
+/// `kind`), or `want`'s.
+fn find(buf: []u8, want: ?c.pid_t, file_name: []const u8, kind: c_uint) ?Found {
     const tmp = if (c.getenv("TMPDIR")) |t| std.mem.span(t) else "/tmp";
     const base = std.mem.trimEnd(u8, tmp, "/");
     var base_buf: [4096]u8 = undefined;
@@ -86,8 +176,8 @@ fn find(buf: []u8, want: ?c.pid_t) ?Found {
         var st: c.struct_stat = undefined;
         if (c.lstat(dir.ptr, &st) != 0 or st.st_uid != c.getuid() or st.st_mode & c.S_IFMT != c.S_IFDIR) continue;
         var file_buf: [4096]u8 = undefined;
-        const file = std.fmt.bufPrintSentinel(&file_buf, "{s}/" ++ ExtLog.file_name, .{dir}, 0) catch continue;
-        if (c.lstat(file.ptr, &st) != 0 or st.st_uid != c.getuid() or st.st_mode & c.S_IFMT != c.S_IFREG) continue;
+        const file = std.fmt.bufPrintSentinel(&file_buf, "{s}/{s}", .{ dir, file_name }, 0) catch continue;
+        if (c.lstat(file.ptr, &st) != 0 or st.st_uid != c.getuid() or st.st_mode & c.S_IFMT != kind) continue;
         const t = modified(&st);
         if (best != null and t < best_time) continue;
         best_time = t;

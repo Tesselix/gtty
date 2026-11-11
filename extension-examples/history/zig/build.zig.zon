@@ -1,0 +1,15 @@
+// SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+.{
+    .name = .history,
+    .version = "1.0.0",
+    .fingerprint = 0x27ba704bf329159a,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        // The SDK in this repository. Outside it: the SDK's release
+        // archive, `zig fetch --save=gtty <its url>`.
+        .gtty = .{ .path = "../../../sdks/zig" },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "src" },
+}

@@ -1,0 +1,50 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Which command lines the history keeps. Every language's tests read this
+# file: keep or drop, a tab, the command line as gtty reports it.
+# Lines starting with # are comments; \t, \n and \s in a command are a
+# tab, a line break and a blank (editors drop blanks at a line's end).
+keep	cp -r a b
+keep	open -e a.txt
+drop	cp a.txt b.txt
+drop	open folder-name
+drop	cd ~/src
+drop	cd -
+drop	pushd /tmp
+drop	ls -la
+drop	ll -h
+drop	l -a
+drop	eza --long --git
+drop	/bin/ls -l
+drop	command ls -la
+drop	find . -name '*.zig'
+drop	find . -type f | xargs wc -l
+drop	cd build && make -j8
+drop	git status
+drop	vim notes.md
+drop	echo "-x"
+drop	cat -
+drop	echo a -- b
+drop	\s\s\s
+drop	\t
+keep	git commit -m "fix the build"
+keep	git log --oneline -n 20
+keep	tar -xzf archive.tar.gz
+keep	docker run --rm -it ubuntu bash
+keep	kill -9 1234
+keep	ssh -p 2222 host
+drop	 ssh -p 2222 host
+keep	ps aux | grep -i zig
+keep	FOO=1 make -j8
+drop	FOO=1 make
+keep	sudo apt install -y htop
+drop	sudo rm foo
+keep	sudo -u postgres psql -c 'select 1'
+drop	sudo -u postgres psql
+drop	env -i bash
+keep	time zig build -Doptimize=ReleaseFast
+keep	sudo nice -n 5 make -j4
+keep	curl -sSL https://example.com/install.sh\nsh install.sh
+keep	(make clean; make -j8)
+keep	git push --force-with-lease origin main

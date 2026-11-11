@@ -2,32 +2,36 @@
 
 Read all of this before writing an extension. It lists only what exists in
 this SDK. `src/gtty.zig` is the truth; `examples/hosts.zig` is a complete,
-compiling extension, so start from a copy of it.
+compiling extension, so start from a copy of it (and of
+`examples/manifest.json`).
 
 **Requires** Zig 0.16. Std APIs changed a lot in 0.15 / 0.16: don't trust
 older examples.
 
 ## Status: tell the user this
 
-- gtty can't load third-party extensions yet. Only code compiled into gtty
-  runs today (its `src/chips/`). So an extension built with this SDK
-  compiles, but won't run in a released gtty. Don't claim it does.
-- To try one, in a gtty source tree: copy it to `src/chips/`, and in
-  `src/chips/standard.zig` replace the `dialog_test` entry of `all` with
-  `sdk.Definition.of(@import("your_file.zig"), "yourname")`. It takes the one
-  extension chip slot, after the standard chips.
+- An extension is its **own program**: `main` calls `gtty.run(@This())`.
+  gtty starts it as its child process when it starts (and stops it when
+  gtty closes), with a socket on fd 3. Started by hand or by your
+  IDE's debugger while gtty runs, it connects to that gtty instead: see
+  "Debug".
+- It needs libc (`.link_libc = true`), as the example's build does.
+- One process serves every window of one gtty: `onWindowStart` runs once
+  per window, `win.id` tells them apart.
+- Installed with `gtty ext install <folder | .zip | .tar.gz>` or the
+  extension manager (gtty ▸ Extensions…); see "Package and run".
 - Not in this SDK, don't call them: `ev.windowText`, labels, `ext.ui`,
-  chip `icon`, icon files, a manifest or packaging, objects, selection
-  events, mouse or key events, a JSON protocol.
+  chip `icon`, icon files, objects, selection events, mouse events.
 
 ## Rules
 
 1. Extensions never draw. They describe; gtty draws.
-2. Never block in a callback. They run one at a time on gtty's own thread,
-   so a slow one holds up the terminal. No sleeping, no network, no process
-   waits there.
-3. Call `win.ui` and `win.events` only from a callback, not from your own
-   thread.
+2. Return quickly from callbacks. They run one at a time; while one runs
+   your extension gets nothing else, and gtty drops events it can't send
+   you (logged). gtty itself never waits for you. For slow work (network,
+   big files) use your own thread and keep its results for the next event.
+3. Call `win.ui`, `win.events`, storage and `win.shell()` only from a
+   callback, not from your own thread. `log` works anywhere.
 4. Don't invent events or fields. If it isn't here, it doesn't exist. Say
    so to the user.
 5. In text the user reads, write "window", never "job window".
@@ -164,11 +168,43 @@ try win.events.unregisterEvent(.window_changed);
 |---|---|---|
 | `.window_changed` | At the start, then when something changed | `folder`, `branch`, `remote` |
 | `.command_started` | A command starts in the window's shell | `command`, `folder`, `remote` |
+| `.key` | A key pressed while the window has the keyboard | `key`, `text`, `ctrl`, `shift`, `alt`, `cmd` |
 | `.button_click` | Your click, hover or filter; never register it | `button` |
 
 Also `ev.eventId`. Strings last until the handler returns: copy what you
 keep. `branch` is empty outside a repo. With `remote` true, `folder` is the
 local one.
+
+### Keys
+
+```zig
+try win.events.registerEvent(.key);
+```
+
+```zig
+.key => if (std.mem.eql(u8, ev.key, "f6") and !(ev.ctrl or ev.shift or ev.alt or ev.cmd))
+    try win.ui.setDisplayMode(.epeek),
+```
+
+- `key`: the key's name. The character on it, unshifted (`a`, `1`,
+  `/`), or `enter`, `escape`, `tab`, `backspace`, `delete`, `space`,
+  `left`, `right`, `up`, `down`, `home`, `end`, `pageup`, `pagedown`,
+  `insert`, `f1` to `f24`; another key: the system's name, lowercase,
+  no blanks. Empty for text from an input method, with no key.
+- `text`: what the key typed (`A` with Shift, `é`); empty for keys that
+  type nothing (arrows, Ctrl+C).
+- `ctrl`, `shift`, `alt`, `cmd`: the modifier keys held. `cmd` is ⌘ on macOS,
+  the Super (Windows) key on Linux. Modifier keys alone send nothing.
+- A notice only: the key still goes where it went (the program, or gtty's
+  own shortcut, ⌘C for example). You can't hold it back.
+- Not sent while the terminal hides what is typed (a password prompt),
+  nor while a gtty dialog, menu, epeek filter or the find box has the
+  keyboard. A password asked on a remote host (ssh) can't be told apart:
+  never keep or send what you get.
+- A key counts as the user's, like a click: a peek or dialog you open for
+  it gets the keyboard.
+- Keys come fast: do little per key. Events wait in a queue; when you fall
+  behind, gtty drops some (logged).
 
 ## Clicks
 
@@ -259,9 +295,10 @@ const names = try win.stateful.list(&buf); // one name per line
 - While a file is open for writing nobody else can use it. Several can read.
   **Always close quickly**: gtty closes a file after 30 s and drops its
   write, and the next call returns `error.FileClosed`.
-- A timeout of 0 tries once. **In a callback every timeout counts as 0**,
-  because waiting there would freeze gtty. So handle `error.FileInUse` even
-  with a timeout: try later, or tell the user.
+- A timeout of 0 tries once; with a timeout the call waits up to that long
+  while another instance (or another gtty) has the file, then returns
+  `error.FileInUse`. Keep timeouts short (a few hundred ms): the callback
+  waits meanwhile. Handle `error.FileInUse`: try later, or tell the user.
 - Names are plain file names: no `/`, no `..`, no leading `.`. No subfolders.
 - A storage holds 100 MB by default (the user's setting). Past it:
   `error.StorageFull`.
@@ -307,16 +344,105 @@ first. Line breaks and control characters in a message are shown escaped
 ## Errors
 
 `gtty.Error`: `WindowClosed`, `NoDialog`, `BadDialog`, `NoChip`, `BadName`,
-`NoFile`, `FileInUse`, `FileClosed`, `StorageFull`, `StorageFailed`. An error
-returned from a callback goes to `gtty ext logs`, and the user sees nothing:
-report what matters in the UI.
+`NoFile`, `FileInUse`, `FileClosed`, `StorageFull`, `StorageFailed`.
+
+- `win.ui.*` and `win.events.*` don't wait for gtty: a mistake gtty finds
+  (a peek with no chip: `set: NoChip`) is a line in `gtty ext logs`, not an
+  error here. `BadDialog` for a wrong name is still returned.
+- Storage and `win.shell()` wait for gtty's answer and return its error.
+- An error returned from a callback goes to `gtty ext logs`, and the user
+  sees nothing: report what matters in the UI.
+
+## Package and run
+
+A package is a folder (or a `.zip` / `.tar.gz` of one) with
+`manifest.json` at its top:
+
+```json
+{
+  "name": "hosts",
+  "version": "1.0.0",
+  "description": "A chip that keeps a list of hosts",
+  "main": {
+    "macos-aarch64": "bin/hosts-macos-aarch64",
+    "linux-x86_64": "bin/hosts-linux-x86_64"
+  }
+}
+```
+
+- `name`: lowercase letters, digits, `-`, `_`, starting with a letter, 32 at
+  most; not `folder`, `git`, `focus`, `session`, `test`, `gtty`,
+  `extensions`. It names the storage and the log lines.
+- `main`: the program, relative to the package; one string, or one per
+  platform (`macos-aarch64`, `linux-x86_64`). Build each with
+  `zig build -Dtarget=aarch64-macos` / `-Dtarget=x86_64-linux-gnu`.
+- No links, no files outside the package: gtty refuses such a package.
+
+```sh
+gtty ext install ./hosts-pkg   # install, or update (data kept)
+gtty ext list                  # name, version, on / off
+gtty ext logs -f hosts         # its log, while gtty runs
+gtty ext disable hosts         # enable hosts, uninstall hosts (data too)
+```
+
+Every running gtty starts it within a second, and restarts it when it is
+installed again: the loop is build, `gtty ext install`, read the logs.
+
+## Debug
+
+Run the extension from your IDE's debugger (or `zig build && ./zig-out/bin/hosts`) while gtty
+runs: breakpoints, stepping and variables work as in any program. With no
+`GTTY_EXT_FD` (gtty didn't start it) the SDK connects to the newest gtty and
+says which extension it is: `GTTY_EXT_NAME`, else the `name` in the
+`manifest.json` of the folder it runs in (so run it there). Then:
+
+- Its chip shows in every window of that gtty, as if installed. An installed
+  copy of the same name stops while it runs and starts again when it ends.
+- stdout and stderr go to the IDE's console; `log(...)` lines still go to
+  `gtty ext logs`.
+- A breakpoint stops only the extension; gtty goes on. While it is stopped
+  gtty keeps up to 64 MB of events for it, a dialog it opens within 10
+  minutes of the user's click still gets the keyboard, and its files stay
+  open up to 30 minutes.
+- Stopping the debugger ends the program: its chip goes.
+- gtty refuses it (the reason on stderr, exit code 1) when the name is not
+  valid or is gtty's own, or that extension is already being debugged in
+  that gtty. No gtty running: a message and a non-zero exit code.
+- Another gtty: `GTTY_EXT_SOCKET=$(gtty ext socket --pid N)`; `gtty ext
+  socket` prints the newest one's address.
+
+VS Code, `.vscode/launch.json` in the package folder:
+
+```json
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "gtty extension",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/zig-out/bin/hosts",
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "zig build"
+    }
+  ]
+}
+```
+
+That is VS Code with CodeLLDB; `preLaunchTask` names a shell task that runs `zig build`. Without an IDE: `lldb zig-out/bin/hosts`, `breakpoint set -f hosts.zig -l 26`, `run`. Build in Debug mode (the default), so lines and variables are known.
+
+To debug the installed copy instead, attach to its pid (the extension
+manager and `gtty ext logs` show it); its start has already run by then.
 
 ## Check your work
 
 ```sh
-zig build test
+zig build test                                  # your tests, the SDK's
+zig build && python3 conformance/fake_gtty.py -- zig-out/bin/hosts
 ```
 
-Add `test` blocks for your own logic, and make sure every name in `onclick`,
-`onhover` and `onexpand` has a `pub fn` in `Actions`: the compiler can't
-check strings.
+`conformance/fake_gtty.py` is a stand-in for gtty that runs the hosts
+example through one conversation: adapt its checks to your extension, or
+run it with `--verbose` to see every message. Add `test` blocks for your
+own logic, and make sure every name in `onclick`, `onhover` and `onexpand`
+has a `pub fn` in `Actions`: the compiler can't check strings.

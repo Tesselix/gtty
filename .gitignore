@@ -6,3 +6,7 @@ zig-pkg/
 bin/
 test/fake-ssh/bin/
 dist/
+test/shots/
+extension-examples/*/*/build/
+extension-examples/history/go/history
+__pycache__/

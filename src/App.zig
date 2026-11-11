@@ -17,6 +17,7 @@ const Process = @import("core/Process.zig");
 const Screen = @import("core/Screen.zig");
 const Tee = @import("core/Tee.zig");
 const ExtLog = @import("core/ExtLog.zig");
+const Extensions = @import("core/Extensions.zig");
 const Gfx = @import("render/Gfx.zig");
 const Rect = Gfx.Rect;
 const JobWindow = @import("ui/JobWindow.zig");
@@ -45,6 +46,7 @@ const FocusFolders = @import("core/FocusFolders.zig");
 const Sessions = @import("core/Sessions.zig");
 const Update = @import("core/Update.zig");
 const SessionsWindow = @import("ui/SessionsWindow.zig");
+const ExtensionsWindow = @import("ui/ExtensionsWindow.zig");
 const remote = @import("core/remote.zig");
 const Handoff = @import("core/Handoff.zig");
 const ChipHost = @import("chips/Host.zig");
@@ -241,6 +243,13 @@ over_text: bool = false,
 peek: ?Peek = null,
 /// The extensions' files (core/ExtStorage.zig).
 ext_storage: ?ExtStorage = null,
+/// Installed extensions (core/Extensions.zig): the folder's stamp when
+/// last read, and when to look again.
+ext_stamp: i64 = -1,
+ext_next_ms: u64 = 0,
+/// A key pressed that may type text: its `key` event waits for the text
+/// (SDL sends the key, then the text) until the frame's events are done.
+key_wait: ?KeyWait = null,
 /// The ⋮ button whose popup list is open (in its chip's `ChipUi`).
 peek_button: ?*const sdk.Button = null,
 chip_hover: ?Tip = null,
@@ -283,7 +292,7 @@ script: std.ArrayList([]u8) = .empty,
 script_pos: usize = 0,
 script_next: u64 = 0,
 /// `/target`: the OS window script hooks act on.
-script_target: enum { main, settings, sessions } = .main,
+script_target: enum { main, settings, sessions, extensions } = .main,
 /// `/pace`: the gap between script lines.
 script_gap_ms: u64 = 400,
 /// Where the script's mouse is (window pixels), the button it holds and
@@ -447,6 +456,8 @@ sessions: Sessions,
 sessions_checked_ms: u64 = 0,
 /// The Session Manager, while open.
 sessions_win: ?*SessionsWindow = null,
+/// The extension manager (gtty ▸ Extensions…).
+ext_win: ?*ExtensionsWindow = null,
 /// A restore's windows waiting to be typed into (ssh, sudo, remote cd).
 restore_steps: std.ArrayList(RestoreStep) = .empty,
 /// New Window: the new gtty's process, yielded the front to until this
@@ -549,6 +560,8 @@ pub fn create(gpa: std.mem.Allocator, opts: Options) !*App {
     if (app.tmp) |d| {
         app.ext_log = ExtLog.init(gpa, d.path) catch null;
         if (app.ext_log) |*l| app.chips.log = l;
+        // A script run doesn't take the shared address from the user's gtty.
+        app.chips.listen(d.path, opts.save_config);
     }
     app.chips.start();
     if (opts.save_config or c.getenv("GTTY_SESSIONS") != null) {
@@ -616,6 +629,7 @@ pub fn destroy(app: *App) void {
     app.focus_folders.deinit();
     if (app.settings) |sw| sw.close();
     if (app.sessions_win) |sw| sw.close();
+    if (app.ext_win) |ew| ew.close();
     for (app.restore_steps.items) |st| st.free(app.gpa);
     app.restore_steps.deinit(app.gpa);
     app.sessions.deinit();
@@ -666,7 +680,7 @@ pub fn destroy(app: *App) void {
     app.gpa.destroy(app);
 }
 
-const Tip = struct { uid: ids_mod.Id, hit: JobWindow.Hit, since: u64 };
+const Tip = struct { uid: ids_mod.Id, hit: JobWindow.Hit, since: u64, chip: ?JobWindow.Chip = null };
 
 /// A window to take from another gtty at start: its socket, the window.
 const Adopt = struct { path: [:0]u8, uid: ids_mod.Id };
@@ -700,6 +714,7 @@ pub fn run(app: *App) void {
             app.handle(&ev);
             while (c.SDL_PollEvent(&ev)) app.handle(&ev);
         }
+        app.flushKey();
         var rehover = false;
         // Shells that exited by themselves this frame: closed after the loop.
         var exited: [8]ids_mod.Id = undefined;
@@ -777,6 +792,7 @@ pub fn run(app: *App) void {
         }
         app.tickSettings();
         app.tickSessions();
+        app.tickExtensions();
         app.tickRemote();
         app.tickAi();
         app.tickUpdate();
@@ -2548,6 +2564,7 @@ fn menuPick(app: *App, code: i32) void {
             app.dirty = true;
         },
         c.GTTY_MENU_SETTINGS => app.openSettings(),
+        c.GTTY_MENU_EXTENSIONS => app.openExtensionsWindow(),
         // A new shell in the current window's folder.
         c.GTTY_MENU_NEW_SHELL => app.newShell(app.currentJob()),
         c.GTTY_MENU_NEW_WINDOW => app.newWindow(app.currentJob()),
@@ -2781,6 +2798,7 @@ fn barRows(app: *App, which: Menu.Bar, rows: *[Menu.max_rows]Menu.Row, codes: *[
             Add(rows, codes, &n, .{ .label = "About gtty" }, c.GTTY_MENU_ABOUT);
             Add(rows, codes, &n, .{ .label = "Check for Updates…" }, c.GTTY_MENU_CHECK_UPDATES);
             Add(rows, codes, &n, .{ .label = "Settings…" }, c.GTTY_MENU_SETTINGS);
+            Add(rows, codes, &n, .{ .label = "Extensions…" }, c.GTTY_MENU_EXTENSIONS);
             Add(rows, codes, &n, .{ .label = "New Window", .key = Menu.new_window_key }, c.GTTY_MENU_NEW_WINDOW);
             Add(rows, codes, &n, .{ .label = "New Shell", .key = Menu.new_shell_key }, c.GTTY_MENU_NEW_SHELL);
             Add(rows, codes, &n, .{ .label = "Run command" }, c.GTTY_MENU_RUN);
@@ -3495,7 +3513,7 @@ fn dialogSet(ctx: *anyopaque, uid: u32, chip: usize, update: sdk.DialogUpdate) s
     const app: *App = @ptrCast(@alignCast(ctx));
     const w = app.jobByUid(uid) orelse return error.WindowClosed;
     const d = w.dialogs[chip] orelse blk: {
-        const n = Dialog.create(app.gpa, standard_chips.all[chip].name) catch return error.NoDialog;
+        const n = Dialog.create(app.gpa, app.chips.nameOf(chip)) catch return error.NoDialog;
         w.dialogs[chip] = n;
         break :blk n;
     };
@@ -4202,6 +4220,92 @@ fn closeSessionsWindow(app: *App) void {
 
 /// Each frame: the file read again when another gtty changed it (at most
 /// once a second), the manager's requests and drawing, the restore steps.
+/// The extension manager (or bring it to the front).
+fn openExtensionsWindow(app: *App) void {
+    app.closeMenu();
+    if (app.ext_win) |ew| return ew.raise();
+    const st = app.ext_storage orelse {
+        beep.beep();
+        return app.say("extensions: no extensions folder", app.theme.stderr_accent);
+    };
+    app.ext_win = ExtensionsWindow.open(app.gpa, st.root, &app.chips) catch |e| {
+        beep.beep();
+        return app.sayFmt("extensions: could not open the window ({s})", .{@errorName(e)}, app.theme.stderr_accent);
+    };
+}
+
+fn closeExtensionsWindow(app: *App) void {
+    const ew = app.ext_win orelse return;
+    ew.close();
+    app.ext_win = null;
+    if (app.script_target == .extensions) app.script_target = .main;
+    _ = c.SDL_RaiseWindow(app.window);
+}
+
+/// The extension manager, when script hooks go to it.
+fn scriptExtensions(app: *App) ?*ExtensionsWindow {
+    return if (app.script_target == .extensions) app.ext_win else null;
+}
+
+/// Each frame: the manager (what it asks of gtty, drawing). Once a second:
+/// has an extension been installed, updated, turned on or off, or removed
+/// (by any gtty, or `gtty ext`)? Then run what is.
+fn tickExtensions(app: *App) void {
+    if (app.ext_win) |ew| {
+        if (ew.want_close) {
+            app.closeExtensionsWindow();
+        } else {
+            ew.tick();
+            if (ew.takeWant()) |want| app.extensionWant(ew, want);
+            ew.render(&app.theme);
+            if (ew.shot_ok) |ok| {
+                ew.shot_ok = null;
+                if (ok) app.say("saved the extension manager's picture", app.theme.ok) else app.say("screenshot failed", app.theme.stderr_accent);
+            }
+        }
+    }
+    const now = c.SDL_GetTicks();
+    // A debugged extension came or went: its installed copy stops / starts.
+    if (app.chips.rescan) {
+        app.chips.rescan = false;
+        app.ext_stamp = -1;
+        app.ext_next_ms = 0;
+    }
+    if (now < app.ext_next_ms) return;
+    app.ext_next_ms = now + 1000;
+    app.chips.tickDev();
+    const st = app.ext_storage orelse return;
+    const stamp = Extensions.stampOf(st.root);
+    if (stamp == app.ext_stamp) return;
+    app.ext_stamp = stamp;
+    var arena: std.heap.ArenaAllocator = .init(app.gpa);
+    defer arena.deinit();
+    const list = Extensions.scan(arena.allocator(), st.root) catch return;
+    app.chips.syncInstalled(list);
+}
+
+fn extensionWant(app: *App, ew: *ExtensionsWindow, want: ExtensionsWindow.Want) void {
+    const st = if (app.ext_storage) |*x| x else return;
+    var arena: std.heap.ArenaAllocator = .init(app.gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    switch (want) {
+        .restart => |name| {
+            const list = Extensions.scan(a, st.root) catch return;
+            for (list) |x| if (std.mem.eql(u8, x.manifest.name, name)) app.chips.restart(x);
+        },
+        .unlock => |name| st.forceUnlock(name, null),
+        .uninstall => |name| {
+            st.forceUnlock(name, null);
+            _ = Extensions.uninstall(a, st.root, name) catch false;
+            // Now, not at the next look: its chip goes at once.
+            app.ext_stamp = -1;
+            app.ext_next_ms = 0;
+        },
+    }
+    ew.done(want);
+}
+
 fn tickSessions(app: *App) void {
     app.tickRestoreFrom();
     const now = c.SDL_GetTicks();
@@ -4317,7 +4421,7 @@ fn tickPeek(app: *App) void {
     if (app.ext_storage) |*st| st.tick();
     if (app.chip_hover) |h| if (now -| h.since >= app.chip_hover_ms) {
         app.chip_hover = null;
-        if (app.jobByUid(h.uid)) |w| if (JobWindow.chipOf(h.hit)) |chip| app.fireChip(w, chip, w.chipUi(chip).onhover);
+        if (app.jobByUid(h.uid)) |w| if (h.chip) |chip| app.fireChip(w, chip, w.chipUi(chip).onhover);
     };
     if (app.peek == null) return;
     const w = app.peekWindow() orelse return app.closePeek();
@@ -4876,6 +4980,7 @@ fn execGtty(app: *App, cmd_parsed: commands.Command) void {
         .show => |sh| app.showFile(sh.path, sh.pick),
         .list => app.listJobs(),
         .settings => app.openSettings(),
+        .extensions => app.openExtensionsWindow(),
         .unlock => |rest| if (app.ext_storage) |*st| {
             var it = std.mem.tokenizeScalar(u8, rest, ' ');
             const ext = it.next() orelse return app.say("unlock: which extension?", app.theme.dim);
@@ -4893,6 +4998,7 @@ fn execGtty(app: *App, cmd_parsed: commands.Command) void {
             .sync_typing => c.GTTY_MENU_SYNC_TYPING,
             .about => c.GTTY_MENU_ABOUT,
             .check_updates => c.GTTY_MENU_CHECK_UPDATES,
+            .extensions => c.GTTY_MENU_EXTENSIONS,
             .help => c.GTTY_MENU_HELP,
         }),
         .mods => |spec| {
@@ -4914,12 +5020,15 @@ fn execGtty(app: *App, cmd_parsed: commands.Command) void {
             .main => .main,
             .settings => .settings,
             .sessions => .sessions,
+            .extensions => .extensions,
         },
         .quit => app.running = false,
         .shot => |path| if (app.scriptSettings()) |sw| {
             sw.takeShot(path);
         } else if (app.scriptSessions()) |sw| {
             sw.takeShot(path);
+        } else if (app.scriptExtensions()) |ew| {
+            ew.takeShot(path);
         } else {
             if (app.pending_shot) |p| app.gpa.free(p);
             app.pending_shot = app.gpa.dupe(u8, path) catch null;
@@ -4937,7 +5046,7 @@ fn execGtty(app: *App, cmd_parsed: commands.Command) void {
         },
         .text => |text| if (app.scriptSettings()) |sw| sw.onText(text) else if (app.scriptSessions()) |sw| sw.onText(text) else app.scriptTyping(text),
         .key => |spec| if (keySpec(spec)) |k| {
-            if (app.scriptSettings()) |sw| sw.onKey(k.key, k.mod) else if (app.scriptSessions()) |sw| sw.onKey(k.key, k.mod) else app.onKey(k.key, k.mod);
+            if (app.scriptSettings()) |sw| sw.onKey(k.key, k.mod) else if (app.scriptSessions()) |sw| sw.onKey(k.key, k.mod) else if (app.scriptExtensions()) |ew| ew.onKey(k.key, k.mod) else app.onKey(k.key, k.mod);
         } else app.sayFmt("/key: unknown key {s}", .{spec}, app.theme.stderr_accent),
         // Real mouse events (window coordinates, like SDL), to the
         // `/target` window.
@@ -4996,18 +5105,18 @@ fn execGtty(app: *App, cmd_parsed: commands.Command) void {
         },
         .dropover => |p| {
             app.notePointer(p.x, p.y, false);
-            pushDrop(c.SDL_EVENT_DROP_BEGIN, 0, 0, null);
-            pushDrop(c.SDL_EVENT_DROP_POSITION, p.x, p.y, null);
+            pushDrop(app.scriptWindow(), c.SDL_EVENT_DROP_BEGIN, 0, 0, null);
+            pushDrop(app.scriptWindow(), c.SDL_EVENT_DROP_POSITION, p.x, p.y, null);
         },
         .drop => |d| {
             app.notePointer(d.x, d.y, true);
             if (app.script_drop) |old| app.gpa.free(old);
             app.script_drop = app.gpa.dupeZ(u8, d.path) catch null;
             const path = app.script_drop orelse return;
-            if (!app.dropping) pushDrop(c.SDL_EVENT_DROP_BEGIN, 0, 0, null);
-            pushDrop(c.SDL_EVENT_DROP_POSITION, d.x, d.y, null);
-            pushDrop(c.SDL_EVENT_DROP_FILE, d.x, d.y, path.ptr);
-            pushDrop(c.SDL_EVENT_DROP_COMPLETE, d.x, d.y, null);
+            if (!app.dropping) pushDrop(app.scriptWindow(), c.SDL_EVENT_DROP_BEGIN, 0, 0, null);
+            pushDrop(app.scriptWindow(), c.SDL_EVENT_DROP_POSITION, d.x, d.y, null);
+            pushDrop(app.scriptWindow(), c.SDL_EVENT_DROP_FILE, d.x, d.y, path.ptr);
+            pushDrop(app.scriptWindow(), c.SDL_EVENT_DROP_COMPLETE, d.x, d.y, null);
         },
         .record => |r| switch (r) {
             .start => |st| app.startRecord(st.dir, st.fps),
@@ -5075,6 +5184,7 @@ fn scriptSettings(app: *App) ?*SettingsWindow {
 fn scriptWindow(app: *App) c.SDL_WindowID {
     if (app.scriptSettings()) |sw| return sw.id;
     if (app.scriptSessions()) |sw| return sw.id;
+    if (app.scriptExtensions()) |ew| return ew.id;
     return 0;
 }
 
@@ -5167,6 +5277,7 @@ fn handle(app: *App, ev: *const c.SDL_Event) void {
     // Events of the settings window go to it.
     if (app.settings) |sw| if (eventWindow(ev) == sw.id) return sw.handle(ev);
     if (app.sessions_win) |sw| if (eventWindow(ev) == sw.id) return sw.handle(ev);
+    if (app.ext_win) |ew| if (eventWindow(ev) == ew.id) return ew.handle(ev);
     switch (ev.type) {
         c.SDL_EVENT_QUIT => app.running = false,
         // Closing gtty's own window ends gtty (with the settings window
@@ -5232,6 +5343,7 @@ fn onText(app: *App, text: []const u8) void {
         return;
     }
     if (app.focusedJob()) |w| {
+        app.textTyped(w, text);
         // Typing over a selection in the shell's input line replaces it.
         _ = w.deleteSel();
         w.typeBytes(text);
@@ -5315,6 +5427,12 @@ fn onKey(app: *App, key: c.SDL_Keycode, mod: c.SDL_Keymod) void {
         app.closeMenu();
         if (key == c.SDLK_ESCAPE) return;
     }
+    // Extensions hear the keys of the window that has the keyboard (not
+    // those of an epeek's filter or the find box).
+    if (!isModifier(key)) if (app.focusedJob()) |w| {
+        const peek_keys = if (app.peek) |*pk| pk.wantsKeys() else false;
+        if (!peek_keys and app.findTarget() == null) app.keyPressed(w, key, mod);
+    };
 
     // Esc closes any open peek (folded or expanded) back to its chip and
     // goes no further: the keyboard is the focused job's again.
@@ -5747,7 +5865,7 @@ fn clickJob(app: *App, i: usize, x: f32, y: f32, button: u8, clicks: u8) void {
         .files => app.openFolder(w),
         .scroller => if (button == c.SDL_BUTTON_LEFT) w.scrollerDown(y),
         // A chip: its peek at once (no focus change).
-        .git_chip, .folder_chip, .focus_chip, .session_chip, .ext_chip => app.pressChip(w, JobWindow.chipOf(hit).?, false),
+        .git_chip, .folder_chip, .focus_chip, .session_chip, .ext_chip => if (w.chipAt(x, y)) |chip| app.pressChip(w, chip, false),
         .minimize => app.minimizeJob(i),
         .maximize => app.toggleMaximize(i),
         // Anywhere else: the job becomes (or stays) the current job window.
@@ -6404,6 +6522,103 @@ fn drawWinDrag(app: *App) void {
 }
 
 // ------------------------------------------------------------ file opener
+
+// ------------------------------------------------------------ key events
+
+const KeyWait = struct {
+    uid: u32,
+    name: [24]u8,
+    len: usize,
+    mod: c.SDL_Keymod,
+};
+
+/// The `key` event (`sdk.EventKind.key`) of a key pressed in window `w`.
+/// One that may type text waits for it (`textTyped`, `flushKey`).
+fn keyPressed(app: *App, w: *JobWindow, key: c.SDL_Keycode, mod: c.SDL_Keymod) void {
+    app.flushKey();
+    if (!app.chips.listens(w.uid, .key) or c.gtty_pty_secret(w.proc.out_fd) != 0) return;
+    var kw: KeyWait = .{ .uid = w.uid, .name = undefined, .len = 0, .mod = mod };
+    const name = keyName(key, &kw.name);
+    // A fixed name isn't in the buffer yet.
+    if (name.ptr != &kw.name) @memcpy(kw.name[0..name.len], name);
+    kw.len = name.len;
+    const ctrl_or_cmd = mod & (c.SDL_KMOD_CTRL | c.SDL_KMOD_GUI) != 0;
+    const printable = key >= 0x20 and key != 0x7f and key & c.SDLK_SCANCODE_MASK == 0;
+    if (printable and !ctrl_or_cmd) {
+        app.key_wait = kw;
+        return;
+    }
+    app.fireKey(kw, "");
+}
+
+/// Text typed in window `w`: with the key that typed it, or alone (an
+/// input method).
+fn textTyped(app: *App, w: *JobWindow, text: []const u8) void {
+    if (app.key_wait) |kw| if (kw.uid == w.uid) {
+        app.key_wait = null;
+        return app.fireKey(kw, text);
+    };
+    app.flushKey();
+    if (!app.chips.listens(w.uid, .key) or c.gtty_pty_secret(w.proc.out_fd) != 0) return;
+    app.fireKey(.{ .uid = w.uid, .name = undefined, .len = 0, .mod = c.SDL_GetModState() }, text);
+}
+
+/// A waiting key whose text never came (a dead key, ⌥ with nothing to type).
+fn flushKey(app: *App) void {
+    const kw = app.key_wait orelse return;
+    app.key_wait = null;
+    app.fireKey(kw, "");
+}
+
+fn fireKey(app: *App, kw: KeyWait, text: []const u8) void {
+    app.chips.fire(kw.uid, .{
+        .kind = .key,
+        .key = kw.name[0..kw.len],
+        .text = text,
+        .ctrl = kw.mod & c.SDL_KMOD_CTRL != 0,
+        .shift = kw.mod & c.SDL_KMOD_SHIFT != 0,
+        .alt = kw.mod & c.SDL_KMOD_ALT != 0,
+        .cmd = kw.mod & c.SDL_KMOD_GUI != 0,
+    });
+}
+
+/// A key's name for extensions: the unshifted character on it, or a
+/// fixed name (docs/extensions.md "Events").
+fn keyName(key: c.SDL_Keycode, buf: []u8) []const u8 {
+    const fixed: ?[]const u8 = switch (key) {
+        c.SDLK_RETURN, c.SDLK_KP_ENTER => "enter",
+        c.SDLK_ESCAPE => "escape",
+        c.SDLK_TAB => "tab",
+        c.SDLK_BACKSPACE => "backspace",
+        c.SDLK_DELETE => "delete",
+        c.SDLK_SPACE => "space",
+        c.SDLK_LEFT => "left",
+        c.SDLK_RIGHT => "right",
+        c.SDLK_UP => "up",
+        c.SDLK_DOWN => "down",
+        c.SDLK_HOME => "home",
+        c.SDLK_END => "end",
+        c.SDLK_PAGEUP => "pageup",
+        c.SDLK_PAGEDOWN => "pagedown",
+        c.SDLK_INSERT => "insert",
+        else => null,
+    };
+    if (fixed) |f| return f;
+    if (key >= c.SDLK_F1 and key <= c.SDLK_F12) return std.fmt.bufPrint(buf, "f{d}", .{key - c.SDLK_F1 + 1}) catch "";
+    if (key >= c.SDLK_F13 and key <= c.SDLK_F24) return std.fmt.bufPrint(buf, "f{d}", .{key - c.SDLK_F13 + 13}) catch "";
+    if (key & c.SDLK_SCANCODE_MASK == 0 and key > 0x20 and key < 0x110000) {
+        const n = std.unicode.utf8Encode(@intCast(key), buf) catch return "";
+        return buf[0..n];
+    }
+    // Anything else: the system's name, lowercase, no blanks.
+    const sys = std.mem.span(c.SDL_GetKeyName(key));
+    var n: usize = 0;
+    for (sys) |ch| if (ch != ' ' and n < buf.len) {
+        buf[n] = std.ascii.toLower(ch);
+        n += 1;
+    };
+    return buf[0..n];
+}
 
 fn isModifier(key: c.SDL_Keycode) bool {
     return switch (key) {
@@ -7830,12 +8045,12 @@ fn hoverChip(app: *App, pt: ?[2]f32) void {
         const i = app.windowAt(p[0], p[1]) orelse break :blk null;
         const w = app.jobs.items[i];
         const part = w.hit(p[0], p[1]);
-        const chip = JobWindow.chipOf(part) orelse break :blk null;
+        const chip = w.chipAt(p[0], p[1]) orelse break :blk null;
         if (w.chipUi(chip).onhover.len == 0) break :blk null;
         if (app.peek) |pk| if (pk.uid == w.uid and pk.chip == @intFromEnum(chip)) break :blk null;
-        break :blk .{ .uid = w.uid, .hit = part, .since = c.SDL_GetTicks() };
+        break :blk .{ .uid = w.uid, .hit = part, .since = c.SDL_GetTicks(), .chip = chip };
     };
-    if (app.chip_hover) |h| if (now) |n| if (h.uid == n.uid and h.hit == n.hit) return;
+    if (app.chip_hover) |h| if (now) |n| if (h.uid == n.uid and h.chip == n.chip) return;
     app.chip_hover = now;
 }
 
@@ -8690,9 +8905,12 @@ fn tickGlide(app: *App) bool {
 
 /// Script hooks `/dropover`, `/drop`: a drop event as another app's drag
 /// would send it (window coordinates).
-fn pushDrop(kind: u32, x: f32, y: f32, data: ?[*:0]const u8) void {
+/// An SDL drop event for window `win` (0: gtty's own), as a drag from
+/// another app sends it.
+fn pushDrop(win: c.SDL_WindowID, kind: u32, x: f32, y: f32, data: ?[*:0]const u8) void {
     var ev: c.SDL_Event = std.mem.zeroes(c.SDL_Event);
     ev.type = kind;
+    ev.drop.windowID = win;
     ev.drop.x = x;
     ev.drop.y = y;
     ev.drop.data = data;

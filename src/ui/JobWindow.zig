@@ -53,16 +53,25 @@ pub const Kind = enum { command, shell };
 
 /// `close` is the red × : close once finished; while running it opens the
 /// kill menu, and only `kill` (the skull in that menu) kills the job.
-/// The standard chips, in the order of `src/chips/standard.zig`.
-pub const Chip = enum {
+/// The standard chips, in the order of `src/chips/standard.zig`, then
+/// the test extension's (`ext`), then installed extensions' (the values
+/// after it, up to `max_chips`; chips/Host.zig gives them out).
+pub const Chip = enum(u8) {
     folder,
     git,
     focus,
     session,
-    /// An extension's chip, after the standard ones (for now the test
-    /// extension's).
     ext,
+    _,
+
+    /// An extension's: only its text, no icon or key-cap.
+    pub fn isExt(ch: Chip) bool {
+        return @intFromEnum(ch) >= @intFromEnum(Chip.ext);
+    }
 };
+
+pub const max_chips = 16;
+const first_ext = @intFromEnum(Chip.ext);
 
 pub const max_dialogs = 8;
 
@@ -360,7 +369,7 @@ folder_chip_r: Rect = .{},
 /// The focus chip (the folders used lately; a click opens their list).
 focus_chip_r: Rect = .{},
 /// What the chips set (`setChip`), by `Chip`.
-chips: [std.enums.values(Chip).len]ChipState = @splat(.{}),
+chips: [max_chips]ChipState = @splat(.{}),
 /// The dialogs extensions set here, by their index in the chip host.
 dialogs: [max_dialogs]?*Dialog = @splat(null),
 /// The one showing (modal to this window: it takes no typing), and those
@@ -379,8 +388,9 @@ over_action: Hit = .none,
 /// The session chip (gtty-sessions saved: their list), after the focus chip.
 session_chip_r: Rect = .{},
 over_session_chip: bool = false,
-ext_chip_r: Rect = .{},
-over_ext_chip: bool = false,
+/// Extensions' chips, by `Chip` value from `first_ext`.
+ext_chip_r: [max_chips - first_ext]Rect = @splat(.{}),
+over_ext_chip: ?Chip = null,
 
 pub fn create(gpa: std.mem.Allocator, gfx: *Gfx, uid: ids.Id, serial: u32, spec: Spec, rect: Rect, scale: Scale) !*JobWindow {
     const w = try gpa.create(JobWindow);
@@ -1362,7 +1372,7 @@ pub fn layoutChips(w: *JobWindow, gfx: *Gfx) void {
     w.folder_chip_r = .{};
     w.focus_chip_r = .{};
     w.session_chip_r = .{};
-    w.ext_chip_r = .{};
+    w.ext_chip_r = @splat(.{});
     if (w.grid_r != null or !w.proc.running()) return;
     const f = chipFace(gfx, w.scale) catch return;
     const ui = w.scale.ui;
@@ -1390,9 +1400,14 @@ pub fn layoutChips(w: *JobWindow, gfx: *Gfx) void {
             x += sw + @round(6 * ui);
         }
     }
-    if (w.chipText(.ext) != null) {
-        const sw = w.chipWidth(gfx, f, ui, .ext);
-        if (x + sw <= r.x + r.w - @round(6 * ui)) w.ext_chip_r = .{ .x = x, .y = y, .w = sw, .h = h };
+    // Installed extensions, while they fit.
+    for (first_ext..max_chips) |k| {
+        const ch: Chip = @enumFromInt(k);
+        if (w.chipText(ch) == null) continue;
+        const sw = w.chipWidth(gfx, f, ui, ch);
+        if (x + sw > r.x + r.w - @round(6 * ui)) break;
+        w.ext_chip_r[k - first_ext] = .{ .x = x, .y = y, .w = sw, .h = h };
+        x += sw + @round(6 * ui);
     }
 }
 
@@ -1403,20 +1418,25 @@ pub fn chipRect(w: *const JobWindow, chip: Chip) Rect {
         .git => w.git_chip_r,
         .focus => w.focus_chip_r,
         .session => w.session_chip_r,
-        .ext => w.ext_chip_r,
+        else => w.ext_chip_r[@intFromEnum(chip) - first_ext],
     };
 }
 
-/// The chip a `hit` is on.
-pub fn chipOf(hit_part: Hit) ?Chip {
-    return switch (hit_part) {
+/// The chip at a point (window coordinates).
+pub fn chipAt(w: *const JobWindow, x: f32, y: f32) ?Chip {
+    return switch (w.hit(x, y)) {
         .folder_chip => .folder,
         .git_chip => .git,
         .focus_chip => .focus,
         .session_chip => .session,
-        .ext_chip => .ext,
+        .ext_chip => w.extChipAt(x, y),
         else => null,
     };
+}
+
+fn extChipAt(w: *const JobWindow, x: f32, y: f32) ?Chip {
+    for (w.ext_chip_r, 0..) |r, k| if (r.contains(x, y)) return @enumFromInt(first_ext + k);
+    return null;
 }
 
 /// What chip `chip` described: its peek, epeek and click functions.
@@ -1483,7 +1503,7 @@ fn chipWidth(w: *const JobWindow, gfx: *Gfx, f: *Gfx.Face, ui: f32, chip: Chip) 
     const label = s.buf[0..s.len];
     const shown = text_mod.cut(&s.text, chipCut(label));
     const label_w = text_mod.width(gfx, f, &shown) + (if (chipCut(label) < label.len) f.cell_w else 0);
-    if (chip == .ext) return @round(7 * ui) * 2 + label_w;
+    if (chip.isExt()) return @round(7 * ui) * 2 + label_w;
     return @round(7 * ui) * 2 + chipIconW(f, ui) + label_w + chipCapW(f, ui);
 }
 
@@ -2165,7 +2185,7 @@ pub fn hit(w: *const JobWindow, x: f32, y: f32) Hit {
     if (w.folder_chip_r.contains(x, y)) return .folder_chip;
     if (w.focus_chip_r.contains(x, y)) return .focus_chip;
     if (w.session_chip_r.contains(x, y)) return .session_chip;
-    if (w.ext_chip_r.contains(x, y)) return .ext_chip;
+    if (w.extChipAt(x, y) != null) return .ext_chip;
     if (w.grid_r == null and w.foot_r.contains(x, y)) return .footer;
     return .out;
 }
@@ -2571,7 +2591,7 @@ pub fn hover(w: *JobWindow, pt: ?[2]f32) bool {
     const over_folder = part == .folder_chip;
     const over_focus = part == .focus_chip;
     const over_session = part == .session_chip;
-    const over_ext = part == .ext_chip;
+    const over_ext: ?Chip = if (part == .ext_chip) w.extChipAt(pt.?[0], pt.?[1]) else null;
     const action: Hit = if (w.actionLive(part)) part else .none;
     const changed = over != w.over_scroller or over_chip != w.over_git_chip or over_folder != w.over_folder_chip or over_focus != w.over_focus_chip or over_session != w.over_session_chip or over_ext != w.over_ext_chip or action != w.over_action;
     w.over_action = action;
@@ -2876,7 +2896,10 @@ fn drawFooter(w: *const JobWindow, gfx: *Gfx, theme: *const Theme) void {
     w.drawOneChip(gfx, theme, f, ui, .folder, w.over_folder_chip, 1);
     w.drawOneChip(gfx, theme, f, ui, .focus, w.over_focus_chip, 3);
     w.drawOneChip(gfx, theme, f, ui, .session, w.over_session_chip, 4);
-    w.drawOneChip(gfx, theme, f, ui, .ext, w.over_ext_chip, 0);
+    for (first_ext..max_chips) |k| {
+        const ch: Chip = @enumFromInt(k);
+        w.drawOneChip(gfx, theme, f, ui, ch, w.over_ext_chip == ch, 0);
+    }
     if (w.chip_flash_ms != 0) {
         const t = c.SDL_GetTicks() -| w.chip_flash_ms;
         if (t < name_flash_ms) {
@@ -2909,9 +2932,9 @@ fn drawChip(gfx: *Gfx, theme: *const Theme, f: *Gfx.Face, ui: f32, cr: Rect, tex
         .folder => folderIcon(gfx, icon_col, ui, cr.x + pad, iy, iw, f.cell_h),
         .focus => clockIcon(gfx, icon_col, bg, ui, cr.x + pad, iy, iw, f.cell_h),
         .session => sessionIcon(gfx, icon_col, bg, ui, cr.x + pad, iy, iw, f.cell_h),
-        .ext => {},
+        else => {},
     }
-    const tx = cr.x + pad + (if (icon == .ext) 0 else chipIconW(f, ui));
+    const tx = cr.x + pad + (if (icon.isExt()) 0 else chipIconW(f, ui));
     const ty = cr.y + @round((cr.h - f.cell_h) / 2);
     const cut = chipCut(label);
     const shown = text_mod.cut(text, cut);

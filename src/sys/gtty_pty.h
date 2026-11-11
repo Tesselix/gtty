@@ -66,3 +66,8 @@ int gtty_spawn_pipes(const char *const argv[], const char *const env[], const ch
                      int *in_fd, int *out_fd, int *pid_out);
 
 #endif
+
+// 1 when the terminal hides what is typed (a password prompt: line mode
+// with echo off), so typing there isn't passed on (extension key events).
+// Raw mode (shells' line editors, full-screen programs) counts as 0.
+int gtty_pty_secret(int master);

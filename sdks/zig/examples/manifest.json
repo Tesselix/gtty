@@ -1,0 +1,9 @@
+{
+  "name": "hosts",
+  "version": "1.0.0",
+  "description": "A chip that keeps a list of hosts",
+  "main": {
+    "macos-aarch64": "bin/hosts-macos-aarch64",
+    "linux-x86_64": "bin/hosts-linux-x86_64"
+  }
+}

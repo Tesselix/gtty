@@ -526,3 +526,9 @@ int gtty_spawn_pipes(const char *const argv[], const char *const env[], const ch
     *pid_out = (int)pid;
     return 0;
 }
+
+int gtty_pty_secret(int master) {
+    struct termios t;
+    if (master < 0 || tcgetattr(master, &t) != 0) return 0;
+    return (t.c_lflag & ICANON) && !(t.c_lflag & ECHO);
+}

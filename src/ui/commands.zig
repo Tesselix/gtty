@@ -37,6 +37,7 @@ pub const MenuPick = union(enum) {
     sync_typing,
     about,
     check_updates,
+    extensions,
     help,
 };
 
@@ -62,6 +63,8 @@ pub const Command = union(enum) {
     list,
     /// settings — open the settings window (also in the gtty menu).
     settings,
+    /// extensions — the extension manager (also in the gtty menu).
+    extensions,
     quit,
     /// /shot <file.bmp> — save a screenshot of the gtty window.
     shot: []const u8,
@@ -106,7 +109,7 @@ pub const Command = union(enum) {
     /// /target main | settings | sessions — which OS window the next
     /// /click, /move, /drag, /text, /key, /type and /shot go to (for
     /// scripts; sessions: the Session Manager).
-    target: enum { main, settings, sessions },
+    target: enum { main, settings, sessions, extensions },
     /// /record start <dir> [fps] | stop — save every frame (window size,
     /// PPM) into dir with their times in `frames.txt`; the script's mouse
     /// pointer is drawn in them (for the README animations, docs/demo).
@@ -268,6 +271,7 @@ pub fn parseGtty(text: []const u8, explicit: bool) Command {
     }
     if (eq(sub, "list")) return .list;
     if (eq(sub, "settings")) return .settings;
+    if (eq(sub, "extensions")) return .extensions;
     if (eq(sub, "quit")) return .quit;
     if (!explicit) return .{ .unknown = sub };
     // Script hooks: only with the slash.
@@ -327,7 +331,8 @@ pub fn parseGtty(text: []const u8, explicit: bool) Command {
     if (eq(sub, "dialog")) return .{ .dialog = rest };
     if (eq(sub, "unlock")) return .{ .unlock = rest };
     if (eq(sub, "menu")) {
-        const usage = "/menu run | settings | new-shell | new-window | sync-typing | about | check-updates | help";
+        const usage = "/menu run | settings | extensions | new-shell | new-window | sync-typing | about | check-updates | help";
+        if (eq(rest, "extensions")) return .{ .menu = .extensions };
         if (eq(rest, "run")) return .{ .menu = .run };
         if (eq(rest, "settings")) return .{ .menu = .settings };
         if (eq(rest, "new-shell")) return .{ .menu = .new_shell };
@@ -343,6 +348,7 @@ pub fn parseGtty(text: []const u8, explicit: bool) Command {
         if (eq(rest, "main")) return .{ .target = .main };
         if (eq(rest, "settings")) return .{ .target = .settings };
         if (eq(rest, "sessions")) return .{ .target = .sessions };
+        if (eq(rest, "extensions")) return .{ .target = .extensions };
         return .{ .bad = "/target main | settings | sessions" };
     }
     return .{ .unknown = sub };
@@ -363,7 +369,7 @@ pub fn parseExact(text_in: []const u8) ?Command {
     while (words.next()) |_| n_words += 1;
     return switch (cmd) {
         .unknown, .bad, .line, .empty => null,
-        .help, .list, .settings, .quit => if (rest.len == 0) cmd else null,
+        .help, .list, .settings, .extensions, .quit => if (rest.len == 0) cmd else null,
         .shell => |sh| if (sh.cwd != null or n_words <= 1) cmd else null,
         .close, .clear => if (rest.len == 0 or exactTarget(rest)) cmd else null,
         // show: App checks that the file exists.

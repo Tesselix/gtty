@@ -19,6 +19,7 @@ pub const c = @cImport({
     @cInclude("gtty_fileclip.h");
     @cInclude("gtty_finder.h");
     @cInclude("gtty_ctl.h");
+    @cInclude("gtty_ext.h");
     @cInclude("stdlib.h");
     @cInclude("stdio.h");
     @cInclude("unistd.h");

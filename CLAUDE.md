@@ -751,7 +751,7 @@ the shell. Users expect it to behave like a shell in a terminal.
   cropped to their pixels and fitted to their cells (`glyphCells`).
 - **Commands:** gtty's own names are `s`/`sh`/`shell`, `run`, `close [N|all]`,
   `focus N`, `s --cwd DIR`, `zoom in|out|150%`, `colors [on|off]`, `/clear`, `list`,
-  `help`, `quit`, `show [-a] file`, `settings`. Everything else the user's shell knows
+  `help`, `quit`, `show [-a] file`, `settings`, `extensions`. Everything else the user's shell knows
   runs as a job.
 - **`show <file>`** (`App.showFile`, `src/sys/gtty_open.c`): opens a file
   with its default app, no job window (macOS LaunchServices; Linux
@@ -763,7 +763,7 @@ the shell. Users expect it to behave like a shell in a terminal.
   it would open (`test/show.gt`). Linux side compiles but is untested
   (picker: mimeinfo.cache, `gio launch` / `gtk-launch`).
 - **Menu bar** (mouse; shortcuts could clash with the jobs' keys): menus
-  **gtty** (About gtty, Settings…, New Window, New Shell, Run command, Sync Typing)
+  **gtty** (About gtty, Settings…, Extensions…, New Window, New Shell, Run command, Sync Typing)
   and **Help** (gtty Help, ⌘? on macOS; see "Help"). **No Edit
   menu** (removed 2026-10-07: with several job windows its Copy / Paste
   were confusing): ⌘C / ⌘V / ⌘A (Linux Ctrl+Shift+C / V / A) are plain
@@ -1074,8 +1074,8 @@ decisions; items marked *open* are undecided.
   (screenshot; convert with `sips -s format png`), `/type text` (text + Enter
   through the real keyboard path), `/click x y` (real mouse event, window coords), `/dclick x y` (double click), `/down x y` / `/up x y` (left button), `/rclick x y` (right click), `/move x y` (mouse move, no button: hover / tooltips), `/drag x1 y1 x2 y2` (press, move, release), `/text text` (typed, no Enter; each ASCII character's key down first, as a keyboard sends it, `scriptTyping`),
   `/key ctrl+shift+left` (a key with modifiers: ctrl shift alt cmd + left right up down home end backspace delete enter escape tab c v x insert a n t f period pageup pagedown f2 space 1 2 3 4), `/resize w h`
-  (gtty's OS window), `/menu run|settings|new-shell|new-window|sync-typing|about|help` (a menu pick; macOS
-  menus can't be clicked from a script), `/target main|settings|sessions` (where
+  (gtty's OS window), `/menu run|settings|extensions|new-shell|new-window|sync-typing|about|help` (a menu pick; macOS
+  menus can't be clicked from a script), `/target main|settings|sessions|extensions` (where
   the next /click /move /drag /text /key /type /shot go), `/mods
   cmd+shift|none` (modifier keys held, via SDL_SetModState), `/quit`. macOS blocks synthetic keystrokes (osascript), so use
   these. A shell window needs ~1.5 s (`/wait 1500`) before typing into it.
@@ -1170,7 +1170,11 @@ decisions; items marked *open* are undecided.
   and sets its own text (`win.ui.set` → `App.chipChanged` →
   `JobWindow.setChip`; no text = not shown). Events (`App.fireChipEvents`):
   `window_changed` (at start, then only on a change: `changed_seq`, set in
-  `tickRest`) and `command_started` (`started_seq`, in `pump`). Still in
+  `tickRest`), `command_started` (`started_seq`, in `pump`) and `key`
+  (2026-11-11; `App.keyPressed` / `textTyped` / `flushKey`: a key and its
+  text as one event, the key's name from `keyName`, the modifier flags;
+  not at a password prompt, `gtty_pty_secret`: ICANON on, ECHO off; a
+  key is the user's, like a click). Still in
   the window / App, as before: reading the folder and branch
   (`refreshChips`), peeks, drawing, the sessions file (`tickSessions`), the
   focus file's sync (`tickFocus`). `GTTY_TRACE` ends with the totals
@@ -1217,10 +1221,44 @@ decisions; items marked *open* are undecided.
   `Host.report` logs a callback's error, `pump` dropped events (as
   `gtty`). `gtty ext logs [-f] [--pid N] [extension]`, handled first in
   `main`, no window: scans `$TMPDIR/gtty-<pid>` for this user's live
-  gttys, the newest log wins. At run time third-party extensions will
-  be child processes of gtty; in development (`gtty ext`) the IDE may
-  start them (the user's rule, 2026-11-06). Not built. Test:
-  `test/ext-log.gt` with `/dialog logLine|logFail`.
+  gttys, the newest log wins. Test: `test/ext-log.gt` with `/dialog
+  logLine|logFail`.
+- **Installed extensions** (2026-11-10; docs/protocol.md,
+  docs/extensions.md "Languages" / "Packaging" / "Installing"): at run
+  time each is a child process of gtty (the user's rule, 2026-11-06; in
+  development the IDE starts it and it connects, see "Debugging" below). `src/core/Extensions.zig` (manifest, `scan`,
+  `readPackage` / `installPackage`, `uninstall`, `setEnabled`,
+  `stampOf`; `<extensions>/<name>/code/` + `data/` + `disabled`) and
+  `Archive.zig` (zip / tar / tar.gz from memory, no links or escapes; both
+  unit-tested); `App.tickExtensions` (once a second: stamp → scan →
+  `Host.syncInstalled`). `src/chips/Proc.zig`: one process (`gtty_ext_spawn`
+  in `src/sys/gtty_ext.c`: socket on fd 3, stdout / stderr to the log,
+  own process group, Linux PDEATHSIG), JSON lines, non-blocking, `pump`
+  once a frame; `Host.procLine` → the same `Sink` as the standard chips
+  (`sdk.wire` decodes, `sdks/zig/src/wire.zig`), `procCall` (shell,
+  storage; waiting opens retried each frame, `Host.waiting`), `fromUser`
+  from the event id a mode / dialog cites. Chip slots: `JobWindow.Chip`
+  is non-exhaustive, values from `.ext` (4, the test extension) up to
+  `max_chips` (16); `Host.nameOf(chip)`. `gtty ext install | uninstall |
+  enable | disable | list | logs | socket`. **Extension manager**
+  (`src/ui/ExtensionsWindow.zig`, own OS window, gtty ▸ Extensions…
+  `GTTY_MENU_EXTENSIONS`, command `extensions`, `/menu extensions`,
+  `/target extensions`; a package dropped on it or Install… (SDL file
+  dialog) → a confirm banner; ⋮ Turn Off / On, Restart, Unlock Files,
+  Uninstall twice; App does restart / unlock / uninstall, `extensionWant`).
+  Script `/drop` goes to the `/target` window. Tested by hand runs, not a
+  `.gt` file yet. **Debugging** (2026-11-11; docs/protocol.md
+  "Development", docs/extensions.md "Debugging", each AGENTS.md "Debug"):
+  an extension the IDE started (no `GTTY_EXT_FD`) connects to
+  `GTTY_EXT_SOCKET`, else the shared `$TMPDIR/gtty-dev-<uid>/ext.sock`
+  (`src/chips/DevSocket.zig`: each gtty listens on `<tmp>/ext.sock`, the
+  newest links the shared one to it, not in `--script` runs; this user's
+  processes only), sends `attach` (name, else `dir`'s manifest), gets
+  `hello` or `refused`. It replaces the installed copy while connected
+  (`Proc.dev` / `replaced`, `Host.attach`, `Host.rescan`), never signalled;
+  wider limits (64 MB queue, 10 min user click, 30 min file hold).
+  Manager: "debugging, pid N". `gtty ext socket [--pid N]`. Tested with
+  lldb on the Zig example and the conformance check (`dev_check`).
 - **Dialogs** (2026-11-05; `src/ui/Dialog.zig`, App "dialogs" section; the
   design in `docs/extensions.md`): `win.ui.set(.{ .dialog = … })` →
   `App.dialogSet` (`JobWindow.dialogs`, one per extension and window),
@@ -1413,7 +1451,8 @@ decisions; items marked *open* are undecided.
   short animation per feature, no AI (not ready yet). The full user guide
   is `docs/guide.md`, the AI's docs wait in `docs/ai.md` (not linked),
   building / testing / source layout in `HACKING.md`.
-- **Extensions** (only the standard chips so far, see "Standard chips"): read
+- **Extensions** (the standard chips, and installed ones, see "Installed
+  extensions"): read
   `docs/extensions-ai.md` before writing an extension or working on the
   extension system (chips, peeks, dialogs, their commands and rules). The
   developer guide is `docs/extensions.md`; keep the two in step. Extensions
@@ -1421,12 +1460,25 @@ decisions; items marked *open* are undecided.
   alone and lists only what exists (`sdks/zig/AGENTS.md`, plus a `CLAUDE.md`
   pointing at it) and a complete example its tests compile
   (`examples/hosts.zig`). **Any change to the SDK updates AGENTS.md too.**
-  SDKs
-  live in `sdks/<language>/` (only `zig`);
+  SDKs live in `sdks/<language>/`: `zig`, `python` (`gtty.py`),
+  `javascript` (`gtty.js` + `gtty.d.ts`), `go` (module
+  `github.com/Tesselix/gtty/sdks/go`); standard libraries only, the same
+  API and the same `hosts` example, checked by
+  `sdks/conformance/fake_gtty.py` (ci.yml job `sdks`, part of
+  `build-and-test`);
   `scripts/package-sdks.sh` (run by package.sh) packs each into
-  `dist/gtty-sdk-<language>-<v>.tar.gz` with the LICENSE and the version;
-  release.yml uploads it to stable and edge releases (a new language
-  means adding its file to the steps there).
+  `dist/gtty-sdk-<language>-<v>.tar.gz` with the LICENSE, a VERSION file
+  and the conformance check; release.yml uploads every `gtty-sdk-*` (its
+  fixed-name copies list the languages: add a new one there).
+  **`extension-examples/`** (2026-11-11): real extensions built on the
+  SDKs, one folder per language, the SDK taken from `sdks/` by relative
+  path (`package.sh` copies it into the package). `history/`: a chip
+  listing the commands worth running again (`command_started`; a flag,
+  no cd / ls / find; the rules in its README and `cases.tsv`, which every
+  language's tests read); a pick copies through pbcopy / wl-copy / xclip
+  / xsel (the SDK can't type into a window). `history/check.py` drives
+  one through the conformance `Fake`; ci.yml's `sdks` job runs the tests
+  and the check for all four. Change the four together.
 
 ## License
 

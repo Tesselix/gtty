@@ -28,6 +28,7 @@ enum {
     GTTY_MENU_HELP = 10,      // Help ▸ gtty Help (⌘?): the prompt's commands in a job window
     // 11, 12: the old Session menu's rows (gone: the session chip has them).
     GTTY_MENU_CHECK_UPDATES = 13, // gtty ▸ Check for Updates… (right under About)
+    GTTY_MENU_EXTENSIONS = 14, // gtty ▸ Extensions…: the extension manager
 };
 
 typedef bool (*gtty_menu_enabled_fn)(int code);

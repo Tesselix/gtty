@@ -1,9 +1,10 @@
 # Writing gtty extensions
 
-> **Status: partly built.** gtty's standard chips run on this: the events
-> below, text, chips, peeks, epeeks, dialogs and their clicks, storage,
-> logs and `win.shell()`. Icon files, `windowText`, labels and installed extensions
-> are the agreed design, not code yet, so names can still change.
+> **Status: partly built.** Built: the events below, text, chips, peeks,
+> epeeks, dialogs and their clicks, storage, logs, `win.shell()`, installed
+> extensions as their own programs, SDKs for Zig, Python, JavaScript and Go
+> (`sdks/`), `gtty ext`, the extension manager and debugging from an IDE. Icon files, `windowText`
+> and labels are the agreed design, not code yet, so names can still change.
 > Items marked *(proposed)* are not decided; they are listed in
 > [Not decided yet](#not-decided-yet).
 
@@ -144,9 +145,24 @@ pub fn onEvent(win: *gtty.Window, ev: *const gtty.Event) !void {
 |---|---|---|
 | `window_changed` | When the window starts, then only when something changed | `folder`, `branch`, `remote` |
 | `command_started` | When a command starts in the window's shell | `command`, `folder`, `remote` |
+| `key` | When a key is pressed while the window has the keyboard | `key`, `text`, `ctrl`, `shift`, `alt`, `cmd` |
 | `button_click` | When one of your buttons is pressed; no need to register | `button` |
 
 More will come as chips need them, and few on purpose.
+
+**Keys.** `key` is the key's name: the character on it, unshifted (`a`,
+`1`, `/`), or `enter`, `escape`, `tab`, `backspace`, `delete`, `space`,
+`left`, `right`, `up`, `down`, `home`, `end`, `pageup`, `pagedown`,
+`insert`, `f1` to `f24`, else the system's name in lowercase. `text` is
+what it typed (`A` with Shift), empty for keys that type nothing. `cmd` is
+⌘ on macOS, the Super key on Linux; modifier keys alone send nothing. A key
+event is a notice: the key still reaches the program (or gtty's shortcut)
+and can't be held back. A peek or dialog opened for a key gets the
+keyboard, as for a click. gtty sends none while the terminal hides what is
+typed (a password prompt), nor while one of its dialogs, menus, an epeek's
+filter or the find box has the keyboard. A password asked on a remote host
+looks like any other typing, so an extension must never keep or send what
+it receives.
 
 **Every event starts with the same header.** After it come the parameters of the element that fired it.
 
@@ -757,25 +773,112 @@ The log lives in gtty's private temp folder, readable only by you, and goes
 when gtty closes. At 8 MB it moves to `ext.log.1` and a new one starts, so
 gtty keeps at most about 16 MB.
 
+## Languages
+
+An installed extension is **its own program**, in any language with an
+SDK. gtty starts it as its child process when gtty starts (or when it is
+installed), and stops it when gtty closes; they talk over a socket, in
+JSON lines ([protocol.md](protocol.md)). gtty never waits for it, so a
+slow or stuck extension can't freeze the terminal, and a crash only ends
+the extension (its chip goes; the log says why).
+
+| SDK | Language | Calls that answer (`shell`, storage) |
+|---|---|---|
+| `sdks/zig` | Zig 0.16 | return at once with the answer |
+| `sdks/python` | Python 3.8+ | return the answer |
+| `sdks/javascript` | Node.js 18+ | return promises: `await` them |
+| `sdks/go` | Go 1.21+ | return `(value, error)` |
+
+Every SDK has the same functions and the same example (`hosts`), and
+`sdks/conformance/fake_gtty.py`, a stand-in for gtty, checks each example
+through one conversation. One process serves every window of one gtty.
+
+The standard chips use the Zig SDK too, but inside gtty's process: there
+`win.ui` errors come back from the call; in a separate program they are
+lines in `gtty ext logs`.
+
 ## Packaging
 
-An extension is a zip or tar file holding its program and a
-`manifest.json`:
+A package is a folder, or a `.zip`, `.tar` or `.tar.gz` of one, with
+`manifest.json` at its top (or in its single top folder):
 
 ```json
-{"name": "kube", "main": "kube-macos-arm64", "icon": "kube.png"}
+{
+  "name": "kube",
+  "version": "1.2.0",
+  "description": "The cluster this window talks to",
+  "main": {"macos-aarch64": "bin/kube-macos", "linux-x86_64": "bin/kube-linux"}
+}
 ```
 
-`name` and `main` are required. gtty unpacks it into its own folder under
-the extensions folder, then asks the user before running anything.
+| Key | |
+|---|---|
+| `name` | Required. Lowercase letters, digits, `-` and `_`, starting with a letter, 32 at most. Not `folder`, `git`, `focus`, `session`, `test`, `gtty`, `extensions`. It names the storage and the log lines, and an install with the same name is an update. |
+| `main` | Required. The program, relative to the package: a string, or one per platform (`macos-aarch64`, `linux-x86_64`). |
+| `runtime` | `python3` or `node`: gtty runs `python3 main` / `node main`, found on PATH. Left out: `main` runs by itself. |
+| `version`, `description` | Shown in the manager and `gtty ext list`. |
+
+gtty refuses a package with a link, a device or a name outside its folder,
+over 256 MB or 20000 files. It unpacks into `<extensions>/<name>/code/`
+(the folder of `extension-storage`: `$GTTY_EXTENSIONS`, else
+`~/.local/share/gtty/extensions`), beside `data/` (its stateful storage,
+kept on update). It starts with gtty's environment, in its own folder,
+with `GTTY_EXT_NAME` and `GTTY_EXT_DIR` set.
+
+## Installing
+
+- **The extension manager** (gtty ▸ Extensions…, or `extensions` at the
+  prompt): the installed extensions, whether each runs (with its pid, or
+  its exit code when it failed), and a ⋮ menu per row: Turn Off / Turn On,
+  Restart, Unlock Files, Uninstall (asks first: its data goes too).
+  **Install…** opens a file dialog, and a package or folder dropped on the
+  window works too; either way the manager first shows the manifest and
+  that an extension runs as the user, with Install / Cancel.
+- **The command line**, for scripts, IDE tasks and AI tools:
+
+```sh
+gtty ext install <folder | file.zip | file.tar.gz>   # or update
+gtty ext list
+gtty ext enable | disable <name>
+gtty ext uninstall <name>                            # its data too
+gtty ext logs [-f] [--pid N] [extension]
+gtty ext socket [--pid N]                            # where a debugged one connects
+```
+
+Every running gtty looks at the folder once a second: it starts what was
+installed or turned on, restarts what was installed again, and stops what
+was turned off or removed. So the development loop is: build,
+`gtty ext install`, `gtty ext logs -f`. Or skip installing and debug it:
+
+## Debugging
+
+Start the extension from the IDE's debugger (VS Code, PyCharm, GoLand,
+lldb, …) while gtty runs. gtty didn't start it, so the SDK connects to the
+newest gtty on its own, and gtty treats it as the extension of that name:
+
+- The name comes from `GTTY_EXT_NAME`, else from the `manifest.json` in
+  the folder it runs in.
+- Its chip shows in every window. An installed copy of the same name stops
+  while it runs, and starts again when it ends.
+- Breakpoints stop only the extension; gtty keeps working. Its limits are
+  wider meanwhile: 64 MB of events wait for it, a dialog it opens within 10
+  minutes of the user's click still gets the keyboard, its files stay open
+  up to 30 minutes.
+- Its stdout and stderr stay in the IDE's console; its log lines go to
+  `gtty ext logs` as usual. The extension manager shows "debugging" and its
+  pid.
+- Only your own processes get in. `GTTY_EXT_SOCKET=<path>` picks a gtty
+  other than the newest (`gtty ext socket --pid N` prints its path).
+
+Every SDK's `AGENTS.md` has a VS Code `launch.json` for its language under
+"Debug". The details are in [protocol.md](protocol.md), "Development".
 
 ## Not decided yet
 
 | Point | Current proposal |
 |---|---|
-| An extension still running after gtty closed | The SDK ends the program when the connection closes |
+| An extension still running after gtty closed | The SDKs end the program when the connection closes (built); on Linux it also gets SIGTERM when gtty dies |
 | A window moved to another gtty | `onWindowClose` here, `onWindowStart` there |
 | YAML as well as JSON | JSON only for now: Zig's standard library has no YAML parser, and gtty adds no new packages lightly |
-| One program for several platforms | `main` can be a map by platform |
-| Updating an extension | A required `id` in the manifest, so a new version replaces the old |
+| An icon for the chip | A PNG in the package, named in the manifest |
 | Limits | `data` 4 KB |
