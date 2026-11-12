@@ -61,7 +61,7 @@
 /wait 400
 /shot ../i7-filemenu.bmp
 # Copy last input, then ⌘V: the ls line typed at the prompt
-/click 110 469
+/click 110 132
 /wait 300
 /move 400 300
 /wait 200

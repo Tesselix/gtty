@@ -7767,7 +7767,12 @@ fn openFileMenu(app: *App, x: f32, y: f32) bool {
     const one = paths.len == 1;
     const folder = one and FileOpener.kindOf(paths[0]) == .folder;
     var menu: Menu = .{ .purpose = .{ .files = w.uid }, .at = .{ x, y } };
-    // No title: the menu opens at the name it is about.
+    // No title: the menu opens at the name it is about. First, next to
+    // the pointer, the window's copies, as its own right-click menu has
+    // them (a name under the mouse shouldn't hide them), then a line.
+    menu.addCode(.{ .label = if (w.copiesLast()) "Copy last output" else "Copy all output" }, file_output);
+    if (w.lastInput() != null) menu.addCode(.{ .label = "Copy last input" }, file_input);
+    menu.addCode(Menu.separator, -1);
     if (one and !folder) {
         // One row: "Open with <default app>" (its icon; ▸ the other apps
         // and Other…), or, with no default app, "Open With…" (a click:
@@ -7810,11 +7815,6 @@ fn openFileMenu(app: *App, x: f32, y: f32) bool {
     menu.addCode(.{ .label = "Paste", .key = file_keys.paste, .enabled = paste_ok }, file_paste);
     if (c.gtty_trash_supported()) menu.addCode(.{ .label = "Move to Trash", .key = file_keys.trash }, file_trash);
     menu.addCode(.{ .label = "Delete…", .key = file_keys.delete }, file_delete);
-    // The window's copies, as its own right-click menu has them (a name
-    // under the mouse shouldn't hide them).
-    menu.addCode(Menu.separator, -1);
-    menu.addCode(.{ .label = if (w.copiesLast()) "Copy last output" else "Copy all output" }, file_output);
-    if (w.lastInput() != null) menu.addCode(.{ .label = "Copy last input" }, file_input);
     app.popMenu(menu);
     return true;
 }
