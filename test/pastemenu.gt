@@ -34,7 +34,7 @@
 # the file menu's Paste: the paste menu at the same place; Paste Name
 /rclick 50 84
 /wait 300
-/click 110 220
+/click 110 344
 /wait 300
 /shot ../p3-filemenu.bmp
 /key up

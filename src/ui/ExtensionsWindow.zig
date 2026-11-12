@@ -590,9 +590,12 @@ pub fn render(s: *ExtensionsWindow, theme: *const Theme) void {
         var rb: [160]u8 = undefined;
         _ = g.text(small, ax, y, std.fmt.bufPrint(&rb, "runs {s}{s}{s}", .{ m.main, if (m.runtime.len > 0) " with " else "", m.runtime }) catch "", theme.dim);
         y += small.cell_h * 1.4;
-        _ = g.text(small, ax, y, "An extension runs as you: it can read and change your files.", theme.stderr_accent);
+        // NOTE: in yellow, struck twice (bold); the rest in plain text.
+        _ = g.text(small, ax + @max(1, @round(ui)), y, "NOTE:", theme.update);
+        const nx = g.text(small, ax, y, "NOTE: ", theme.update);
+        _ = g.text(small, nx, y, "An extension runs as you: it can read and change your files.", theme.prompt_fg);
         y += small.cell_h * 1.3;
-        _ = g.text(small, ax, y, "Install only what you trust.", theme.stderr_accent);
+        _ = g.text(small, nx, y, "Install only what you trust.", theme.prompt_fg);
         y += small.cell_h * 2.2;
         const bw = s.button(f, theme, ax, y, if (p.update) "Update" else "Install", .confirm, true);
         _ = s.button(f, theme, ax + bw + @round(10 * ui), y, "Cancel", .cancel, false);

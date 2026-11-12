@@ -1,0 +1,61 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# The icon next to an outlined name: a click on the name copies the name
+# (text), a click on the icon copies the file (as ⌘C: the paste menu
+# opens on ⌘V); the file menu's Copy Name / Copy Path copy only text.
+# Run in a scratch folder:
+#   mkdir -p w/sub && cd w && touch 'My File.txt' keep.txt notes.txt
+#   GTTY_DRAG_DRY=1 gtty --script $REPO/test/fileicon.gt
+# Shots go to the folder above.
+/s bash
+/wait 1500
+/type clear
+/wait 500
+/type LC_ALL=C ls -1; printf '    %s\n' keep.txt
+/wait 800
+# hover "My File.txt" (column 0): the icon goes right of the name
+/move 50 66
+/wait 400
+/shot ../i1-icon-right.bmp
+# along to the icon on the right (column-0 name): the mark stays
+/glide 122 66 600
+/shot ../i1b-on-icon-right.bmp
+# hover the indented keep.txt: the icon left of it, over the blanks
+/move 80 138
+/wait 400
+/shot ../i2-icon-left.bmp
+# onto the icon as a real mouse goes (every step, across the gap): the
+# mark stays, the icon lights up
+/glide 42 138 600
+/wait 400
+/shot ../i3-on-icon.bmp
+# click the icon: the file is copied; ⌘V over the window opens the paste menu
+/click 42 138
+/wait 400
+/shot ../i4-copied-file.bmp
+/move 400 300
+/wait 200
+/key cmd+v
+/wait 400
+/shot ../i5-paste-menu.bmp
+/key escape
+/wait 300
+# click the name: the name as text; ⌘V types it
+/move 80 138
+/wait 300
+/click 80 138
+/wait 400
+/move 400 300
+/wait 200
+/key cmd+v
+/wait 400
+/shot ../i6-pasted-name.bmp
+/key ctrl+c
+/wait 300
+# file menu: Copy / Copy Name / Copy Path
+/move 50 84
+/wait 300
+/rclick 50 84
+/wait 400
+/shot ../i7-filemenu.bmp
+/quit

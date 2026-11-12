@@ -1,0 +1,7 @@
+{
+  "name": "commands-python",
+  "version": "1.0.0",
+  "description": "Commands run before, to run again: all but the very common ones (cd, ls, pwd, …)",
+  "main": "commands.py",
+  "runtime": "python3"
+}

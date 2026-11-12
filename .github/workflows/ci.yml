@@ -62,15 +62,15 @@ jobs:
           python3 conformance/fake_gtty.py -- python3 python/examples/hosts.py
           python3 conformance/fake_gtty.py -- node javascript/examples/hosts.js
           python3 conformance/fake_gtty.py -- "$RUNNER_TEMP/hosts-go"
-      # The history example in every language: its tests (the shared
-      # cases.tsv), then one conversation with the stand-in gtty.
-      - name: History examples
-        working-directory: extension-examples/history
+      # The commands example in every language: its tests (the shared
+      # cases.tsv).
+      - name: Example extensions
+        working-directory: extension-examples/commands
         run: |
-          (cd python && python3 test_history.py && python3 ../check.py -- python3 history.py)
-          (cd javascript && node --test && python3 ../check.py -- node history.js)
-          (cd go && go vet ./... && go test ./... && go build -o "$RUNNER_TEMP/history-go" . && python3 ../check.py -- "$RUNNER_TEMP/history-go")
-          (cd zig && zig build test && zig build && python3 ../check.py -- zig-out/bin/history)
+          (cd python && python3 test_commands.py)
+          (cd javascript && node --test)
+          (cd go && go vet ./... && go test ./...)
+          (cd zig && zig build test && zig build)
 
   # What release.yml builds, on the same runner: build-bin.sh (macOS arm64
   # + Linux x86_64, ReleaseSafe, stripped) and package.sh (dmg, deb, rpm,

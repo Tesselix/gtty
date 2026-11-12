@@ -13,6 +13,7 @@ const builtin = @import("builtin");
 const c = @import("../c.zig").c;
 const Archive = @import("Archive.zig");
 const Tee = @import("Tee.zig");
+const ExtStorage = @import("ExtStorage.zig");
 
 /// Names gtty's own chips have.
 pub const reserved = [_][]const u8{ "folder", "git", "focus", "session", "test", "gtty", "extensions" };
@@ -232,9 +233,10 @@ pub fn readPackage(a: std.mem.Allocator, src: []const u8) InstallError!Package {
 pub fn installPackage(a: std.mem.Allocator, root: []const u8, pkg: Package) InstallError![]const u8 {
     const m = pkg.manifest;
     const entries = pkg.entries;
-    _ = c.mkdir((try a.dupeZ(u8, root)).ptr, 0o700);
+    // A first install: the folders above may not be there yet
+    // (~/.local/share/gtty on a new machine).
     const dir = try std.fmt.allocPrintSentinel(a, "{s}/{s}", .{ root, m.name }, 0);
-    _ = c.mkdir(dir.ptr, 0o700);
+    if (!ExtStorage.mkdirs(dir)) return error.WriteFailed;
     // Unpack beside it, then swap: a running copy never sees half of it.
     const stage = try std.fmt.allocPrintSentinel(a, "{s}/.code-{d}", .{ dir, c.getpid() }, 0);
     Tee.Dir.removeTree(stage);
@@ -417,11 +419,12 @@ test "install from a folder, update, disable, uninstall" {
     const a = arena.allocator();
     var cmd: [1024]u8 = undefined;
     const script = try std.fmt.bufPrintSentinel(&cmd,
-        \\cd {s} && mkdir -p src/lib root && printf '{{"name":"demo","version":"1","main":"run.sh"}}' > src/manifest.json &&
+        \\cd {s} && mkdir -p src/lib && printf '{{"name":"demo","version":"1","main":"run.sh"}}' > src/manifest.json &&
         \\printf '#!/bin/sh\n' > src/run.sh && chmod 755 src/run.sh && printf x > src/lib/a.txt
     , .{base}, 0);
     if (c.system(script.ptr) != 0) return error.SkipZigTest;
-    const root = try std.fmt.allocPrint(a, "{s}/root", .{base});
+    // Not there yet, nor its parents: a first install on a new machine.
+    const root = try std.fmt.allocPrint(a, "{s}/share/gtty/extensions", .{base});
     const src = try std.fmt.allocPrint(a, "{s}/src", .{base});
     try std.testing.expectEqualStrings("demo", try install(a, root, src));
     var list = try scan(a, root);

@@ -83,6 +83,9 @@ pub var drop_mode: bool = false;
 pub const hold_ms = 300;
 
 mark: ?Mark = null,
+/// The mouse is on the mark's icon (JobWindow draws it next to the name;
+/// a click there copies the file, not its name).
+over_icon: bool = false,
 /// The button is held on the mark long enough: moving now drags the file
 /// (the outline is drawn solid).
 held: bool = false,
@@ -108,12 +111,16 @@ pub fn help(fo: *const FileOpener, buf: []u8) []const u8 {
     if (!enabled) return "";
     if (fo.mark) |*m| {
         const name = std.fs.path.basename(m.file());
+        if (fo.over_icon) return (if (m.folder)
+            std.fmt.bufPrint(buf, "click: copy the folder {s} (a file manager pastes it, a text field its path)  ·  drag: drag it out", .{name})
+        else
+            std.fmt.bufPrint(buf, "click: copy the file {s} (a file manager pastes it, a text field its path)  ·  drag: drag it out", .{name})) catch "";
         return (if (m.folder)
-            std.fmt.bufPrint(buf, "double-click: cd to {s}  ·  hold and drag: drag it out  ·  right-click: more", .{name})
+            std.fmt.bufPrint(buf, "click: copy the name  ·  double-click: cd to {s}  ·  icon: copy the folder  ·  right-click: more", .{name})
         else if (m.remote)
             std.fmt.bufPrint(buf, "double-click: copy {s} here (read-only) and open it  (Shift: choose the app)", .{name})
         else
-            std.fmt.bufPrint(buf, "double-click: open {s}  (Shift: choose the app)  ·  hold and drag: drag it out  ·  right-click: more", .{name})) catch "";
+            std.fmt.bufPrint(buf, "click: copy the name  ·  double-click: open {s}  (Shift: choose the app)  ·  icon: copy the file  ·  right-click: more", .{name})) catch "";
     }
     if (!fo.over) return "";
     const dest = fo.over_dest_buf[0..fo.over_dest_len];
@@ -130,6 +137,7 @@ pub fn clear(fo: *FileOpener) bool {
     fo.pending = null;
     fo.asked = null;
     fo.held = false;
+    fo.over_icon = false;
     if (fo.mark == null) return false;
     fo.mark = null;
     return true;
@@ -291,7 +299,7 @@ pub fn markAt(fo: *FileOpener, pos: ?Screen.TextPos) ?*Mark {
 /// A double-click at `pos`: on the outlined name, open it (`pick`: with
 /// the app picker).
 pub fn open(fo: *FileOpener, w: *JobWindow, pos: ?Screen.TextPos, pick: bool) Action {
-    const m = fo.markAt(pos) orelse return .none;
+    const m = (if (fo.over_icon) (if (fo.mark) |*k| k else null) else fo.markAt(pos)) orelse return .none;
     if (m.folder) {
         if (!(if (m.remote) w.remote_idle else w.atPrompt())) return .none;
         // `cd '<dir>'` + Enter (Ctrl+U first: the line is just the cd).
