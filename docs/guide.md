@@ -209,7 +209,9 @@ open selects its text.
   folder its program is in.
 - **Copy last input** (right-click menu of a zsh or bash window waiting
   for your input, once it has run a command): copies the last command
-  line you ran.
+  line you ran. It and **Copy last output** sit between two lines, under
+  Copy; right-clicking a file or folder name shows them too, at the end
+  of the file menu.
 - **Paste ▶** — click the arrow next to Paste for your **last 5 copies**
   in gtty (newest first, each copy listed once; line breaks shown as ⏎).
   Pick one to paste it.

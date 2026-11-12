@@ -186,8 +186,12 @@ pub const FolderRows = struct { open: bool, info: bool };
 pub fn edit(target: Target, at: [2]f32, copy_ok: bool, output: ?[]const u8, input: bool, paste_ok: bool, history_ok: bool, folders: ?bool, folder: ?FolderRows) Menu {
     var m: Menu = .{ .purpose = .{ .edit = target }, .at = at };
     m.addCode(.{ .label = "Copy", .key = edit_keys[0], .enabled = copy_ok }, edit_copy);
+    // The window's output / input copies: a group of their own, between
+    // lines (the user's rule, 2026-11-12).
+    if (output != null or input) m.addCode(separator, -1);
     if (output) |label| m.addCode(.{ .label = label }, edit_output);
     if (input) m.addCode(.{ .label = "Copy last input" }, edit_input);
+    if (output != null or input) m.addCode(separator, -1);
     m.addCode(.{ .label = "Paste", .key = edit_keys[1], .enabled = paste_ok, .sub = true, .sub_on = history_ok }, edit_paste);
     if (folders) |on| m.addCode(.{ .label = "History", .enabled = on, .sub = true, .sub_on = on }, edit_folders);
     if (folder) |f| {
@@ -526,14 +530,16 @@ test "Paste's ▸ box opens the submenu, the rest of the row pastes" {
     try std.testing.expect(m.over_arrow);
 }
 
-test "the right-click menu of a job window: Copy last output under Copy" {
+test "the right-click menu of a job window: Copy last output under Copy, between lines" {
     const m = Menu.edit(.{ .job = 7 }, .{ 10, 10 }, false, "Copy last output", false, true, false, false, null);
-    try std.testing.expectEqual(@as(usize, 5), m.n);
-    try std.testing.expectEqualStrings("Copy last output", m.rows[1].label);
-    try std.testing.expectEqual(@as(i32, edit_output), m.codes[1]);
-    try std.testing.expectEqual(@as(i32, edit_paste), m.codes[2]);
-    try std.testing.expectEqual(@as(i32, edit_folders), m.codes[3]);
-    try std.testing.expectEqual(@as(i32, edit_new_shell), m.codes[4]);
+    try std.testing.expectEqual(@as(usize, 7), m.n);
+    try std.testing.expect(m.rows[1].sep);
+    try std.testing.expectEqualStrings("Copy last output", m.rows[2].label);
+    try std.testing.expectEqual(@as(i32, edit_output), m.codes[2]);
+    try std.testing.expect(m.rows[3].sep);
+    try std.testing.expectEqual(@as(i32, edit_paste), m.codes[4]);
+    try std.testing.expectEqual(@as(i32, edit_folders), m.codes[5]);
+    try std.testing.expectEqual(@as(i32, edit_new_shell), m.codes[6]);
 }
 
 test "separators take no clicks; a whole-row submenu takes its ▸" {
@@ -567,20 +573,23 @@ test "separators take no clicks; a whole-row submenu takes its ▸" {
 
 test "Copy last input sits under Copy last output, only when asked for" {
     const m = Menu.edit(.{ .job = 7 }, .{ 10, 10 }, false, "Copy last output", true, true, false, false, null);
-    try std.testing.expectEqual(@as(usize, 6), m.n);
-    try std.testing.expectEqualStrings("Copy last input", m.rows[2].label);
-    try std.testing.expectEqual(@as(i32, edit_input), m.codes[2]);
-    try std.testing.expectEqual(@as(i32, edit_paste), m.codes[3]);
+    try std.testing.expectEqual(@as(usize, 8), m.n);
+    try std.testing.expect(m.rows[1].sep);
+    try std.testing.expectEqual(@as(i32, edit_output), m.codes[2]);
+    try std.testing.expectEqualStrings("Copy last input", m.rows[3].label);
+    try std.testing.expectEqual(@as(i32, edit_input), m.codes[3]);
+    try std.testing.expect(m.rows[4].sep);
+    try std.testing.expectEqual(@as(i32, edit_paste), m.codes[5]);
 }
 
 test "a job window's folder rows: between separators, before New Shell" {
     const m = Menu.edit(.{ .job = 7 }, .{ 10, 10 }, false, "Copy last output", false, true, false, false, .{ .open = true, .info = false });
-    try std.testing.expectEqual(@as(usize, 9), m.n);
-    try std.testing.expect(m.rows[4].sep);
-    try std.testing.expectEqual(@as(i32, edit_folder_open), m.codes[5]);
-    try std.testing.expect(m.rows[5].enabled);
-    try std.testing.expectEqual(@as(i32, edit_folder_info), m.codes[6]);
-    try std.testing.expect(!m.rows[6].enabled);
-    try std.testing.expect(m.rows[7].sep);
-    try std.testing.expectEqual(@as(i32, edit_new_shell), m.codes[8]);
+    try std.testing.expectEqual(@as(usize, 11), m.n);
+    try std.testing.expect(m.rows[6].sep);
+    try std.testing.expectEqual(@as(i32, edit_folder_open), m.codes[7]);
+    try std.testing.expect(m.rows[7].enabled);
+    try std.testing.expectEqual(@as(i32, edit_folder_info), m.codes[8]);
+    try std.testing.expect(!m.rows[8].enabled);
+    try std.testing.expect(m.rows[9].sep);
+    try std.testing.expectEqual(@as(i32, edit_new_shell), m.codes[10]);
 }

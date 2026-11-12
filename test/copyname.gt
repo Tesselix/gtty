@@ -35,7 +35,7 @@
 /rclick 400 300
 /wait 400
 /shot ../c3-menu.bmp
-/click 430 377
+/click 430 424
 /wait 400
 /shot ../c3b-ask.bmp
 /key escape

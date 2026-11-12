@@ -15,7 +15,7 @@
 /rclick 500 300
 /wait 400
 /shot i1.bmp
-/click 574 502
+/click 574 520
 /wait 200
 /shot i2.bmp
 /move 180 66

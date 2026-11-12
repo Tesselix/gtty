@@ -7333,6 +7333,10 @@ const file_show = 10;
 const file_info = 11;
 const file_copy_name = 12;
 const file_copy_path = 13;
+/// The window's own rows (as its right-click menu): Copy last / all
+/// output, Copy last input.
+const file_output = 14;
+const file_input = 15;
 
 const sel_mod_name = if (builtin.os.tag == .macos) "⌘" else "Ctrl";
 const file_keys = if (builtin.os.tag == .macos) struct {
@@ -7806,6 +7810,11 @@ fn openFileMenu(app: *App, x: f32, y: f32) bool {
     menu.addCode(.{ .label = "Paste", .key = file_keys.paste, .enabled = paste_ok }, file_paste);
     if (c.gtty_trash_supported()) menu.addCode(.{ .label = "Move to Trash", .key = file_keys.trash }, file_trash);
     menu.addCode(.{ .label = "Delete…", .key = file_keys.delete }, file_delete);
+    // The window's copies, as its own right-click menu has them (a name
+    // under the mouse shouldn't hide them).
+    menu.addCode(Menu.separator, -1);
+    menu.addCode(.{ .label = if (w.copiesLast()) "Copy last output" else "Copy all output" }, file_output);
+    if (w.lastInput() != null) menu.addCode(.{ .label = "Copy last input" }, file_input);
     app.popMenu(menu);
     return true;
 }
@@ -7868,6 +7877,14 @@ fn fileMenuPick(app: *App, uid: ids_mod.Id, code: i32, at: [2]f32) void {
             } else if (w.running()) app.pasteInto(w);
         },
         file_trash => app.fileTrash(paths, w, app.menu_range),
+        file_output => {
+            defer app.freePaths(paths);
+            app.copyJob(w);
+        },
+        file_input => {
+            defer app.freePaths(paths);
+            if (w.lastInput()) |text| app.toClipboard(w, text);
+        },
         file_delete => app.askDelete(paths, w),
         else => app.freePaths(paths),
     }

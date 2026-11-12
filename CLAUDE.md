@@ -629,7 +629,10 @@ the shell. Users expect it to behave like a shell in a terminal.
   area, or on the prompt → **Copy** (the window's selection; dimmed with
   none), **Copy last output** / **Copy all output** (job windows: the
   title-bar copy, `copyJob`, with its flash; rows carry codes,
-  `Menu.edit_*`), **Paste** (dimmed for a finished job or an empty clipboard),
+  `Menu.edit_*`) and Copy last input, a group between separators
+  (2026-11-12, the user's rule; the file menu ends with the same two,
+  `file_output` / `file_input`: a name under the mouse mustn't hide
+  them), **Paste** (dimmed for a finished job or an empty clipboard),
   shortcut shown per row; job windows also get, between separators,
   **Open Folder in Finder** / **Get Folder Info** (Linux "… in Files" /
   "Folder Properties"; `edit_folder_open` / `_info`, `Menu.FolderRows`:

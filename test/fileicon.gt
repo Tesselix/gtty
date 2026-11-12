@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # The icon next to an outlined name: a click on the name copies the name
 # (text), a click on the icon copies the file (as ⌘C: the paste menu
-# opens on ⌘V); the file menu's Copy Name / Copy Path copy only text.
+# opens on ⌘V); the file menu's Copy Name / Copy Path copy only text, and
+# it has the window's Copy last output / Copy last input too.
 # Run in a scratch folder:
 #   mkdir -p w/sub && cd w && touch 'My File.txt' keep.txt notes.txt
 #   GTTY_DRAG_DRY=1 gtty --script $REPO/test/fileicon.gt
@@ -52,10 +53,19 @@
 /shot ../i6-pasted-name.bmp
 /key ctrl+c
 /wait 300
-# file menu: Copy / Copy Name / Copy Path
+# file menu: Copy / Copy Name / Copy Path, and the window's Copy last
+# output / Copy last input at its end
 /move 50 84
 /wait 300
 /rclick 50 84
 /wait 400
 /shot ../i7-filemenu.bmp
+# Copy last input, then ⌘V: the ls line typed at the prompt
+/click 110 469
+/wait 300
+/move 400 300
+/wait 200
+/key cmd+v
+/wait 400
+/shot ../i8-last-input.bmp
 /quit
