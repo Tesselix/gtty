@@ -4,14 +4,15 @@
 //! The extension manager: its own OS window, like the Session Manager
 //! (gtty ▸ Extensions…, the `extensions` command). On the left the
 //! installed extensions (name; version and whether it runs), each row with
-//! a ⋮ menu: Turn Off / Turn On, Restart, Unlock Files, Uninstall (asks
+//! a ⋮ menu: Turn Off / Turn On, Restart, Show Logs (a job window following
+//! its log live, `gtty ext logs -f`), Unlock Files, Uninstall (asks
 //! first: the data goes too). On the right the selected one: description,
 //! status, folder, program, data. Install: the header's Install… button
 //! (a file dialog: zip, tar, tar.gz) or a package / folder dropped on the
 //! window; a banner asks first, naming what it is. Changes to the folder
 //! go through core/Extensions.zig, so every gtty (Host.syncInstalled) and
-//! this list follow; what needs gtty's own state (restart, unlocking,
-//! uninstalling) is asked of App (`want`).
+//! this list follow; what needs gtty's own state (restart, logs,
+//! unlocking, uninstalling) is asked of App (`want`).
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -30,11 +31,11 @@ const font_pt = 13;
 const confirm_ms = 3000;
 const max_ctls = 256;
 
-const Item = enum { toggle, restart, unlock, uninstall };
+const Item = enum { toggle, restart, logs, unlock, uninstall };
 const Ctl = union(enum) { row: usize, more: usize, item: Item, install, confirm, cancel };
 
 /// What App does for the manager.
-pub const Want = union(enum) { restart: []const u8, unlock: []const u8, uninstall: []const u8 };
+pub const Want = union(enum) { restart: []const u8, logs: []const u8, unlock: []const u8, uninstall: []const u8 };
 
 gpa: std.mem.Allocator,
 window: *c.SDL_Window,
@@ -202,6 +203,7 @@ fn ask(s: *ExtensionsWindow, w: std.meta.Tag(Want), name: []const u8) void {
     const k = s.want_buf[0..n];
     s.want = switch (w) {
         .restart => .{ .restart = k },
+        .logs => .{ .logs = k },
         .unlock => .{ .unlock = k },
         .uninstall => .{ .uninstall = k },
     };
@@ -218,6 +220,7 @@ pub fn takeWant(s: *ExtensionsWindow) ?Want {
 pub fn done(s: *ExtensionsWindow, w: Want) void {
     switch (w) {
         .restart => |n| s.say("restarting {s}", .{n}, false),
+        .logs => |n| s.say("{s}: its log opened in a window in gtty", .{n}, false),
         .unlock => |n| s.say("{s}: its files are unlocked", .{n}, false),
         .uninstall => |n| s.say("uninstalled {s}, and its data", .{n}, false),
     }
@@ -309,6 +312,10 @@ fn pickItem(s: *ExtensionsWindow, it: Item) void {
             s.menu = null;
             if (!s.list[i].enabled) return s.say("{s} is off: turn it on first", .{name}, true);
             s.ask(.restart, name);
+        },
+        .logs => {
+            s.menu = null;
+            s.ask(.logs, name);
         },
         .unlock => {
             s.menu = null;
@@ -590,9 +597,12 @@ pub fn render(s: *ExtensionsWindow, theme: *const Theme) void {
         var rb: [160]u8 = undefined;
         _ = g.text(small, ax, y, std.fmt.bufPrint(&rb, "runs {s}{s}{s}", .{ m.main, if (m.runtime.len > 0) " with " else "", m.runtime }) catch "", theme.dim);
         y += small.cell_h * 1.4;
-        _ = g.text(small, ax, y, "An extension runs as you: it can read and change your files.", theme.stderr_accent);
+        // NOTE: in yellow, struck twice (bold); the rest in plain text.
+        _ = g.text(small, ax + @max(1, @round(ui)), y, "NOTE:", theme.update);
+        const nx = g.text(small, ax, y, "NOTE: ", theme.update);
+        _ = g.text(small, nx, y, "An extension runs as you: it can read and change your files.", theme.prompt_fg);
         y += small.cell_h * 1.3;
-        _ = g.text(small, ax, y, "Install only what you trust.", theme.stderr_accent);
+        _ = g.text(small, nx, y, "Install only what you trust.", theme.prompt_fg);
         y += small.cell_h * 2.2;
         const bw = s.button(f, theme, ax, y, if (p.update) "Update" else "Install", .confirm, true);
         _ = s.button(f, theme, ax + bw + @round(10 * ui), y, "Cancel", .cancel, false);
@@ -628,7 +638,7 @@ pub fn render(s: *ExtensionsWindow, theme: *const Theme) void {
             y += small.cell_h * 1.5;
         }
         y += small.cell_h;
-        const hint = if (s.confirm_at != 0) "Uninstall again to remove it and its data (Esc: keep it)" else "⋮: turn off, restart, unlock, uninstall · drop a package to install";
+        const hint = if (s.confirm_at != 0) "Uninstall again to remove it and its data (Esc: keep it)" else "⋮: turn off, restart, logs, unlock, uninstall · drop a package to install";
         _ = g.text(small, ax, y, hint, if (s.confirm_at != 0) theme.stderr_accent else theme.dim);
     }
     if (s.note.len > 0) _ = g.text(small, ax, H - pad - small.cell_h, s.note, if (s.note_err) theme.stderr_accent else theme.ok);
@@ -653,7 +663,7 @@ fn drawMenu(s: *ExtensionsWindow, f: *Gfx.Face, theme: *const Theme, dots: Rect,
     const ui = s.ui;
     const armed = s.confirm_at != 0;
     const on = if (s.selIndex()) |i| s.list[i].enabled else true;
-    const labels = [_][]const u8{ if (on) "Turn Off" else "Turn On", "Restart", "Unlock Files", if (armed) "Sure? Uninstall" else "Uninstall" };
+    const labels = [_][]const u8{ if (on) "Turn Off" else "Turn On", "Restart", "Show Logs", "Unlock Files", if (armed) "Sure? Uninstall" else "Uninstall" };
     const p = @round(10 * ui);
     const row_h = @round(f.cell_h * 1.7);
     var lw: f32 = 0;

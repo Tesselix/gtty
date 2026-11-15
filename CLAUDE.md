@@ -374,8 +374,9 @@ the shell. Users expect it to behave like a shell in a terminal.
   clears it). Right-click on a name = the file menu (`Menu.Purpose.files`,
   `openFileMenu` / `fileMenuPick`, files in `App.menu_files`): Open /
   Open with <app> / Open With… (files; see below), cd <name> (16 characters, …; `cd_label_max`) / Open in Finder (folders); Show in Finder (files, or several names: selected in their folder, `revealPaths`) and Get Info (all; Linux Show in Files / Properties; `showInfo`; 2026-10-22, see "Finder rows"), a separator; no title row (it opens at the name), Rename… (F2),
-  Copy (⌘C; one copy: the paste decides, so no Copy Name / Copy Path
-  rows, 2026-10-13), Cut (⌘X), Paste (⌘V; files
+  Copy (⌘C; one copy: the paste decides), Copy Name / Copy Path (text
+  only, `file_copy_name` / `_path` → `copyNames(…, full)`; back
+  2026-11-12: an AI prompt takes the file of a Copy), Cut (⌘X), Paste (⌘V; files
   waiting: the paste menu, see below; else text typed into the job), Move to Trash (⌘⌫, Linux Ctrl+Delete; only when
   `gtty_trash_supported`), Delete… (⌫ / Delete). **Shortcuts act only
   while the mouse "has" the name** (`pointerFresh`: it moved or clicked
@@ -628,7 +629,10 @@ the shell. Users expect it to behave like a shell in a terminal.
   area, or on the prompt → **Copy** (the window's selection; dimmed with
   none), **Copy last output** / **Copy all output** (job windows: the
   title-bar copy, `copyJob`, with its flash; rows carry codes,
-  `Menu.edit_*`), **Paste** (dimmed for a finished job or an empty clipboard),
+  `Menu.edit_*`) and Copy last input: always the menu's first group, right by
+  the pointer, then a separator (2026-11-12, the user's rule; the file
+  menu starts with the same two, `file_output` / `file_input`: a name
+  under the mouse mustn't hide them), **Paste** (dimmed for a finished job or an empty clipboard),
   shortcut shown per row; job windows also get, between separators,
   **Open Folder in Finder** / **Get Folder Info** (Linux "… in Files" /
   "Folder Properties"; `edit_folder_open` / `_info`, `Menu.FolderRows`:
@@ -843,6 +847,15 @@ the shell. Users expect it to behave like a shell in a terminal.
   (`drawFileMark`, windows area only; none while selecting text,
   `w.drag`), hand pointer. Folders only in a shell at its prompt
   (`atPrompt`).
+  - **File icon** (2026-11-12, the user's rule, as Finder: a click on
+    the name copies the name, on the icon the file): `JobWindow.fileIconRect`
+    (left of the name's first row over the text before it, else right of
+    its last; none for remote names / drop mode), drawn in
+    `drawFileMark` (`docIcon` / `folderIcon`); `fileHover` keeps the
+    mark while on it (`FileOpener.over_icon`: lit, help line),
+    `fileMarkAt` counts it; a press = `file_press.icon`: released →
+    `App.copyFileOf` (`fileClip`, as ⌘C), moved → `dragFile` at once.
+    Test: `test/fileicon.gt`.
   - **Double-click** inside the mark (`onClick`, clicks 2,
     `JobWindow.fileOpen` → `FileOpener.Action` none / done / show /
     fetch): `show` (Shift: `show -a`) or `fetchRemote`; a folder → `cdTo`.
@@ -1244,7 +1257,9 @@ decisions; items marked *open* are undecided.
   (`src/ui/ExtensionsWindow.zig`, own OS window, gtty ▸ Extensions…
   `GTTY_MENU_EXTENSIONS`, command `extensions`, `/menu extensions`,
   `/target extensions`; a package dropped on it or Install… (SDL file
-  dialog) → a confirm banner; ⋮ Turn Off / On, Restart, Unlock Files,
+  dialog) → a confirm banner; ⋮ Turn Off / On, Restart, Show Logs (a
+  job window running `gtty ext logs -f --pid <this gtty> <name>`, gtty's
+  own executable, `gtty_self_path`; `App.openExtensionLog`), Unlock Files,
   Uninstall twice; App does restart / unlock / uninstall, `extensionWant`).
   Script `/drop` goes to the `/target` window. Tested by hand runs, not a
   `.gt` file yet. **Debugging** (2026-11-11; docs/protocol.md
@@ -1471,14 +1486,18 @@ decisions; items marked *open* are undecided.
   and the conformance check; release.yml uploads every `gtty-sdk-*` (its
   fixed-name copies list the languages: add a new one there).
   **`extension-examples/`** (2026-11-11): real extensions built on the
-  SDKs, one folder per language, the SDK taken from `sdks/` by relative
-  path (`package.sh` copies it into the package). `history/`: a chip
-  listing the commands worth running again (`command_started`; a flag,
-  no cd / ls / find; the rules in its README and `cases.tsv`, which every
-  language's tests read); a pick copies through pbcopy / wl-copy / xclip
-  / xsel (the SDK can't type into a window). `history/check.py` drives
-  one through the conformance `Fake`; ci.yml's `sdks` job runs the tests
-  and the check for all four. Change the four together.
+  SDKs, `<extension>/<language>/`, the SDK taken from `sdks/` by
+  relative path (`package.sh` copies it in). `commands`: a chip listing
+  the commands run before (`command_started`; a line is dropped only
+  when every part is a very common one, cd / ls / pwd / clear / exit;
+  failed ones are kept too: no exit status reaches an extension; the rules in `commands/README.md` and `commands/cases.tsv`,
+  which every language's tests read); a pick copies through pbcopy /
+  wl-copy / xclip / xsel (the SDK can't type into a window). Each
+  language's has its own name (`commands-python`, …: all four install
+  side by side); `package.sh` leaves one file,
+  `build/<name>-<version>.tar.gz` (name / version from manifest.json),
+  what Install… in the extension manager takes. ci.yml's `sdks` job runs
+  the tests for all four. Change the four together.
 
 ## License
 

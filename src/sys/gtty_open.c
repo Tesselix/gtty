@@ -313,7 +313,7 @@ int gtty_open_with(const char *path, const char *id) {
 #include <mach-o/dyld.h>
 #endif
 
-int gtty_open_new_instance(const char *cwd, const char *geometry, const char *adopt, const char *restore) {
+int gtty_self_path(char *out, size_t cap) {
     char exe[PATH_MAX];
 #if defined(__APPLE__)
     uint32_t n = sizeof exe;
@@ -325,6 +325,15 @@ int gtty_open_new_instance(const char *cwd, const char *geometry, const char *ad
 #endif
     char real[PATH_MAX];
     if (realpath(exe, real) == NULL) return -1;
+    size_t len = strlen(real);
+    if (len + 1 > cap) return -1;
+    memcpy(out, real, len + 1);
+    return 0;
+}
+
+int gtty_open_new_instance(const char *cwd, const char *geometry, const char *adopt, const char *restore) {
+    char real[PATH_MAX];
+    if (gtty_self_path(real, sizeof real) != 0) return -1;
     // Twice forked: the new gtty is nobody's child here (no zombie, and
     // it outlives this one). The middle child sends its pid back.
     int fds[2];

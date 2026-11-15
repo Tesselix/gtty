@@ -2377,12 +2377,75 @@ pub fn textChanged(w: *JobWindow) bool {
 /// The mouse over the window's text at (x, y): the file opener looks for
 /// a name there. True: redraw.
 pub fn fileHover(w: *JobWindow, x: f32, y: f32) bool {
-    return w.opener.hover(w, w.textPosAt(x, y));
+    // On the name's icon: the mark stays (the text under the icon isn't
+    // looked at).
+    const on_icon = w.fileIconAt(x, y);
+    const changed = on_icon != w.opener.over_icon;
+    w.opener.over_icon = on_icon;
+    if (on_icon) return changed;
+    return w.opener.hover(w, w.textPosAt(x, y)) or changed;
 }
 
-/// The outlined file name at (x, y), if any.
+/// The outlined file name at (x, y) (on it or on its icon), if any.
 pub fn fileMarkAt(w: *JobWindow, x: f32, y: f32) ?*FileOpener.Mark {
+    if (w.fileIconAt(x, y)) return &w.opener.mark.?;
     return w.opener.markAt(w.textPosAt(x, y));
+}
+
+/// (x, y) is on the outlined name's icon, or on the way to it: the gap
+/// between it and the name counts (a real mouse crosses it; over the
+/// text there the outline would go, and the icon with it), and a small
+/// margin around it.
+pub fn fileIconAt(w: *const JobWindow, x: f32, y: f32) bool {
+    const r = w.fileIconRect() orelse return false;
+    const m = &w.opener.mark.?;
+    var rects: [8]Rect = undefined;
+    const rs = w.rangeRects(m.range, &rects);
+    const margin = @round(3 * w.scale.ui);
+    var area = r.inset(-margin);
+    if (rs.len > 0) {
+        if (r.x < rs[0].x) {
+            // Left of the name: reach to its start.
+            area.w = @max(area.w, rs[0].x - area.x);
+        } else {
+            // Right of the last row: reach back to its end.
+            const last = rs[rs.len - 1];
+            const end = last.x + last.w;
+            if (end < area.x) {
+                area.w += area.x - end;
+                area.x = end;
+            }
+        }
+    }
+    return area.contains(x, y);
+}
+
+/// Where the outlined name's icon goes (a file or a folder, as Finder's
+/// icon next to a name: a click on it copies the file, a click on the
+/// name copies the name): left of the name's first row, over the text
+/// before it; right of its last row when there's no room. None for a
+/// remote name (it can't go on the clipboard as a file), while dropping,
+/// or out of view.
+pub fn fileIconRect(w: *const JobWindow) ?Rect {
+    if (!FileOpener.enabled or FileOpener.drop_mode) return null;
+    const m = if (w.opener.mark) |*m| m else return null;
+    if (m.remote) return null;
+    var rects: [8]Rect = undefined;
+    const rs = w.rangeRects(m.range, &rects);
+    if (rs.len == 0) return null;
+    const ui = w.scale.ui;
+    const s = @round(w.cell_h * 1.05);
+    const gap = @round(3 * ui);
+    const first = rs[0];
+    var x = first.x - gap - s;
+    var y = first.y + @round((first.h - s) / 2);
+    if (x < w.out_r.x) {
+        const last = rs[rs.len - 1];
+        x = last.x + last.w + gap;
+        y = last.y + @round((last.h - s) / 2);
+        x = @min(x, w.out_r.x + w.out_r.w - s);
+    }
+    return .{ .x = x, .y = @max(y, w.out_r.y), .w = s, .h = s };
 }
 
 /// A double-click at (x, y): open the outlined name there, if any (App
@@ -2538,6 +2601,35 @@ fn drawFileMark(w: *const JobWindow, gfx: *Gfx, theme: *const Theme) void {
             gfx.outline(box, theme.focus, @max(@round(2 * ui), 1));
         } else gfx.dashedOutline(box, theme.focus, @max(@round(ui), 1), @round(3 * ui));
     }
+    const ir = w.fileIconRect() orelse return;
+    const hot = w.opener.over_icon;
+    gfx.fill(ir, if (hot) theme.focus.mix(theme.title_bg, 0.55) else theme.title_bg);
+    gfx.outline(ir, theme.focus, @max(@round(ui), 1));
+    const col = if (hot) theme.prompt_fg else theme.focus;
+    const pad = @round(ir.w * 0.18);
+    const inner: Rect = .{ .x = ir.x + pad, .y = ir.y + pad, .w = ir.w - 2 * pad, .h = ir.h - 2 * pad };
+    if (m.folder) folderIcon(gfx, col, ui, inner.x, inner.y, inner.w, inner.h) else docIcon(gfx, col, ui, inner);
+}
+
+/// A sheet with its top right corner folded (a file).
+fn docIcon(gfx: *Gfx, col: Rgb, ui: f32, r: Rect) void {
+    const t = @max(@round(ui), 1);
+    const sw = @round(r.w * 0.72);
+    const x = r.x + @round((r.w - sw) / 2);
+    const fold = @round(sw * 0.35);
+    // Left, bottom, right below the fold, top left of the fold.
+    gfx.fill(.{ .x = x, .y = r.y, .w = t, .h = r.h }, col);
+    gfx.fill(.{ .x = x, .y = r.y + r.h - t, .w = sw, .h = t }, col);
+    gfx.fill(.{ .x = x + sw - t, .y = r.y + fold, .w = t, .h = r.h - fold }, col);
+    gfx.fill(.{ .x = x, .y = r.y, .w = sw - fold, .h = t }, col);
+    // The folded corner.
+    gfx.line(x + sw - fold, r.y, x + sw, r.y + fold, col, t);
+    gfx.fill(.{ .x = x + sw - fold, .y = r.y, .w = t, .h = fold }, col);
+    gfx.fill(.{ .x = x + sw - fold, .y = r.y + fold - t, .w = fold, .h = t }, col);
+    // Two text lines.
+    const lw = sw - 2 * @round(sw * 0.22);
+    var i: f32 = 0;
+    while (i < 2) : (i += 1) gfx.fill(.{ .x = x + @round(sw * 0.22), .y = r.y + @round(r.h * (0.5 + 0.2 * i)), .w = lw, .h = t }, col);
 }
 
 /// The command that opened the window (its title).

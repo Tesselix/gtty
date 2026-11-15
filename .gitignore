@@ -8,5 +8,5 @@ test/fake-ssh/bin/
 dist/
 test/shots/
 extension-examples/*/*/build/
-extension-examples/history/go/history
+extension-examples/commands/go/commands
 __pycache__/

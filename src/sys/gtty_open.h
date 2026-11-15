@@ -4,6 +4,8 @@
 #ifndef GTTY_OPEN_H
 #define GTTY_OPEN_H
 
+#include <stddef.h>
+
 /* Opening files with other apps (gtty's `show` command).
  * macOS: LaunchServices. Linux: xdg-mime / mimeinfo.cache, xdg-open, gio. */
 
@@ -25,6 +27,10 @@ int gtty_open_apps(const char *path, gtty_app *out, int max);
 /* Open a file with app `id` (from gtty_open_apps), or with its default
  * app when `id` is NULL. Doesn't wait for the app. 0: done; -1: failed. */
 int gtty_open_with(const char *path, const char *id);
+
+/* gtty's own executable, the real path, into `out` (`cap` bytes, with
+ * its NUL). 0: done; -1: failed. */
+int gtty_self_path(char *out, size_t cap);
 
 /* Start another gtty (a second OS window, its own process) in folder `cwd`
  * (NULL: gtty's folder): gtty's own executable, no arguments (so it opens

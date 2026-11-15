@@ -19,7 +19,7 @@
 /rclick 300 300
 /wait 300
 /shot in1.bmp
-/click 340 377
+/click 340 348
 /wait 300
 /key cmd+v
 /wait 400

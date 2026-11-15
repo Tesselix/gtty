@@ -1,0 +1,9 @@
+{
+  "name": "commands-go",
+  "version": "1.0.0",
+  "description": "Commands run before, to run again: all but the very common ones (cd, ls, pwd, …)",
+  "main": {
+    "macos-aarch64": "bin/commands-macos-aarch64",
+    "linux-x86_64": "bin/commands-linux-x86_64"
+  }
+}

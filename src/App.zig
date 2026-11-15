@@ -336,7 +336,7 @@ mouse: ?[2]f32 = null,
 /// released → a plain click; moved after FileOpener.hold_ms (the outline
 /// turned solid) → the file is dragged out; moved sooner → a text
 /// selection from the press.
-file_press: ?struct { window: ids_mod.Id, x: f32, y: f32, ms: u64 } = null,
+file_press: ?struct { window: ids_mod.Id, x: f32, y: f32, ms: u64, icon: bool = false } = null,
 /// Files from another app being dragged over gtty's window (SDL drop
 /// events): the paths so far; on the drop they are copied into the folder
 /// under the mouse (`dropTarget`). `drop_inside`: gtty's own drag (a
@@ -4294,6 +4294,7 @@ fn extensionWant(app: *App, ew: *ExtensionsWindow, want: ExtensionsWindow.Want) 
             const list = Extensions.scan(a, st.root) catch return;
             for (list) |x| if (std.mem.eql(u8, x.manifest.name, name)) app.chips.restart(x);
         },
+        .logs => |name| if (!app.openExtensionLog(name)) return,
         .unlock => |name| st.forceUnlock(name, null),
         .uninstall => |name| {
             st.forceUnlock(name, null);
@@ -4304,6 +4305,29 @@ fn extensionWant(app: *App, ew: *ExtensionsWindow, want: ExtensionsWindow.Want) 
         },
     }
     ew.done(want);
+}
+
+/// The manager's ⋮ ▸ Show Logs: a job window following one extension's
+/// lines of this gtty's log live (`gtty ext logs -f --pid <this gtty>`,
+/// gtty's own executable; closes as any finished command, ends with gtty).
+/// gtty's window comes to the front. False: could not start it (said).
+fn openExtensionLog(app: *App, name: []const u8) bool {
+    var exe: [4096]u8 = undefined;
+    if (c.gtty_self_path(&exe, exe.len) != 0) {
+        beep.beep();
+        app.say("extensions: can't find gtty's own program to show the log", app.theme.stderr_accent);
+        return false;
+    }
+    var pid_buf: [16]u8 = undefined;
+    const pid = std.fmt.bufPrint(&pid_buf, "{d}", .{c.getpid()}) catch return false;
+    var title_buf: [Extensions.max_name + 8]u8 = undefined;
+    const title = std.fmt.bufPrint(&title_buf, "logs {s}", .{name}) catch name;
+    const argv = [_][]const u8{ std.mem.sliceTo(&exe, 0), "ext", "logs", "-f", "--pid", pid, name };
+    const before = app.jobs.items.len;
+    app.openJob(.{ .kind = .command, .title = title, .argv = &argv });
+    if (app.jobs.items.len == before) return false;
+    _ = c.SDL_RaiseWindow(app.window);
+    return true;
 }
 
 fn tickSessions(app: *App) void {
@@ -5274,10 +5298,19 @@ fn handle(app: *App, ev: *const c.SDL_Event) void {
     // A paste / copy key acts once per press: its auto-repeats are dropped
     // (a VM or a remote X server easily sends one, and each would paste).
     if (ev.type == c.SDL_EVENT_KEY_DOWN and ev.key.repeat and clipboardKey(ev.key.key, ev.key.mod)) return;
-    // Events of the settings window go to it.
-    if (app.settings) |sw| if (eventWindow(ev) == sw.id) return sw.handle(ev);
-    if (app.sessions_win) |sw| if (eventWindow(ev) == sw.id) return sw.handle(ev);
-    if (app.ext_win) |ew| if (eventWindow(ev) == ew.id) return ew.handle(ev);
+    // Events of the settings, sessions and extensions windows go to them.
+    if (app.settings) |sw| if (eventWindow(ev) == sw.id) {
+        app.arrowInOtherWindow(ev);
+        return sw.handle(ev);
+    };
+    if (app.sessions_win) |sw| if (eventWindow(ev) == sw.id) {
+        app.arrowInOtherWindow(ev);
+        return sw.handle(ev);
+    };
+    if (app.ext_win) |ew| if (eventWindow(ev) == ew.id) {
+        app.arrowInOtherWindow(ev);
+        return ew.handle(ev);
+    };
     switch (ev.type) {
         c.SDL_EVENT_QUIT => app.running = false,
         // Closing gtty's own window ends gtty (with the settings window
@@ -5756,6 +5789,13 @@ fn onClick(app: *App, x: f32, y: f32, button: u8, clicks: u8) void {
             return;
         };
         app.clearFileSel();
+        // On the name's icon: released there, the file is copied (as a
+        // file); moved, it is dragged out at once (no hold).
+        if (clicks == 1 and w.fileIconAt(x, y)) {
+            app.setFocus(i);
+            app.file_press = .{ .window = w.uid, .x = x, .y = y, .ms = c.SDL_GetTicks(), .icon = true };
+            return;
+        }
         if (w.fileMarkAt(x, y) != null) switch (clicks) {
             1 => {
                 app.setFocus(i);
@@ -5890,11 +5930,13 @@ fn onMouseUp(app: *App, x: f32, y: f32) void {
     // clicked) goes into it at the cursor; else on the clipboard.
     if (app.file_press) |p| {
         app.file_press = null;
-        if (app.jobByUid(p.window)) |w| {
+        if (p.icon) {
+            if (app.jobByUid(p.window)) |w| app.copyFileOf(w);
+        } else if (app.jobByUid(p.window)) |w| {
             w.opener.held = false;
             w.mouseDown(p.x, p.y, 1);
             if (!w.mouseUp()) if (w.fileMarkAt(p.x, p.y)) |m| {
-                if (!w.insertName(m)) app.copyNames(@as([]const []const u8, &.{m.file()}), w, m.range);
+                if (!w.insertName(m)) app.copyNames(@as([]const []const u8, &.{m.file()}), w, m.range, false);
             };
             app.dirty = true;
         }
@@ -5950,7 +5992,9 @@ fn onMotion(app: *App, x: f32, y: f32) void {
         if ((x - p.x) * (x - p.x) + (y - p.y) * (y - p.y) >= far * far) {
             app.file_press = null;
             if (app.jobByUid(p.window)) |w| {
-                if (w.opener.held) app.dragFile(w) else w.mouseDown(p.x, p.y, 1);
+                if (p.icon) {
+                    if (c.gtty_drag_supported()) app.dragFile(w);
+                } else if (w.opener.held) app.dragFile(w) else w.mouseDown(p.x, p.y, 1);
             }
         }
     }
@@ -6015,6 +6059,17 @@ fn onMotion(app: *App, x: f32, y: f32) void {
     }
     app.mouse = .{ x, y };
     app.sendHover(); // sets the pointer shape too
+}
+
+/// The mouse in one of gtty's other windows (Settings, the Session
+/// Manager, the extension manager): the arrow. The pointer shape is one
+/// for all windows, so the main window's text beam or hand would stay.
+fn arrowInOtherWindow(app: *App, ev: *const c.SDL_Event) void {
+    if (ev.type != c.SDL_EVENT_MOUSE_MOTION and ev.type != c.SDL_EVENT_WINDOW_MOUSE_ENTER) return;
+    if (app.cursor_kind == .arrow) return;
+    app.cursor_kind = .arrow;
+    if (app.arrow_cursor == null) app.arrow_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_DEFAULT);
+    _ = c.SDL_SetCursor(app.arrow_cursor);
 }
 
 /// Pointer: a hand over an outlined file name or a title-bar action, the
@@ -6698,6 +6753,7 @@ fn sendLeave(app: *App) void {
 /// solid (moving now drags the file).
 fn tickFilePress(app: *App) void {
     const p = app.file_press orelse return;
+    if (p.icon) return;
     const w = app.jobByUid(p.window) orelse {
         app.file_press = null;
         return;
@@ -7299,6 +7355,12 @@ const file_trash = 8;
 const file_delete = 9;
 const file_show = 10;
 const file_info = 11;
+const file_copy_name = 12;
+const file_copy_path = 13;
+/// The window's own rows (as its right-click menu): Copy last / all
+/// output, Copy last input.
+const file_output = 14;
+const file_input = 15;
 
 const sel_mod_name = if (builtin.os.tag == .macos) "⌘" else "Ctrl";
 const file_keys = if (builtin.os.tag == .macos) struct {
@@ -7449,17 +7511,33 @@ fn fileClip(app: *App, paths: [][:0]u8, move: bool, w: ?*JobWindow, single: ?Scr
     app.say(text, app.theme.prompt_fg);
 }
 
-/// A single click on an outlined name: the names, as text, on the
+/// A click on the outlined name's icon: the file (or folder) on the
+/// clipboard as ⌘C puts it (a file manager pastes the file, a text field
+/// its path).
+fn copyFileOf(app: *App, w: *JobWindow) void {
+    const m = if (w.opener.mark) |*m| m else return;
+    if (m.remote) return;
+    const paths = app.gpa.alloc([:0]u8, 1) catch return;
+    paths[0] = app.gpa.dupeZ(u8, m.file()) catch {
+        app.gpa.free(paths);
+        return;
+    };
+    app.fileClip(paths, false, w, m.range);
+    app.dirty = true;
+}
+
+/// A single click on an outlined name, or the file menu's Copy Name /
+/// Copy Path: the names (`full`: the paths), as text only, on the
 /// clipboard and the paste history (one per line when several). The
 /// names flash (`single`: the one name, in `w`; else the ⌘-clicked ones).
 /// Being text, it is now what Paste pastes.
-fn copyNames(app: *App, paths: anytype, w: ?*JobWindow, single: ?Screen.TextRange) void {
+fn copyNames(app: *App, paths: anytype, w: ?*JobWindow, single: ?Screen.TextRange, full: bool) void {
     var text: std.ArrayList(u8) = .empty;
     defer text.deinit(app.gpa);
     for (paths, 0..) |p, i| {
         if (i > 0) text.append(app.gpa, '\n') catch return;
         const name = std.fs.path.basename(p);
-        text.appendSlice(app.gpa, if (name.len > 0) name else p) catch return;
+        text.appendSlice(app.gpa, if (name.len > 0 and !full) name else p) catch return;
     }
     text.append(app.gpa, 0) catch return;
     const z = text.items[0 .. text.items.len - 1 :0];
@@ -7470,7 +7548,7 @@ fn copyNames(app: *App, paths: anytype, w: ?*JobWindow, single: ?Screen.TextRang
     _ = c.SDL_SetClipboardText(z.ptr);
     var wbuf: [32]u8 = undefined;
     var nbuf: [100]u8 = undefined;
-    const what = if (paths.len == 1) Menu.oneLine(&nbuf, z, 40) else std.fmt.bufPrint(&wbuf, "{d} names", .{paths.len}) catch "names";
+    const what = if (paths.len == 1) Menu.oneLine(&nbuf, z, 40) else std.fmt.bufPrint(&wbuf, "{d} {s}", .{ paths.len, if (full) "paths" else "names" }) catch "names";
     app.sayFmt("copied {s}", .{what}, app.theme.ok);
 }
 
@@ -7713,7 +7791,12 @@ fn openFileMenu(app: *App, x: f32, y: f32) bool {
     const one = paths.len == 1;
     const folder = one and FileOpener.kindOf(paths[0]) == .folder;
     var menu: Menu = .{ .purpose = .{ .files = w.uid }, .at = .{ x, y } };
-    // No title: the menu opens at the name it is about.
+    // No title: the menu opens at the name it is about. First, next to
+    // the pointer, the window's copies, as its own right-click menu has
+    // them (a name under the mouse shouldn't hide them), then a line.
+    menu.addCode(.{ .label = if (w.copiesLast()) "Copy last output" else "Copy all output" }, file_output);
+    if (w.lastInput() != null) menu.addCode(.{ .label = "Copy last input" }, file_input);
+    menu.addCode(Menu.separator, -1);
     if (one and !folder) {
         // One row: "Open with <default app>" (its icon; ▸ the other apps
         // and Other…), or, with no default app, "Open With…" (a click:
@@ -7741,7 +7824,11 @@ fn openFileMenu(app: *App, x: f32, y: f32) bool {
     menu.addCode(.{ .label = Menu.info_label, .enabled = c.gtty_info_supported() }, file_info);
     menu.addCode(Menu.separator, -1);
     menu.addCode(.{ .label = "Rename…", .key = "F2", .enabled = one }, file_rename);
+    // Copy = the files (a file manager pastes them); Copy Name / Copy
+    // Path = only text.
     menu.addCode(.{ .label = "Copy", .key = file_keys.copy }, file_copy);
+    menu.addCode(.{ .label = if (one) "Copy Name" else "Copy Names" }, file_copy_name);
+    menu.addCode(.{ .label = if (one) "Copy Path" else "Copy Paths" }, file_copy_path);
     menu.addCode(.{ .label = "Cut", .key = file_keys.cut }, file_cut);
     // Paste: what was copied last. Files open the paste menu (into the
     // folder clicked, else the window's); text is typed into the job.
@@ -7803,6 +7890,10 @@ fn fileMenuPick(app: *App, uid: ids_mod.Id, code: i32, at: [2]f32) void {
             app.askRename(paths[0], w, app.menu_anchor);
         },
         file_copy, file_cut => app.fileClip(paths, code == file_cut, w, app.menu_range),
+        file_copy_name, file_copy_path => {
+            defer app.freePaths(paths);
+            app.copyNames(paths, w, app.menu_range, code == file_copy_path);
+        },
         file_paste => {
             defer app.freePaths(paths);
             if (app.file_clip.items.len > 0) {
@@ -7810,6 +7901,14 @@ fn fileMenuPick(app: *App, uid: ids_mod.Id, code: i32, at: [2]f32) void {
             } else if (w.running()) app.pasteInto(w);
         },
         file_trash => app.fileTrash(paths, w, app.menu_range),
+        file_output => {
+            defer app.freePaths(paths);
+            app.copyJob(w);
+        },
+        file_input => {
+            defer app.freePaths(paths);
+            if (w.lastInput()) |text| app.toClipboard(w, text);
+        },
         file_delete => app.askDelete(paths, w),
         else => app.freePaths(paths),
     }

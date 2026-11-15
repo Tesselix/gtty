@@ -760,6 +760,9 @@ gtty ext logs            # print what is there now, for every extension
 gtty ext logs --pid 4242 # choose a gtty (default: the one logged to last)
 ```
 
+Or, in gtty: Extensions…, your extension's ⋮, Show Logs. A window opens that
+follows its lines live.
+
 ```
 08:02:57.261 info  hosts e311667c host alpha added
 08:02:58.165 err   hosts e311667c onEvent returned FileInUse
@@ -830,7 +833,8 @@ with `GTTY_EXT_NAME` and `GTTY_EXT_DIR` set.
 - **The extension manager** (gtty ▸ Extensions…, or `extensions` at the
   prompt): the installed extensions, whether each runs (with its pid, or
   its exit code when it failed), and a ⋮ menu per row: Turn Off / Turn On,
-  Restart, Unlock Files, Uninstall (asks first: its data goes too).
+  Restart, Show Logs (its log, live, in a window in gtty), Unlock Files,
+  Uninstall (asks first: its data goes too).
   **Install…** opens a file dialog, and a package or folder dropped on the
   window works too; either way the manager first shows the manifest and
   that an extension runs as the user, with Install / Cancel.

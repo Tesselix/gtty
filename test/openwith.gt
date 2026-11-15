@@ -21,10 +21,10 @@
 /rclick 50 102
 /wait 300
 /shot ../ow1-menu.bmp
-/move 302 121
+/move 302 188
 /wait 400
 /shot ../ow2-sub.bmp
-/click 360 478
+/click 360 545
 /wait 400
 /shot ../ow3-other.bmp
 # data.qqzz: Open With… (no ▸) asks at once
@@ -32,10 +32,10 @@
 /wait 300
 /rclick 50 84
 /wait 300
-/move 100 96
+/move 100 163
 /wait 400
 /shot ../ow4-menu-none.bmp
-/click 100 96
+/click 100 163
 /wait 400
 /shot ../ow5-asked.bmp
 # the folder: cd <name>
@@ -44,7 +44,7 @@
 /rclick 50 66
 /wait 300
 /shot ../ow6-folder.bmp
-/click 100 85
+/click 100 152
 /wait 1000
 /shot ../ow7-cd.bmp
 /quit

@@ -130,7 +130,9 @@ pub fn nameOk(name: []const u8) bool {
     return true;
 }
 
-fn mkdirs(path: []const u8) bool {
+/// Makes `path` and every missing folder above it (0700); true when it
+/// is a folder after.
+pub fn mkdirs(path: []const u8) bool {
     var buf: [4096]u8 = undefined;
     if (path.len >= buf.len) return false;
     @memcpy(buf[0..path.len], path);

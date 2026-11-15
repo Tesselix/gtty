@@ -209,7 +209,9 @@ open selects its text.
   folder its program is in.
 - **Copy last input** (right-click menu of a zsh or bash window waiting
   for your input, once it has run a command): copies the last command
-  line you ran.
+  line you ran. It and **Copy last output** are always the first rows of
+  the menu, right by the pointer, then a line, also when you right-click
+  a file or folder name.
 - **Paste ▶** — click the arrow next to Paste for your **last 5 copies**
   in gtty (newest first, each copy listed once; line breaks shown as ⏎).
   Pick one to paste it.
@@ -359,12 +361,21 @@ it: **Open with <app>** / **Open With…** (a folder: **cd <its name>**,
 **Open in Finder**, on Linux **Open in Files**), **Show in Finder** (a
 file, selected in its folder; Linux **Show in Files**), **Get Info**
 (Linux **Properties**; the first time, macOS asks whether gtty may control
-Finder), **Rename…**, **Copy**,
+Finder), **Rename…**, **Copy**, **Copy Name**, **Copy Path**,
 **Cut**, **Paste**, **Move to Trash** (where the system has
 a trash) and **Delete…**.
 
 **A single click** on an outlined name copies its name as text (the name
 flashes), ready to paste into a command line.
+
+**The icon next to the name** (a sheet for a file, a folder for a
+folder; left of the name, or right of it when the name starts the line)
+is the file itself, as the icon in Finder: **a click on it copies the
+file** (as **Copy** / ⌘C), and dragging it drags the file out at once.
+So a click on the name gives you the name as text, a click on the icon
+the file. **Copy Name** and **Copy Path** in the right-click menu copy
+only text, for apps that would otherwise take the file (a chat box, an
+AI prompt).
 
 Opening a file takes one row. When the file has a default app, the row
 is **Open with <that app>**, with the app's icon: click it to open the
