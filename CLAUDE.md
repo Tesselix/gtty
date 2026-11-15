@@ -1257,7 +1257,9 @@ decisions; items marked *open* are undecided.
   (`src/ui/ExtensionsWindow.zig`, own OS window, gtty ▸ Extensions…
   `GTTY_MENU_EXTENSIONS`, command `extensions`, `/menu extensions`,
   `/target extensions`; a package dropped on it or Install… (SDL file
-  dialog) → a confirm banner; ⋮ Turn Off / On, Restart, Unlock Files,
+  dialog) → a confirm banner; ⋮ Turn Off / On, Restart, Show Logs (a
+  job window running `gtty ext logs -f --pid <this gtty> <name>`, gtty's
+  own executable, `gtty_self_path`; `App.openExtensionLog`), Unlock Files,
   Uninstall twice; App does restart / unlock / uninstall, `extensionWant`).
   Script `/drop` goes to the `/target` window. Tested by hand runs, not a
   `.gt` file yet. **Debugging** (2026-11-11; docs/protocol.md

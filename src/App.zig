@@ -4294,6 +4294,7 @@ fn extensionWant(app: *App, ew: *ExtensionsWindow, want: ExtensionsWindow.Want) 
             const list = Extensions.scan(a, st.root) catch return;
             for (list) |x| if (std.mem.eql(u8, x.manifest.name, name)) app.chips.restart(x);
         },
+        .logs => |name| if (!app.openExtensionLog(name)) return,
         .unlock => |name| st.forceUnlock(name, null),
         .uninstall => |name| {
             st.forceUnlock(name, null);
@@ -4304,6 +4305,29 @@ fn extensionWant(app: *App, ew: *ExtensionsWindow, want: ExtensionsWindow.Want) 
         },
     }
     ew.done(want);
+}
+
+/// The manager's ⋮ ▸ Show Logs: a job window following one extension's
+/// lines of this gtty's log live (`gtty ext logs -f --pid <this gtty>`,
+/// gtty's own executable; closes as any finished command, ends with gtty).
+/// gtty's window comes to the front. False: could not start it (said).
+fn openExtensionLog(app: *App, name: []const u8) bool {
+    var exe: [4096]u8 = undefined;
+    if (c.gtty_self_path(&exe, exe.len) != 0) {
+        beep.beep();
+        app.say("extensions: can't find gtty's own program to show the log", app.theme.stderr_accent);
+        return false;
+    }
+    var pid_buf: [16]u8 = undefined;
+    const pid = std.fmt.bufPrint(&pid_buf, "{d}", .{c.getpid()}) catch return false;
+    var title_buf: [Extensions.max_name + 8]u8 = undefined;
+    const title = std.fmt.bufPrint(&title_buf, "logs {s}", .{name}) catch name;
+    const argv = [_][]const u8{ std.mem.sliceTo(&exe, 0), "ext", "logs", "-f", "--pid", pid, name };
+    const before = app.jobs.items.len;
+    app.openJob(.{ .kind = .command, .title = title, .argv = &argv });
+    if (app.jobs.items.len == before) return false;
+    _ = c.SDL_RaiseWindow(app.window);
+    return true;
 }
 
 fn tickSessions(app: *App) void {
