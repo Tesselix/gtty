@@ -778,8 +778,11 @@ gtty keeps at most about 16 MB.
 
 ## Languages
 
-An installed extension is **its own program**, in any language with an
-SDK. gtty starts it as its child process when gtty starts (or when it is
+An installed extension is **its own program**: written with one of the
+SDKs below, or any executable gtty can run as a subprocess (Rust, C, a
+shell script, …) that speaks [protocol.md](protocol.md) itself (port
+the `hosts` example and `sdks/conformance/fake_gtty.py` checks your
+protocol code as it checks the SDKs). gtty starts it as its child process when gtty starts (or when it is
 installed), and stops it when gtty closes; they talk over a socket, in
 JSON lines ([protocol.md](protocol.md)). gtty never waits for it, so a
 slow or stuck extension can't freeze the terminal, and a crash only ends
