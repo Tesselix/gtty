@@ -104,13 +104,21 @@ class Fake:
             return self.send({"t": "reply", "id": rid, "value": True})
         self.send({"t": "reply", "id": rid, "error": "StorageFailed"})
 
-    def settle(self, wait=1.5):
-        """Answer calls and collect messages until the extension is quiet."""
+    def settle(self, wait=1.5, first=0.4):
+        """Answer calls and collect messages until the extension is quiet.
+
+        `first`: how long to wait for its first message. Startup passes a
+        long one: an interpreter starting cold on a busy CI runner (node,
+        python) can take well over the 0.4 s quiet gap before it says
+        anything, and its startup messages then landed in the next settle.
+        """
         got = []
         quiet = 0.4
-        end = time.time() + wait
+        end = time.time() + max(wait, first)
+        timeout = first
         while time.time() < end:
-            m = self.read(quiet)
+            m = self.read(timeout)
+            timeout = quiet
             if m is None:
                 break
             if m["t"] == "call":
@@ -211,7 +219,7 @@ def main():
     g.send({"t": "hello", "api": 1, "name": "hosts"})
     g.send({"t": "gttyStart"})
     g.send({"t": "windowStart", "win": WIN})
-    got = g.settle(5)
+    got = g.settle(5, first=20)
     regs = [m["event"] for m in got if m["t"] == "register" and m.get("win") == WIN]
     check("window_changed" in regs and "key" in regs, "registers window_changed and key")
     chip = find(got, "set", "chip")

@@ -315,7 +315,9 @@ it isn't gtty's child then (built 2026-11-11, docs/protocol.md
 ## Packaging
 
 A folder, zip, tar or tar.gz with `manifest.json`: `name`, `main` (a
-string or a map by platform), `runtime` (`python3` / `node`), `version`,
+string or a map by platform), `runtime` (`python3` / `node`; left out,
+`main` is any executable: a built Go / Zig binary, or a program in a
+language without an SDK that speaks docs/protocol.md), `version`,
 `description`. gtty unpacks it into `<extensions>/<name>/code/` (no links,
 nothing outside); the manager asks before installing. See
 docs/extensions.md "Packaging" and "Installing".
