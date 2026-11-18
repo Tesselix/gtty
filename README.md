@@ -100,6 +100,17 @@ One click on the copy button takes the last command's output: no prompt,
 no command line, nothing from before. Your last copies wait under
 **Paste ▸** in the right-click menu.
 
+### Find where a variable or alias was set
+
+![Env & Aliases from the right-click menu: EDITOR set in .zshrc over .zshenv; PATH's history through .zshrc, .zprofile, /etc/zprofile and the inherited environment; the alias ll from .aliases over .zshrc](docs/images/env.webp)
+
+Right-click a zsh or bash window and pick **Env & Aliases…**: every
+environment variable and alias, its value, and the full path of the file
+and line that set it. Type to filter by name or value. A ▸ opens a key's
+history: each earlier value and the script that set it, down to the
+first one. gtty reads your startup files in the order your shell runs
+them, on macOS and the usual Linux distributions; nothing is run.
+
 ### Open files and change folders from the output
 
 ![Double-click a file name in ls output to open it; right-click for the file menu; double-click a folder to cd into it; History goes back](docs/images/files.webp)

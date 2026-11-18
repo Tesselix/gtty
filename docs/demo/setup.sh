@@ -13,12 +13,30 @@ rm -rf "$ROOT"
 H=$ROOT/home
 mkdir -p "$H/Downloads" "$H/shop" "$H/blog/posts" "$H/api/handlers" "$H/dotfiles" "$H/photos/2026"
 
+# A few variables and aliases set, then changed again, in the startup
+# files (the Env & Aliases demo, env.gt).
 cat > "$H/.zshrc" <<'RC'
 PROMPT='%1~ %# '
 unsetopt beep
 alias ls='ls -G'
+export EDITOR=nvim
+path=($HOME/go/bin $path)
+alias gs='git status'
+alias ll='ls -l'
+[[ -f ~/.aliases ]] && source ~/.aliases
 RC
-: > "$H/.zshenv"
+cat > "$H/.zshenv" <<'RC'
+export EDITOR=vi
+export LANG=en_US.UTF-8
+RC
+cat > "$H/.zprofile" <<'RC'
+export GOPATH=$HOME/go
+path=($HOME/bin $path)
+RC
+cat > "$H/.aliases" <<'RC'
+alias ll='ls -lh'
+alias gl='git log --oneline -10'
+RC
 printf 'PS1="\\W $ "\n' > "$H/.bashrc"
 
 cd "$H/shop"

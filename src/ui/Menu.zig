@@ -118,9 +118,13 @@ pub const edit_input = 5;
 /// folder): the folder the window's program is in.
 pub const edit_folder_open = 6;
 pub const edit_folder_info = 7;
+/// Env & Aliases… (a window whose program is zsh or bash): where its
+/// environment variables and aliases were defined (EnvView.zig).
+pub const edit_env = 8;
 
 /// The file manager's rows (macOS Finder; Linux the desktop's).
 const mac = builtin.os.tag == .macos;
+pub const env_label = "Env & Aliases…";
 pub const reveal_label = if (mac) "Show in Finder" else "Show in Files";
 pub const open_folder_label = if (mac) "Open in Finder" else "Open in Files";
 pub const info_label = if (mac) "Get Info" else "Properties";
@@ -183,7 +187,7 @@ codes: [max_rows]i32 = undefined,
 /// files on gtty's file clipboard (App decides).
 pub const FolderRows = struct { open: bool, info: bool };
 
-pub fn edit(target: Target, at: [2]f32, copy_ok: bool, output: ?[]const u8, input: bool, paste_ok: bool, history_ok: bool, folders: ?bool, folder: ?FolderRows) Menu {
+pub fn edit(target: Target, at: [2]f32, copy_ok: bool, output: ?[]const u8, input: bool, paste_ok: bool, history_ok: bool, folders: ?bool, folder: ?FolderRows, env: ?bool) Menu {
     var m: Menu = .{ .purpose = .{ .edit = target }, .at = at };
     // The window's output / input copies: always the first group, next
     // to the pointer, then a line (the user's rule, 2026-11-12; the file
@@ -200,6 +204,7 @@ pub fn edit(target: Target, at: [2]f32, copy_ok: bool, output: ?[]const u8, inpu
         m.addCode(.{ .label = window_info_label, .enabled = f.info }, edit_folder_info);
         m.addCode(separator, -1);
     }
+    if (env) |on| m.addCode(.{ .label = env_label, .enabled = on }, edit_env);
     m.addCode(.{ .label = "New Shell", .key = new_shell_key }, edit_new_shell);
     return m;
 }
@@ -491,7 +496,7 @@ test "layout keeps the menu on screen" {
     var f: Gfx.Face = undefined;
     f.cell_w = 8;
     f.cell_h = 16;
-    var m = Menu.edit(.prompt, .{ 790, 590 }, false, null, false, true, true, null, null);
+    var m = Menu.edit(.prompt, .{ 790, 590 }, false, null, false, true, true, null, null, null);
     const screen: Rect = .{ .x = 0, .y = 0, .w = 800, .h = 600 };
     m.layout(&f, 1, screen);
     try std.testing.expect(m.r.x + m.r.w <= 800 and m.r.y + m.r.h <= 600);
@@ -519,7 +524,7 @@ test "Paste's ▸ box opens the submenu, the rest of the row pastes" {
     var f: Gfx.Face = undefined;
     f.cell_w = 8;
     f.cell_h = 16;
-    var m = Menu.edit(.prompt, .{ 10, 10 }, true, null, false, true, true, null, null);
+    var m = Menu.edit(.prompt, .{ 10, 10 }, true, null, false, true, true, null, null, null);
     m.layout(&f, 1, .{ .x = 0, .y = 0, .w = 800, .h = 600 });
     const a = m.arrow_r[edit_paste];
     try std.testing.expectEqual(@as(usize, edit_paste), m.arrowAt(a.x + 1, a.y + 1).?);
@@ -531,7 +536,7 @@ test "Paste's ▸ box opens the submenu, the rest of the row pastes" {
 }
 
 test "the right-click menu of a job window: Copy last output first, then a line" {
-    const m = Menu.edit(.{ .job = 7 }, .{ 10, 10 }, false, "Copy last output", false, true, false, false, null);
+    const m = Menu.edit(.{ .job = 7 }, .{ 10, 10 }, false, "Copy last output", false, true, false, false, null, null);
     try std.testing.expectEqual(@as(usize, 6), m.n);
     try std.testing.expectEqualStrings("Copy last output", m.rows[0].label);
     try std.testing.expectEqual(@as(i32, edit_output), m.codes[0]);
@@ -572,7 +577,7 @@ test "separators take no clicks; a whole-row submenu takes its ▸" {
 }
 
 test "Copy last input sits under Copy last output, at the top, only when asked for" {
-    const m = Menu.edit(.{ .job = 7 }, .{ 10, 10 }, false, "Copy last output", true, true, false, false, null);
+    const m = Menu.edit(.{ .job = 7 }, .{ 10, 10 }, false, "Copy last output", true, true, false, false, null, null);
     try std.testing.expectEqual(@as(usize, 7), m.n);
     try std.testing.expectEqual(@as(i32, edit_output), m.codes[0]);
     try std.testing.expectEqualStrings("Copy last input", m.rows[1].label);
@@ -582,7 +587,7 @@ test "Copy last input sits under Copy last output, at the top, only when asked f
 }
 
 test "a job window's folder rows: between separators, before New Shell" {
-    const m = Menu.edit(.{ .job = 7 }, .{ 10, 10 }, false, "Copy last output", false, true, false, false, .{ .open = true, .info = false });
+    const m = Menu.edit(.{ .job = 7 }, .{ 10, 10 }, false, "Copy last output", false, true, false, false, .{ .open = true, .info = false }, null);
     try std.testing.expectEqual(@as(usize, 10), m.n);
     try std.testing.expectEqual(@as(i32, edit_output), m.codes[0]);
     try std.testing.expect(m.rows[1].sep);
@@ -593,4 +598,13 @@ test "a job window's folder rows: between separators, before New Shell" {
     try std.testing.expect(!m.rows[7].enabled);
     try std.testing.expect(m.rows[8].sep);
     try std.testing.expectEqual(@as(i32, edit_new_shell), m.codes[9]);
+}
+
+test "Env & Aliases sits right above New Shell" {
+    const m = Menu.edit(.{ .job = 7 }, .{ 10, 10 }, false, "Copy last output", false, true, false, false, .{ .open = true, .info = true }, false);
+    try std.testing.expectEqual(@as(usize, 11), m.n);
+    try std.testing.expectEqual(@as(i32, edit_env), m.codes[9]);
+    try std.testing.expectEqualStrings(env_label, m.rows[9].label);
+    try std.testing.expect(!m.rows[9].enabled);
+    try std.testing.expectEqual(@as(i32, edit_new_shell), m.codes[10]);
 }

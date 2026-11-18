@@ -137,6 +137,9 @@ test {
     _ = @import("core/Archive.zig");
     _ = @import("core/Extensions.zig");
     _ = @import("core/shells.zig");
+    _ = @import("core/ShParse.zig");
+    _ = @import("core/EnvTrace.zig");
+    _ = @import("ui/EnvView.zig");
     _ = @import("chips/list.zig");
     _ = @import("chips/folder.zig");
     _ = @import("chips/focus.zig");

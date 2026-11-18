@@ -333,6 +333,11 @@ link: ?*RemoteLink = null,
 link_pid: c_int = 0,
 link_args: []u8 = &.{},
 link_env: []u8 = &.{},
+/// The environment gtty added for the program ("NAME=value": the shell
+/// hooks' ZDOTDIR, GTTY_BASH_LOGIN, …), NUL-separated. macOS doesn't
+/// show another process's environment, so "Env & Aliases" rebuilds the
+/// shell's from gtty's own plus this.
+spawn_env: []u8 = &.{},
 link_cwd: []u8 = &.{},
 /// The user's local port of that ssh (finds their shell over there).
 link_port: u16 = 0,
@@ -424,6 +429,14 @@ pub fn create(gpa: std.mem.Allocator, gfx: *Gfx, uid: ids.Id, serial: u32, spec:
     w.branch_len = git.branch(w.cwd_buf[0..w.cwd_len], &w.branch_buf).len;
     // Work out the grid first so the child starts with the right size.
     try w.relayout(gfx);
+    var senv: std.ArrayList(u8) = .empty;
+    defer senv.deinit(gpa);
+    for (spec.env) |e| {
+        try senv.appendSlice(gpa, e);
+        try senv.append(gpa, 0);
+    }
+    w.spawn_env = try senv.toOwnedSlice(gpa);
+    errdefer gpa.free(w.spawn_env);
     w.proc = try Process.spawn(gpa, .{
         .argv = spec.argv,
         .split_stderr = false,
@@ -442,6 +455,7 @@ pub fn destroy(w: *JobWindow, reaper: *Process.Reaper) void {
     if (w.thumb) |t| c.SDL_DestroyTexture(t);
     w.endRemote();
     w.proc.terminate(reaper);
+    w.gpa.free(w.spawn_env);
     if (w.log) |*l| l.close(w.gpa);
     for (w.folders_left.items) |d| w.gpa.free(d);
     w.folders_left.deinit(w.gpa);

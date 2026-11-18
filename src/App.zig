@@ -32,6 +32,8 @@ const Config = @import("core/Config.zig");
 const FileOpener = @import("ui/FileOpener.zig");
 const FileFx = @import("ui/FileFx.zig");
 const Modal = @import("ui/Modal.zig");
+const EnvTrace = @import("core/EnvTrace.zig");
+const EnvView = @import("ui/EnvView.zig");
 const RemoteLink = @import("core/RemoteLink.zig");
 const ids_mod = @import("ui/ids.zig");
 const oscmd = @import("core/oscmd.zig");
@@ -354,6 +356,16 @@ copying: std.ArrayList(Copying) = .empty,
 /// for (`resolveModal`).
 modal: ?Modal = null,
 modal_job: ModalJob = .none,
+/// "Env & Aliases" (EnvView.zig) while open; the last trace of a shell's
+/// startup files (EnvTrace.zig) and the one being made in the background.
+env_view: ?EnvView = null,
+env_cache: ?EnvTrace.Result = null,
+env_cache_key: u64 = 0,
+env_job: ?*EnvTrace.Job = null,
+/// The trace the open view waits for (its window's `Input.key`).
+env_want: ?u64 = null,
+/// A trace of the first shell was made in the background (`tickEnv`).
+env_prewarmed: bool = false,
 /// File actions: the ⌘-clicked names (Ctrl-click on Linux), gtty's file
 /// clipboard (copy / cut, waiting for a paste), when the mouse last moved
 /// or clicked and when a key was last pressed (`pointerFresh`).
@@ -654,6 +666,12 @@ pub fn destroy(app: *App) void {
     app.copying.deinit(app.gpa); // copies still running finish on their own
     @import("ui/DirCache.zig").deinit();
     app.freeModalJob(app.modal_job);
+    if (app.env_view) |*v| v.deinit();
+    if (app.env_job) |j| if (j.finish()) |res| {
+        var r = res;
+        r.deinit();
+    };
+    if (app.env_cache) |*r| r.deinit();
     app.clearFileSel();
     app.file_sel.deinit(app.gpa);
     app.clearFileClip();
@@ -767,6 +785,7 @@ pub fn run(app: *App) void {
         app.tickChooser();
         app.tickDragOut();
         app.tickModal();
+        app.tickEnv();
         app.tickDialogs();
         app.tickPeek();
         app.updateSync();
@@ -2158,6 +2177,7 @@ fn openMenu(app: *App, x: f32, y: f32) bool {
     var output: ?[]const u8 = null;
     var input = false;
     var folder: ?Menu.FolderRows = null;
+    var env: ?bool = null;
     var job: ?*JobWindow = null;
     if (app.maximizedShown() == null and app.prompt.rect.contains(x, y)) {
         target = .prompt;
@@ -2180,13 +2200,14 @@ fn openMenu(app: *App, x: f32, y: f32) bool {
         var fbuf: [4096]u8 = undefined;
         const local = pasteFolder(w, &fbuf) != null;
         folder = .{ .open = local, .info = local and c.gtty_info_supported() };
+        if (w.kind == .shell) env = app.envShell(w);
         job = w;
     }
     const history_ok = paste_ok and app.paste_history.items.len > 0;
     // Paste: files copied last open the paste menu (name, path or the
     // files); else text into the job / the prompt.
     paste_ok = if (app.file_clip.items.len > 0) true else paste_ok and c.SDL_HasClipboardText();
-    app.popMenu(Menu.edit(target, .{ x, y }, copy_ok, output, input, paste_ok, history_ok, folders, folder));
+    app.popMenu(Menu.edit(target, .{ x, y }, copy_ok, output, input, paste_ok, history_ok, folders, folder, env));
     return true;
 }
 
@@ -2461,6 +2482,7 @@ fn menuRowPick(app: *App, row: usize) void {
                 // manager, or its info window.
                 Menu.edit_folder_open => if (job) |w| app.openFolder(w),
                 Menu.edit_folder_info => if (job) |w| app.folderInfo(w),
+                Menu.edit_env => if (job) |w| app.openEnvView(w),
                 Menu.edit_folders => {
                     // The row itself opens its submenu too (it does nothing else).
                     app.menu = m;
@@ -5364,6 +5386,11 @@ fn onText(app: *App, text: []const u8) void {
         app.dirty = true;
         return;
     }
+    if (app.env_view) |*v| {
+        v.typed(text);
+        app.dirty = true;
+        return;
+    }
     if (app.dialogKeys()) |w| {
         w.openDialog().?.typed(text, c.SDL_GetTicks());
         app.dirty = true;
@@ -5420,6 +5447,8 @@ fn onKey(app: *App, key: c.SDL_Keycode, mod: c.SDL_Keymod) void {
         if (m.key(key, mod, c.SDL_GetTicks())) |p| app.resolveModal(p, .picked);
         return;
     }
+    // Env & Aliases takes every key.
+    if (app.env_view != null) return app.envKey(key, cmd, ctrl, alt, shift);
     // A dialog with the keyboard: what it doesn't use goes on (gtty's own
     // keys; the window takes no typing while it is open).
     if (app.dialogKeys()) |w| {
@@ -5712,6 +5741,14 @@ fn onClick(app: *App, x: f32, y: f32, button: u8, clicks: u8) void {
         if (button == c.SDL_BUTTON_LEFT) if (m.click(x, y)) |p| app.resolveModal(p, .picked);
         return;
     }
+    // Env & Aliases: a click outside it (or on its ×) closes it.
+    if (app.env_view) |*v| {
+        if (button == c.SDL_BUTTON_LEFT or !v.containsPoint(x, y)) {
+            if (v.click(x, y, clicks) == .close) app.closeEnvView();
+        }
+        app.dirty = true;
+        return;
+    }
     // Any click closes the About box, and does nothing else.
     if (app.about_visible) {
         app.about_visible = false;
@@ -5955,6 +5992,10 @@ fn onMouseUp(app: *App, x: f32, y: f32) void {
 /// an I-beam pointer over its text.
 fn onMotion(app: *App, x: f32, y: f32) void {
     app.last_point_ms = c.SDL_GetTicks();
+    if (app.env_view) |*v| {
+        if (v.motion(x, y)) app.dirty = true;
+        return;
+    }
     const over_update = app.updatePartAt(x, y);
     if (over_update != app.update_over) {
         app.update_over = over_update;
@@ -8410,6 +8451,11 @@ fn onMouseLeave(app: *App) void {
 
 fn onWheel(app: *App, x: f32, y: f32, dy: f32) void {
     if (app.modal != null) return;
+    if (app.env_view) |*v| {
+        v.wheel(dy);
+        app.dirty = true;
+        return;
+    }
     if (app.dialogWindowAt(x, y)) |i| {
         const w = app.jobs.items[i];
         if (w.dialogMetrics(&app.gfx)) |m| w.openDialog().?.wheel(dy, m);
@@ -8654,6 +8700,10 @@ fn render(app: *App) void {
             app.freePasteDest();
         }
     }
+    if (app.env_view) |*v| {
+        const screen: Rect = .{ .x = 0, .y = 0, .w = app.width_px, .h = app.height_px };
+        v.draw(&app.gfx, t, f, app.statusFace(), app.scale.ui, screen);
+    }
     if (app.modal) |*m| {
         // Over the window it is about, when that one is in the windows area.
         var area = app.desktop_r;
@@ -8715,6 +8765,181 @@ fn drawAbout(app: *App, f: *Gfx.Face) void {
         _ = app.gfx.text(f, r.x + (w - Gfx.textWidth(f, l.text)) / 2, y, l.text, l.col);
         y += lh;
     }
+}
+
+// ------------------------------------------------------------ env & aliases
+
+/// What to trace for window `w`: its shell and how it started (null: its
+/// program isn't zsh or bash). Allocations in `a`.
+fn envInput(app: *App, a: std.mem.Allocator, w: *JobWindow) ?EnvTrace.Input {
+    if (!w.running()) return null;
+    const hook_dir = if (app.tmp) |d| d.path else "";
+    return EnvTrace.fromProcess(a, @intCast(w.proc.pid), hook_dir, spawnedEnv(a, w) catch &.{});
+}
+
+/// The environment gtty started window `w`'s shell with (the trace's
+/// base; the same on every system): gtty's own,
+/// what the PTY spawn sets (gtty_pty.c) and the window's extra
+/// (`JobWindow.spawn_env`); a later "NAME=" replaces an earlier one.
+fn spawnedEnv(a: std.mem.Allocator, w: *const JobWindow) ![]const []const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    var i: usize = 0;
+    while (std.c.environ[i]) |e| : (i += 1) try out.append(a, std.mem.span(e));
+    const extra = [_][]const u8{ "TERM=xterm-256color", "COLORTERM=truecolor", "GTTY=1" };
+    var adds: std.ArrayList([]const u8) = .empty;
+    try adds.appendSlice(a, &extra);
+    var it = std.mem.splitScalar(u8, w.spawn_env, 0);
+    while (it.next()) |e| if (e.len > 0) try adds.append(a, e);
+    for (adds.items) |e| {
+        const eq = std.mem.indexOfScalar(u8, e, '=') orelse continue;
+        var k: usize = 0;
+        while (k < out.items.len) {
+            if (std.mem.startsWith(u8, out.items[k], e[0 .. eq + 1])) _ = out.orderedRemove(k) else k += 1;
+        }
+        try out.append(a, e);
+    }
+    return out.items;
+}
+
+/// The window's program is zsh or bash (its menu's Env & Aliases row).
+fn envShell(app: *App, w: *JobWindow) bool {
+    var arena = std.heap.ArenaAllocator.init(app.gpa);
+    defer arena.deinit();
+    return app.envInput(arena.allocator(), w) != null;
+}
+
+/// Open "Env & Aliases" for window `w`: the trace kept from before when
+/// nothing it read changed, else a new one (read in the background).
+fn openEnvView(app: *App, w: *JobWindow) void {
+    var arena = std.heap.ArenaAllocator.init(app.gpa);
+    defer arena.deinit();
+    const in = app.envInput(arena.allocator(), w) orelse {
+        beep.beep();
+        return app.say("Env & Aliases: the window's program isn't zsh or bash", app.theme.stderr_accent);
+    };
+    var tb: [64]u8 = undefined;
+    const title = std.fmt.bufPrint(&tb, "#{d} {s}", .{ w.serial, @tagName(in.shell) }) catch "";
+    if (app.env_view) |*v| v.deinit();
+    app.env_view = EnvView.init(app.gpa, w.uid, title);
+    app.hideTip();
+    app.dirty = true;
+    const key = in.key();
+    if (app.env_cache) |*r| if (app.env_cache_key == key and r.fresh(EnvTrace.real_fs)) {
+        app.env_want = null;
+        return app.env_view.?.setResult(r);
+    };
+    app.env_want = key;
+    app.startEnvTrace(in);
+}
+
+/// One trace at a time: a newer request waits for the running one
+/// (`tickEnv` starts it then).
+fn startEnvTrace(app: *App, in: EnvTrace.Input) void {
+    if (app.env_job != null) return;
+    app.env_job = EnvTrace.Job.start(app.gpa, in, EnvTrace.real_fs) catch {
+        if (app.env_view != null) app.closeEnvView();
+        return app.say("Env & Aliases: couldn't start reading the startup files", app.theme.stderr_accent);
+    };
+}
+
+fn closeEnvView(app: *App) void {
+    if (app.env_view) |*v| v.deinit();
+    app.env_view = null;
+    app.env_want = null;
+    app.dirty = true;
+}
+
+/// Each frame: take a finished trace; the view goes with its window; the
+/// first shell's startup files are read once in the background, so the
+/// view usually opens with its answer ready.
+fn tickEnv(app: *App) void {
+    if (app.env_view) |v| if (app.jobByUid(v.uid) == null) app.closeEnvView();
+    if (app.env_job) |j| if (j.isDone()) {
+        const key = j.key;
+        app.env_job = null;
+        if (j.finish()) |res| {
+            // The view may point at the old one.
+            if (app.env_view) |*v| v.setResult(null);
+            if (app.env_cache) |*old| old.deinit();
+            app.env_cache = res;
+            app.env_cache_key = key;
+        }
+        if (app.env_view) |*v| if (app.env_want) |want| {
+            if (want == key and app.env_cache != null and app.env_cache_key == key) {
+                app.env_want = null;
+                v.setResult(&app.env_cache.?);
+            } else if (want == key) {
+                app.closeEnvView();
+                app.say("Env & Aliases: couldn't read the startup files", app.theme.stderr_accent);
+            } else if (app.jobByUid(v.uid)) |w| {
+                var arena = std.heap.ArenaAllocator.init(app.gpa);
+                defer arena.deinit();
+                if (app.envInput(arena.allocator(), w)) |in| app.startEnvTrace(in) else app.closeEnvView();
+            }
+        };
+        app.dirty = true;
+    };
+    if (!app.env_prewarmed and app.env_job == null and app.env_view == null) {
+        const now = c.SDL_GetTicks();
+        for (app.jobs.items) |w| if (w.kind == .shell and w.running() and now -| w.started_ms > 2000) {
+            app.env_prewarmed = true;
+            var arena = std.heap.ArenaAllocator.init(app.gpa);
+            defer arena.deinit();
+            if (app.envInput(arena.allocator(), w)) |in| {
+                app.env_job = EnvTrace.Job.start(app.gpa, in, EnvTrace.real_fs) catch null;
+            }
+            break;
+        };
+    }
+}
+
+/// Keys while "Env & Aliases" is open: the filter's editing keys, moving
+/// in the list, Enter / Tab open a row, ⌘C copies, ⌘V pastes into the
+/// filter, Esc clears the filter then closes.
+fn envKey(app: *App, key: c.SDL_Keycode, cmd: bool, ctrl: bool, alt: bool, shift: bool) void {
+    const v = &(app.env_view orelse return);
+    const accel = cmd or (ctrl and shift);
+    if (key == c.SDLK_C and accel) {
+        if (v.selectedValue()) |val| {
+            const z = app.gpa.dupeZ(u8, val) catch return;
+            defer app.gpa.free(z);
+            if (val.len > 0) app.pushPasteHistory(val);
+            _ = c.SDL_SetClipboardText(z.ptr);
+            app.say("copied the value", app.theme.ok);
+        }
+        return;
+    }
+    if (key == c.SDLK_V and accel) {
+        if (c.SDL_GetClipboardText()) |txt| {
+            defer c.SDL_free(txt);
+            var line: []const u8 = std.mem.span(txt);
+            if (std.mem.indexOfAny(u8, line, "\r\n")) |nl| line = line[0..nl];
+            v.typed(line);
+        }
+        return;
+    }
+    const word = alt or (ctrl and !cmd);
+    const k: ?EnvView.Key = switch (key) {
+        c.SDLK_UP => .up,
+        c.SDLK_DOWN => .down,
+        c.SDLK_PAGEUP => .page_up,
+        c.SDLK_PAGEDOWN => .page_down,
+        c.SDLK_HOME => if (cmd or ctrl) .home else .line_home,
+        c.SDLK_END => if (cmd or ctrl) .end else .line_end,
+        c.SDLK_LEFT => if (cmd) .line_home else if (word) .word_left else .left,
+        c.SDLK_RIGHT => if (cmd) .line_end else if (word) .word_right else .right,
+        c.SDLK_RETURN, c.SDLK_KP_ENTER => .enter,
+        c.SDLK_TAB => .tab,
+        c.SDLK_ESCAPE => .escape,
+        c.SDLK_BACKSPACE => .backspace,
+        c.SDLK_DELETE => .delete,
+        c.SDLK_A => if (accel) .select_all else null,
+        else => null,
+    };
+    if (k) |kk| switch (v.key(kk)) {
+        .close => app.closeEnvView(),
+        else => {},
+    };
 }
 
 // ------------------------------------------------------------ updates

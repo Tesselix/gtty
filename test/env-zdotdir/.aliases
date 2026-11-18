@@ -1,0 +1,4 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+alias ll='ls -la'
+alias gs='git status'
