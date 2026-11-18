@@ -5936,7 +5936,13 @@ fn onMouseUp(app: *App, x: f32, y: f32) void {
             w.opener.held = false;
             w.mouseDown(p.x, p.y, 1);
             if (!w.mouseUp()) if (w.fileMarkAt(p.x, p.y)) |m| {
-                if (!w.insertName(m)) app.copyNames(@as([]const []const u8, &.{m.file()}), w, m.range, false);
+                if (!w.insertName(m)) {
+                    // The text is copied as shown (a path stays a path);
+                    // the file is the icon's, its name / path the menu's.
+                    const shown = w.markText(m);
+                    defer if (shown) |s| w.gpa.free(s);
+                    if (shown) |s| app.copyNames(@as([]const []const u8, &.{s}), w, m.range, true);
+                }
             };
             app.dirty = true;
         }

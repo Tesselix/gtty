@@ -863,7 +863,9 @@ the shell. Users expect it to behave like a shell in a terminal.
     window focused). Released without moving → a plain click
     (`mouseDown` + `mouseUp` at the press) that also copies the name
     (`copyNames`: text on the clipboard + paste history, the name
-    flashes, "copied X"; 2026-10-08, `test/copyname.gt`). A command
+    flashes, "copied X"; 2026-10-08, `test/copyname.gt`; since
+    2026-11-18 the text as shown, `markText`: `pwd`'s path stays a
+    path; the file is the icon's, name / path the file menu's). A command
     being typed in that shell (`JobWindow.typingCommand`: at its prompt,
     `Screen.inputPending`): the name (quoted when needed, `insertName`),
     or a selection of earlier output clicked inside (`press_sel`,

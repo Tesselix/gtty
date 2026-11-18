@@ -2831,7 +2831,7 @@ pub fn insertName(w: *JobWindow, m: *const FileOpener.Mark) bool {
     const a = w.out.physPos(m.range.start) orelse return false;
     const b = w.out.physPos(m.range.end) orelse return false;
     if (!w.beforeInput(b) or !a.before(b)) return false;
-    const name = w.out.selectedText(w.gpa, .{ .anchor = a, .head = b }) catch return false;
+    const name = w.markText(m) orelse return false;
     defer w.gpa.free(name);
     var buf: [8400]u8 = undefined;
     var out: std.Io.Writer = .fixed(&buf);
@@ -2840,6 +2840,15 @@ pub fn insertName(w: *JobWindow, m: *const FileOpener.Mark) bool {
     } else true;
     if (plain) out.writeAll(name) catch return false else quoted(&out, name) catch return false;
     return w.clickInsert(out.buffered());
+}
+
+/// The text an outlined name covers, as shown (caller frees); null when
+/// it is gone from the screen.
+pub fn markText(w: *JobWindow, m: *const FileOpener.Mark) ?[]u8 {
+    const a = w.out.physPos(m.range.start) orelse return null;
+    const b = w.out.physPos(m.range.end) orelse return null;
+    if (!a.before(b)) return null;
+    return w.out.selectedText(w.gpa, .{ .anchor = a, .head = b }) catch null;
 }
 
 /// Type `text` at the shell's cursor at once, as a paste. False when there
