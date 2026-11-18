@@ -12,7 +12,7 @@ const std = @import("std");
 
 const LineEdit = @This();
 
-pub const max = 255;
+pub const max = 4095;
 
 buf: [max]u21 = undefined,
 len: usize = 0,

@@ -364,8 +364,12 @@ env_cache_key: u64 = 0,
 env_job: ?*EnvTrace.Job = null,
 /// The trace the open view waits for (its window's `Input.key`).
 env_want: ?u64 = null,
-/// A trace of the first shell was made in the background (`tickEnv`).
-env_prewarmed: bool = false,
+/// The shell windows whose startup files were traced in the background
+/// once they started (`tickEnv`).
+env_seen: std.AutoHashMapUnmanaged(ids_mod.Id, void) = .empty,
+/// Values set in a shell from Env & Aliases (names and values owned; gone
+/// with their window).
+env_edits: std.ArrayList(EnvView.Edit) = .empty,
 /// File actions: the ⌘-clicked names (Ctrl-click on Linux), gtty's file
 /// clipboard (copy / cut, waiting for a paste), when the mouse last moved
 /// or clicked and when a key was last pressed (`pointerFresh`).
@@ -672,6 +676,9 @@ pub fn destroy(app: *App) void {
         r.deinit();
     };
     if (app.env_cache) |*r| r.deinit();
+    app.env_seen.deinit(app.gpa);
+    for (app.env_edits.items) |ed| app.freeEnvEdit(ed);
+    app.env_edits.deinit(app.gpa);
     app.clearFileSel();
     app.file_sel.deinit(app.gpa);
     app.clearFileClip();
@@ -5204,7 +5211,8 @@ fn keySpec(spec: []const u8) ?struct { key: c.SDL_Keycode, mod: c.SDL_Keymod } {
         .{ .name = "x", .v = c.SDLK_X },                 .{ .name = "f2", .v = c.SDLK_F2 },
         .{ .name = "1", .v = c.SDLK_1 },                 .{ .name = "2", .v = c.SDLK_2 },
         .{ .name = "3", .v = c.SDLK_3 },                 .{ .name = "4", .v = c.SDLK_4 },
-        .{ .name = "f", .v = c.SDLK_F },
+        .{ .name = "f", .v = c.SDLK_F },                 .{ .name = "o", .v = c.SDLK_O },
+        .{ .name = "r", .v = c.SDLK_R },
     };
     var mod: c.SDL_Keymod = 0;
     var it = std.mem.splitScalar(u8, spec, '+');
@@ -5743,8 +5751,10 @@ fn onClick(app: *App, x: f32, y: f32, button: u8, clicks: u8) void {
     }
     // Env & Aliases: a click outside it (or on its ×) closes it.
     if (app.env_view) |*v| {
-        if (button == c.SDL_BUTTON_LEFT or !v.containsPoint(x, y)) {
-            if (v.click(x, y, clicks) == .close) app.closeEnvView();
+        if (button == c.SDL_BUTTON_RIGHT and v.containsPoint(x, y) and !v.menuOpen()) {
+            v.rightClick(x, y);
+        } else if (button == c.SDL_BUTTON_LEFT or !v.containsPoint(x, y) or v.menuOpen()) {
+            app.envAction(v.click(x, y, clicks));
         }
         app.dirty = true;
         return;
@@ -8821,12 +8831,14 @@ fn openEnvView(app: *App, w: *JobWindow) void {
     const title = std.fmt.bufPrint(&tb, "#{d} {s}", .{ w.serial, @tagName(in.shell) }) catch "";
     if (app.env_view) |*v| v.deinit();
     app.env_view = EnvView.init(app.gpa, w.uid, title);
+    app.env_view.?.edits = &app.env_edits;
     app.hideTip();
     app.dirty = true;
     const key = in.key();
+    // The kept trace at once when nothing it read changed; read again
+    // anyway (a folder may have a new file), the new one replaces it.
     if (app.env_cache) |*r| if (app.env_cache_key == key and r.fresh(EnvTrace.real_fs)) {
-        app.env_want = null;
-        return app.env_view.?.setResult(r);
+        app.env_view.?.setResult(r);
     };
     app.env_want = key;
     app.startEnvTrace(in);
@@ -8854,12 +8866,25 @@ fn closeEnvView(app: *App) void {
 /// view usually opens with its answer ready.
 fn tickEnv(app: *App) void {
     if (app.env_view) |v| if (app.jobByUid(v.uid) == null) app.closeEnvView();
+    var ei: usize = 0;
+    while (ei < app.env_edits.items.len) {
+        if (app.jobByUid(app.env_edits.items[ei].uid) == null) {
+            app.freeEnvEdit(app.env_edits.orderedRemove(ei));
+        } else ei += 1;
+    }
+    if (app.env_seen.count() > 0) {
+        var it = app.env_seen.keyIterator();
+        while (it.next()) |k| if (app.jobByUid(k.*) == null) {
+            _ = app.env_seen.remove(k.*);
+            break; // the iterator is spent; the rest next frame
+        };
+    }
     if (app.env_job) |j| if (j.isDone()) {
         const key = j.key;
         app.env_job = null;
         if (j.finish()) |res| {
-            // The view may point at the old one.
-            if (app.env_view) |*v| v.setResult(null);
+            // The view may show the old one: it keeps its place by name.
+            if (app.env_view) |*v| if (v.res != null) v.detach();
             if (app.env_cache) |*old| old.deinit();
             app.env_cache = res;
             app.env_cache_key = key;
@@ -8879,17 +8904,20 @@ fn tickEnv(app: *App) void {
         };
         app.dirty = true;
     };
-    if (!app.env_prewarmed and app.env_job == null and app.env_view == null) {
+    // Each shell that started (once it has had 2 s to exec): traced in
+    // the background, unless the trace kept is still right for it.
+    if (app.env_job == null and app.env_view == null) {
         const now = c.SDL_GetTicks();
-        for (app.jobs.items) |w| if (w.kind == .shell and w.running() and now -| w.started_ms > 2000) {
-            app.env_prewarmed = true;
+        for (app.jobs.items) |w| {
+            if (w.kind != .shell or !w.running() or now -| w.started_ms < 2000 or app.env_seen.contains(w.uid)) continue;
+            app.env_seen.put(app.gpa, w.uid, {}) catch return;
             var arena = std.heap.ArenaAllocator.init(app.gpa);
             defer arena.deinit();
-            if (app.envInput(arena.allocator(), w)) |in| {
-                app.env_job = EnvTrace.Job.start(app.gpa, in, EnvTrace.real_fs) catch null;
-            }
+            const in = app.envInput(arena.allocator(), w) orelse continue;
+            if (app.env_cache) |*r| if (app.env_cache_key == in.key() and r.fresh(EnvTrace.real_fs)) continue;
+            app.env_job = EnvTrace.Job.start(app.gpa, in, EnvTrace.real_fs) catch null;
             break;
-        };
+        }
     }
 }
 
@@ -8931,15 +8959,175 @@ fn envKey(app: *App, key: c.SDL_Keycode, cmd: bool, ctrl: bool, alt: bool, shift
         c.SDLK_RETURN, c.SDLK_KP_ENTER => .enter,
         c.SDLK_TAB => .tab,
         c.SDLK_ESCAPE => .escape,
-        c.SDLK_BACKSPACE => .backspace,
-        c.SDLK_DELETE => .delete,
+        c.SDLK_BACKSPACE, c.SDLK_DELETE => blk: {
+            if (accel) break :blk .unset;
+            break :blk if (key == c.SDLK_BACKSPACE) .backspace else .delete;
+        },
+        c.SDLK_F2 => .edit,
         c.SDLK_A => if (accel) .select_all else null,
+        c.SDLK_O => if (accel) .open_file else null,
+        c.SDLK_R => if (accel) .reload else null,
         else => null,
     };
-    if (k) |kk| switch (v.key(kk)) {
+    const kk = k orelse return;
+    var buf: [EnvView.max_value]u8 = undefined;
+    app.envAction(v.key(kk, shift, &buf));
+}
+
+/// What Env & Aliases asked for (a key or a click).
+fn envAction(app: *App, act: EnvView.Action) void {
+    switch (act) {
+        .none => {},
         .close => app.closeEnvView(),
-        else => {},
-    };
+        .set => |s| app.envSet(s.kind, s.name, s.value),
+        .unset => |u| app.envUnset(u.kind, u.name),
+        .open_file => |o| app.envOpenFile(o.path, o.line),
+        .copy => |cp| {
+            const z = app.gpa.dupeZ(u8, cp.text) catch return;
+            defer app.gpa.free(z);
+            if (cp.text.len > 0) app.pushPasteHistory(cp.text);
+            _ = c.SDL_SetClipboardText(z.ptr);
+            app.sayFmt("copied the {s}", .{cp.what}, app.theme.ok);
+        },
+        .reload => app.envReload(),
+    }
+    app.dirty = true;
+}
+
+fn freeEnvEdit(app: *App, ed: EnvView.Edit) void {
+    app.gpa.free(ed.name);
+    if (ed.value) |x| app.gpa.free(x);
+}
+
+/// The view's shell, when it takes a command now: at its prompt, not
+/// read-only. Else beep + why, and null.
+fn envShellReady(app: *App) ?*JobWindow {
+    const v = app.env_view orelse return null;
+    const w = app.jobByUid(v.uid) orelse return null;
+    if (w.sync == .follower) {
+        app.readOnly(w);
+        return null;
+    }
+    if (!w.atPrompt()) {
+        beep.beep();
+        app.sayFmt("#{d} is busy: the shell takes it at its prompt", .{w.serial}, app.theme.stderr_accent);
+        return null;
+    }
+    return w;
+}
+
+/// Set a variable or alias in the view's shell only: `export NAME='…'` /
+/// `alias NAME='…'` typed and run there (Ctrl+U first; a leading space
+/// keeps it out of most histories). No file changes; the view shows it
+/// as "set in this shell".
+fn envSet(app: *App, kind: EnvTrace.Kind, name: []const u8, value: []const u8) void {
+    const w = app.envShellReady() orelse return;
+    if (kind == .untraced) return;
+    if (kind == .env and !EnvView.validName(name)) {
+        beep.beep();
+        return app.say("Env & Aliases: not a name the shell can export", app.theme.stderr_accent);
+    }
+    var list: std.Io.Writer.Allocating = .init(app.gpa);
+    defer list.deinit();
+    const o = &list.writer;
+    o.writeAll("\x15 ") catch return;
+    o.writeAll(if (kind == .alias) "alias " else "export ") catch return;
+    if (kind == .alias) {
+        // alias 'name=value': any name the shell allows, one word.
+        var both: std.Io.Writer.Allocating = .init(app.gpa);
+        defer both.deinit();
+        both.writer.print("{s}={s}", .{ name, value }) catch return;
+        shellQuote(o, both.written()) catch return;
+    } else {
+        o.print("{s}=", .{name}) catch return;
+        shellQuote(o, value) catch return;
+    }
+    o.writeByte('\r') catch return;
+    app.envRecord(w, kind, name, value) catch return;
+    w.typeBytes(list.written());
+    if (app.env_view) |*v| v.endEdit();
+    app.sayFmt("{s} set in #{d} only", .{ name, w.serial }, app.theme.ok);
+    app.envReload();
+}
+
+/// Unset a variable or alias in the view's shell only (`unset NAME` /
+/// `unalias NAME`, typed and run as `envSet`'s).
+fn envUnset(app: *App, kind: EnvTrace.Kind, name: []const u8) void {
+    const w = app.envShellReady() orelse return;
+    if (kind == .untraced) return;
+    if (kind == .env and !EnvView.validName(name)) return;
+    var list: std.Io.Writer.Allocating = .init(app.gpa);
+    defer list.deinit();
+    const o = &list.writer;
+    o.writeAll(if (kind == .alias) "\x15 unalias " else "\x15 unset ") catch return;
+    if (kind == .alias) shellQuote(o, name) catch return else o.writeAll(name) catch return;
+    o.writeByte('\r') catch return;
+    app.envRecord(w, kind, name, null) catch return;
+    w.typeBytes(list.written());
+    app.sayFmt("{s} unset in #{d} only", .{ name, w.serial }, app.theme.ok);
+    app.envReload();
+}
+
+/// Remember a value set (null: unset) in `w` from the view.
+fn envRecord(app: *App, w: *JobWindow, kind: EnvTrace.Kind, name: []const u8, value: ?[]const u8) !void {
+    const n = try app.gpa.dupe(u8, name);
+    errdefer app.gpa.free(n);
+    const val: ?[]const u8 = if (value) |x| try app.gpa.dupe(u8, x) else null;
+    errdefer if (val) |x| app.gpa.free(x);
+    try app.env_edits.append(app.gpa, .{ .uid = w.uid, .kind = kind, .name = n, .value = val });
+}
+
+/// Read the view's shell's startup files again (the reload button, after
+/// a change from the view, and on opening it). What is shown stays until
+/// the new trace replaces it (`tickEnv`; the selection, the open keys and
+/// an edit stay, by name).
+fn envReload(app: *App) void {
+    const v = &(app.env_view orelse return);
+    const w = app.jobByUid(v.uid) orelse return;
+    var arena = std.heap.ArenaAllocator.init(app.gpa);
+    defer arena.deinit();
+    const in = app.envInput(arena.allocator(), w) orelse return;
+    app.env_want = in.key();
+    app.startEnvTrace(in);
+}
+
+/// Open `path` at `line` in the shell's editor: the command typed and run
+/// in the view's shell, which gets the keyboard; the view closes. The
+/// editor: VISUAL, else EDITOR, as the trace (or a value set here) has
+/// them, else the shell's own `${VISUAL:-${EDITOR:-vi}}`.
+fn envOpenFile(app: *App, path: []const u8, line: u32) void {
+    const v = app.env_view orelse return;
+    const w = app.envShellReady() orelse return;
+    const zsh = if (v.res) |r| r.shell == .zsh else false;
+    var list: std.Io.Writer.Allocating = .init(app.gpa);
+    defer list.deinit();
+    const o = &list.writer;
+    o.writeAll("\x15") catch return;
+    EnvView.editorCommand(o, app.envEditor(), zsh, path, line) catch return;
+    o.writeByte('\r') catch return;
+    app.closeEnvView();
+    w.typeBytes(list.written());
+    if (app.indexOfWindow(w)) |i| app.setFocus(i);
+}
+
+/// The editor the view's shell will use, when the trace knows it as a
+/// plain value (set here, or in a file without a program's output).
+fn envEditor(app: *App) ?[]const u8 {
+    const v = &(app.env_view orelse return null);
+    const res = v.res orelse return null;
+    for ([_][]const u8{ "VISUAL", "EDITOR" }) |name| {
+        for (res.entries, 0..) |e, i| {
+            if (e.kind != .env or !std.mem.eql(u8, e.name, name)) continue;
+            if (v.editOf(@intCast(i))) |ed| {
+                if (ed.value) |val| if (val.len > 0) return val;
+                continue;
+            }
+            const d = e.last();
+            if (d.unset or d.dynamic or d.value.len == 0) continue;
+            return d.value;
+        }
+    }
+    return null;
 }
 
 // ------------------------------------------------------------ updates

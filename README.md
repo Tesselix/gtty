@@ -102,13 +102,17 @@ no command line, nothing from before. Your last copies wait under
 
 ### Find where a variable or alias was set
 
-![Env & Aliases from the right-click menu: EDITOR set in .zshrc over .zshenv; PATH's history through .zshrc, .zprofile, /etc/zprofile and the inherited environment; the alias ll from .aliases over .zshrc](docs/images/env.webp)
+![Env & Aliases from the right-click menu: EDITOR set in .zshrc over .zshenv; PATH's history through .zshrc, .zprofile and /etc/zprofile, where it was first set; the alias ll from .aliases over .zshrc](docs/images/env.webp)
 
 Right-click a zsh or bash window and pick **Env & Aliases…**: every
 environment variable and alias, its value, and the full path of the file
 and line that set it. Type to filter by name or value. A ▸ opens a key's
 history: each earlier value and the script that set it, down to the
-first one. gtty reads your startup files in the order your shell runs
+first one. A value counts as inherited only when no file explains it.
+Double-click a value to change it for that shell only, right-click a row
+to unset or copy it, double-click the source file to open it at that
+line in your editor.
+gtty reads your startup files in the order your shell runs
 them, on macOS and the usual Linux distributions; nothing is run.
 
 ### Open files and change folders from the output

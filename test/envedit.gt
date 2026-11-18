@@ -1,0 +1,56 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Env & Aliases: edit, unset, copy, reload, open the file.
+# Run from the repo with its own zsh config:
+#   ZDOTDIR=$PWD/test/env-zdotdir gtty --script test/envedit.gt
+# Expected: ed0 GTTY_DEMO_VAR's value in an edit field, all selected;
+# ed1 "changed", "set in this shell" (×3), the shell ran the export;
+# ed2 the row menu on the alias ll; ed3 ll "unset in this shell"; ed4
+# the shell's echo says "changed", then no-ll; ed5 reopened: still
+# "set in this shell"; ed6 `nvim +5 '…/.zshrc'` typed and run for PATH
+# (the fixture's EDITOR; "command not found" without nvim).
+/s zsh
+/wait 2500
+/rclick 300 300
+/wait 300
+/click 370 520
+/wait 800
+/text demo
+/wait 200
+/key f2
+/wait 200
+/shot ed0.bmp
+/text changed
+/key enter
+/wait 800
+/shot ed1.bmp
+/key escape
+/text ls -la
+/wait 200
+/rclick 200 192
+/wait 200
+/shot ed2.bmp
+/key down
+/key down
+/key enter
+/wait 800
+/shot ed3.bmp
+/key escape
+/key escape
+/wait 300
+/text echo $GTTY_DEMO_VAR; alias ll || echo no-ll
+/key enter
+/wait 600
+/shot ed4.bmp
+/rclick 300 300
+/wait 300
+/click 370 549
+/wait 800
+/text demo
+/wait 300
+/shot ed5.bmp
+/key down
+/key cmd+o
+/wait 1500
+/shot ed6.bmp
+/quit
