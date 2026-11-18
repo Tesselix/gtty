@@ -116,11 +116,11 @@ pub fn help(fo: *const FileOpener, buf: []u8) []const u8 {
         else
             std.fmt.bufPrint(buf, "click: copy the file {s} (a file manager pastes it, a text field its path)  ·  drag: drag it out", .{name})) catch "";
         return (if (m.folder)
-            std.fmt.bufPrint(buf, "click: copy the name  ·  double-click: cd to {s}  ·  icon: copy the folder  ·  right-click: more", .{name})
+            std.fmt.bufPrint(buf, "click: copy the text  ·  double-click: cd to {s}  ·  icon: copy the folder  ·  right-click: more", .{name})
         else if (m.remote)
             std.fmt.bufPrint(buf, "double-click: copy {s} here (read-only) and open it  (Shift: choose the app)", .{name})
         else
-            std.fmt.bufPrint(buf, "click: copy the name  ·  double-click: open {s}  (Shift: choose the app)  ·  icon: copy the file  ·  right-click: more", .{name})) catch "";
+            std.fmt.bufPrint(buf, "click: copy the text  ·  double-click: open {s}  (Shift: choose the app)  ·  icon: copy the file  ·  right-click: more", .{name})) catch "";
     }
     if (!fo.over) return "";
     const dest = fo.over_dest_buf[0..fo.over_dest_len];

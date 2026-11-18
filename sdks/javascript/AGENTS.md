@@ -1,5 +1,9 @@
 # gtty extensions in JavaScript: guide for AI assistants
 
+`CLAUDE.md` next to this file says what gtty is and how its users see
+it: read it first. Then this file: every rule, then every function
+("Function reference").
+
 Read all of this before writing an extension. It lists only what exists in
 this SDK. `gtty.js` is the truth and `gtty.d.ts` has every shape;
 `examples/hosts.js` is a complete, working extension, so start from a copy
@@ -403,6 +407,167 @@ WebStorm: a Node.js configuration of the script, working directory = the package
 
 To debug the installed copy instead, attach to its pid (the extension
 manager and `gtty ext logs` show it); its start has already run by then.
+
+## Function reference
+
+Every function of the SDK, one by one: what it does, when you may call it,
+what it returns, and the mistakes to avoid. "Callback" means one of your
+`on…` functions or a click handler. They run one at a time: an `async`
+callback is awaited before the next message is handled, so `await` the
+storage calls and keep them short.
+
+### Starting
+
+**`gtty.run(ext)`** → `Promise<void>` — connects to gtty (the socket gtty
+gave it, else the running gtty, see "Debug"), calls your callbacks as
+messages come, and settles when gtty closes. `ext` is an object with the
+`on…` methods. Don't call anything else before it; there is no
+connection yet.
+
+**`gtty.API_VERSION`** — the protocol version this SDK speaks (1). gtty
+checks it at connect; you don't need it.
+
+### Your callbacks (all optional, any may be `async`)
+
+**`onGttyStart(ext)`** — once, before any window. Read your settings, log
+a start line. There is no window yet: only `ext.log` and `ext.name`.
+
+**`onWindowStart(win)`** — once per window: first for the windows already
+open, then for each new one. Set up your UI here (`win.ui.set` the chip
+first), register events, read saved state. Keep per-window state in a
+`Map` keyed by `win.id`.
+
+**`onEvent(win, ev)`** — every registered event and every click on your
+UI. Switch on `ev.kind`; for `"button_click"` call `gtty.dispatch`.
+Return (or resolve) fast.
+
+**`onWindowClose(win)`** — the window is gone. Every `win` call now throws
+`GttyError` `WindowClosed` (`win.closed` is `true`); only drop your state
+for `win.id`. `win.log` still works.
+
+**`onGttyClose(ext)`** — gtty is closing; nobody waits for you. Don't save
+here (save as you go).
+
+A throw or a rejected promise in any callback becomes a line in `gtty ext
+logs`; the extension keeps running and the user sees nothing.
+
+### `win` and `ext`
+
+**`win.id`** — the window's id (number), the same in every call for that
+window and unique in this gtty. Key your state by it.
+
+**`win.log(level, message)`** / **`ext.log(level, message)`** — a line in
+`gtty ext logs`; `level` is `"debug"`, `"info"`, `"warn"` or `"err"`. Cut
+at 4096 characters, works in `onWindowClose` too. `ext.log` writes `-`
+for the window. `console.log` also lands in the log.
+
+**`ext.name`** — your extension's name, as gtty knows it.
+
+**`await win.shell()`** → `string` — asks gtty which shell is in front in
+the window (`"zsh"`, `"bash"` inside zsh, …); with a program such as vim
+in front, the window's own shell.
+
+### UI: `win.ui` (none of these return a promise)
+
+**`win.ui.set({ chip } | { peek } | { epeek } | { dialog })`** — one key
+per call. Keys left out stay as they were, `null` clears one,
+`{ peek: null }` / `{ epeek: null }` removes the whole thing. Doesn't wait
+for gtty: an update gtty rejects (a peek with no chip, an unknown key) is
+a line in `gtty ext logs`, not a throw. Order matters: chip first, then
+peek / epeek. Callback only.
+
+**`win.ui.setDisplayMode("chip" | "peek" | "epeek")`** — opens your peek
+or epeek over your chip, or with `"chip"` closes it. Call it from a click
+or hover handler: then it opens even over another one and gets the
+keyboard. Called at another time it won't replace a peek that is open,
+and it gets no keyboard. Close your epeek yourself after a pick.
+
+**`win.ui.showDialog()`** — shows the dialog last set with
+`win.ui.set({ dialog: … })` (none set: a `NoDialog` line in the logs).
+From the user's click or key it gets the keyboard; otherwise only once
+the user clicks it. One dialog per window at a time; others wait.
+
+**`win.ui.closeDialog()`** — closes it. Buttons only report, so call this
+after every `ok`, `cancel`, `yes` and `no` you handle, unless you keep it
+open to show an error (`win.ui.set({ dialog: { error: "…" } })`). Not
+after `kill` or `timeout`: gtty already closed it (the call does nothing
+then).
+
+### Events: `win.events`
+
+**`win.events.register(kind)`** — start getting `"window_changed"`,
+`"command_started"` or `"key"` for this window. Register only what you
+use: every event costs time. `"window_changed"` arrives once right away
+with the current folder and branch. Clicks need no registering.
+
+**`win.events.unregister(kind)`** — stop getting it (for example `"key"`
+while your list is closed).
+
+### Clicks
+
+**`gtty.dispatch(actions, win, ev)`** — calls `actions[name](win, b)`, the
+function named by the click's `function` (the `onclick`, `onhover` or
+`onexpand` string you set), and returns what it returns (`await` it for
+async handlers). No such function: throws (logged). Does nothing for
+events that aren't clicks.
+
+**`b.field("host")`** → `string | null` — a dialog text box's or drop
+box's value (always `null` for `kill` / `timeout`, which carry no fields).
+
+**`b.checked("pin")`** → `boolean` — a dialog check box's value; `false`
+when missing.
+
+`ButtonClick` properties: `id` (the line's, button's or item's `id`, the
+dialog button, or `"filter"`), `text` (plain), `data` (what you put in
+`data`: store what the handler needs there), `function`, `fields`,
+`command` (⌘ held, Linux Ctrl).
+
+`Event` properties: `eventId`, `kind`, `folder`, `branch`, `remote`,
+`command`, `key`, `text`, `ctrl`, `shift`, `alt`, `cmd`, `button`.
+
+### Text
+
+**`gtty.newText("main", { bold: true, fg: 0xe0b040 })`** or
+**`gtty.newText(["feature/"], ["login", { bold: true }])`** — a text of up
+to 8 parts (the rest dropped). Attributes: `fg`, `bk` (`0xrrggbb` or
+`"#rrggbb"`), `size` (percent, 50–200), `bold`, `stroke`. A plain string
+works wherever a text goes.
+
+### Storage: `win.ephemeral` and `win.stateful` (all `async`)
+
+Callbacks only; `await` each call and keep `timeoutMs` short.
+
+**`openWrite(name, timeoutMs = 0)`** → `File` — opens `name` for writing;
+the new content replaces the file at `close`. Waits up to `timeoutMs`
+while another instance or gtty uses it (`GttyError` `FileInUse` after; 0
+tries once). While you hold it nobody else can open it: write and close
+in the same callback (`try … finally { await f.close() }`).
+
+**`openRead(name, timeoutMs = 0)`** → `File` — opens for reading; several
+readers at once are fine. `NoFile` when it doesn't exist (normal on the
+first run).
+
+**`f.read(size = 65536)`** → `Buffer` — up to `size` bytes; empty at the
+end. **`f.readAll()`** → `Buffer` — the rest of the file.
+
+**`f.write(data)`** — a `Buffer` or a string (UTF-8), added to what this
+open will write (not to the old file).
+
+**`f.close()`** — ends the open; for a write, the file now holds exactly
+what you wrote. Forgetting it loses the write; gtty closes any file after
+30 s and the next call throws `FileClosed`.
+
+**`delete(name, timeoutMs = 0)`** — removes the file (`NoFile` if there is
+none).
+
+**`list()`** → `string[]` — the file names.
+
+`win.ephemeral` is this window's own, deleted when it closes (scratch,
+caches); `win.stateful` is shared by every window in every gtty, kept
+until uninstall (settings, lists the user built). Two windows may write
+the same stateful file: read, change, write in one callback, and handle
+`FileInUse`. Every error gtty answers with is a `GttyError`; check
+`e.name`.
 
 ## Check your work
 

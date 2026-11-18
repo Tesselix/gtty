@@ -1,5 +1,9 @@
 # gtty extensions in Zig: guide for AI assistants
 
+`CLAUDE.md` next to this file says what gtty is and how its users see
+it: read it first. Then this file: every rule, then every function
+("Function reference").
+
 Read all of this before writing an extension. It lists only what exists in
 this SDK. `src/gtty.zig` is the truth; `examples/hosts.zig` is a complete,
 compiling extension, so start from a copy of it (and of
@@ -433,6 +437,175 @@ That is VS Code with CodeLLDB; `preLaunchTask` names a shell task that runs `zig
 
 To debug the installed copy instead, attach to its pid (the extension
 manager and `gtty ext logs` show it); its start has already run by then.
+
+## Function reference
+
+Every function of the SDK, one by one: what it does, when you may call it,
+what it returns, and the mistakes to avoid. "Callback" means one of your
+`on…` functions or a click handler, running on the SDK's thread.
+
+### Starting
+
+**`gtty.run(@This())`** — in `main`, the only thing it does. Connects to
+gtty (the socket gtty gave it, else the running gtty, see "Debug"), calls
+your callbacks as messages come, and returns when gtty closes. Pass the
+file that holds your `on…` functions (`@This()` in that file). Don't call
+anything else before it; there is no connection yet.
+
+**`gtty.api_version`** — the protocol version this SDK speaks (1). gtty
+checks it at connect; you don't need it.
+
+### Your callbacks (all optional, `pub fn` in the file passed to `run`)
+
+**`onGttyStart(ext: *gtty.Extension) !void`** — once, before any window.
+Read your settings, log a start line. There is no window yet: only
+`ext.log` and `ext.name`.
+
+**`onWindowStart(win: *gtty.Window) !void`** — once per window: first for
+the windows already open, then for each new one. Set up your UI here
+(`win.ui.set` the chip first), register events, read saved state. Keep
+per-window state in a map keyed by `win.id`.
+
+**`onEvent(win: *gtty.Window, ev: *const gtty.Event) !void`** — every
+registered event and every click on your UI. Switch on `ev.kind`; for
+`.button_click` call `gtty.dispatch`. Return fast.
+
+**`onWindowClose(win: *gtty.Window) !void`** — the window is gone. Every
+`win` call now returns `error.WindowClosed`; only free your memory for
+`win.id`. `win.log` still works.
+
+**`onGttyClose(ext: *gtty.Extension) !void`** — gtty is closing; nobody
+waits for you. Don't save here (save as you go).
+
+An error you return from any callback becomes a line in `gtty ext logs`;
+the extension keeps running and the user sees nothing.
+
+### `win` and `ext`
+
+**`win.id: u32`** — the window's id, the same in every call for that window
+and unique in this gtty. Key your state by it.
+
+**`win.log(level, fmt, args)`** / **`ext.log(level, fmt, args)`** — a line
+in `gtty ext logs` (`.debug`, `.info`, `.warn`, `.err`, then `std.fmt`
+format and arguments). Never fails, cut at 1024 bytes, safe from any
+thread and in `onWindowClose`. `ext.log` writes `-` for the window.
+
+**`ext.name`** — your extension's name, as gtty knows it.
+
+**`win.shell() ![]const u8`** — asks gtty which shell is in front in the
+window (`zsh`, `bash` inside `zsh`, …); with a program such as `vim` in
+front, the window's own shell. Waits for gtty's answer (a callback only).
+The slice is valid until the next `shell()` call: copy it to keep it.
+
+### UI: `win.ui`
+
+**`win.ui.set(update) !void`** — sets one of `.chip`, `.peek`, `.epeek` or
+`.dialog` per call (one field of the anonymous struct). Fields left out
+stay as they were, `null` clears one, `.peek = null` / `.epeek = null`
+removes the whole thing. Everything is copied, so your buffers may go
+after the call. Doesn't wait for gtty: an update gtty rejects (a peek with
+no chip) is a line in `gtty ext logs`. Order matters: chip first, then
+peek / epeek. Callback only.
+
+**`win.ui.setDisplayMode(.chip | .peek | .epeek) !void`** — opens your peek
+or epeek over your chip, or with `.chip` closes it. Call it from a click
+or hover handler (`onhover`, `onclick`): then it opens even over another
+one and gets the keyboard. Called at another time it won't replace a peek
+that is open, and it gets no keyboard. Close your epeek yourself after a
+pick.
+
+**`win.ui.showDialog() !void`** — shows the dialog last set with
+`win.ui.set(.{ .dialog = … })` (none set: a `NoDialog` line in the
+logs). From the user's click or key it gets the keyboard; otherwise only
+once the user clicks it. One dialog per window at a time;
+others wait.
+
+**`win.ui.closeDialog() !void`** — closes it. Buttons only report, so call
+this after every `ok`, `cancel`, `yes` and `no` you handle, unless you
+keep it open to show an error (`.@"error" = "…"`). Never after `kill` or
+`timeout`: gtty already closed it (the call does nothing then).
+
+### Events: `win.events`
+
+**`win.events.registerEvent(kind) !void`** — start getting `.window_changed`,
+`.command_started` or `.key` for this window. Register only what you use:
+every event costs time. `.window_changed` arrives once right away with
+the current folder and branch. `.button_click` needs no registering.
+
+**`win.events.unregisterEvent(kind) !void`** — stop getting it (for
+example `.key` while your list is closed).
+
+### Clicks
+
+**`gtty.dispatch(Actions, win, ev) !void`** — calls the `pub fn` of the
+struct `Actions` whose name is the click's `function` (the `onclick`,
+`onhover` or `onexpand` string you set), as `fn (win: *gtty.Window, b:
+gtty.ButtonClick) !void`. No such function: `error.NoSuchFunction`
+(logged). Does nothing for events that aren't clicks.
+
+**`b.is("ok") bool`** — `b.id` equals the string. Use for dialog buttons
+(`ok`, `cancel`, `yes`, `no`, `kill`, `timeout`), menu items and the
+filter (`filter`).
+
+**`b.field("host") ?[]const u8`** — a dialog text box's or drop box's
+value; `null` when there is no such field (and always for `kill` /
+`timeout`, which carry none). Valid until the handler returns.
+
+**`b.checked("pin") bool`** — a dialog check box's value; `false` when
+missing.
+
+`ButtonClick` fields: `id` (the line's, button's or item's `id`, or the
+dialog button), `text` (its text, plain), `data` (what you put in `data`:
+store what the handler needs there), `function`, `fields` (dialog values,
+read them with `field` / `checked`), `command` (⌘ held, Linux Ctrl: offer
+"open in a new place" style variants).
+
+### Text
+
+**`gtty.newText(v) gtty.Text`** — builds a text from a string, a string and
+its attributes, a tuple of both, or a `[]const gtty.TextPart` (at most 8
+parts, the rest dropped). The strings aren't copied: keep them alive until
+`set`. Needed for typed `Line`, `Button` and `Frame` values; the anonymous
+`set` form takes plain strings.
+
+**`t.plain(buf) []const u8`** — the parts' strings joined (into `buf`, cut
+to its length). **`t.isEmpty() bool`** — no part has text.
+**`t.slice() []const gtty.TextPart`** — the parts.
+
+### Storage: `win.ephemeral` and `win.stateful`
+
+All wait for gtty's answer: callbacks only, and keep `timeout_ms` short.
+
+**`openWrite(name, timeout_ms) !gtty.File`** — opens `name` for writing;
+the new content replaces the file at `close`. Waits up to `timeout_ms`
+while another instance or gtty uses it (`error.FileInUse` after). While
+you hold it nobody else can open it: write and close in the same
+callback.
+
+**`openRead(name, timeout_ms) !gtty.File`** — opens for reading; several
+readers at once are fine. `error.NoFile` when it doesn't exist (normal on
+the first run).
+
+**`f.read(buf) !usize`** — reads into `buf`; 0 at the end. Loop for files
+bigger than `buf`.
+
+**`f.write(bytes) !void`** — adds `bytes` to what this open will write
+(not to the old file). Call it as often as you like before `close`.
+
+**`f.close() !void`** — ends the open; for a write, the file now holds
+exactly what you wrote. Forgetting it loses the write; gtty closes any
+file after 30 s and the next call returns `error.FileClosed`.
+
+**`delete(name, timeout_ms) !void`** — removes the file (`error.NoFile` if
+there is none).
+
+**`list(buf) ![]const u8`** — the file names, one per line, in `buf`.
+
+`win.ephemeral` is this window's own, deleted when it closes (scratch,
+caches); `win.stateful` is shared by every window in every gtty, kept
+until uninstall (settings, lists the user built). Two windows may write
+the same stateful file: read, change, write in one callback, and handle
+`error.FileInUse`.
 
 ## Check your work
 

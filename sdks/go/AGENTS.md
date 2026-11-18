@@ -1,5 +1,9 @@
 # gtty extensions in Go: guide for AI assistants
 
+`CLAUDE.md` next to this file says what gtty is and how its users see
+it: read it first. Then this file: every rule, then every function
+("Function reference").
+
 Read all of this before writing an extension. It lists only what exists in
 this SDK. `gtty.go` is the truth; `examples/hosts` is a complete, working
 extension, so start from a copy of it and its `manifest.json`.
@@ -418,6 +422,178 @@ That is VS Code with the Go extension (Delve). GoLand: a Go Build configuration,
 
 To debug the installed copy instead, attach to its pid (the extension
 manager and `gtty ext logs` show it); its start has already run by then.
+
+## Function reference
+
+Every function of the SDK, one by one: what it does, when you may call it,
+what it returns, and the mistakes to avoid. "Callback" means one of your
+`On…` methods or a click handler, running on `Run`'s goroutine.
+
+### Starting
+
+**`gtty.Run(ext any) error`** — in `main`. Connects to gtty (the socket
+gtty gave it, else the running gtty, see "Debug"), calls your methods as
+messages come, and returns `nil` when gtty closes; an error (already
+printed on stderr) when it can't connect, is refused, or speaks another
+API version: exit non-zero then. `ext` is a pointer to your type with the
+`On…` methods. Don't call anything else before it.
+
+**`gtty.APIVersion`** — the protocol version this SDK speaks (1). gtty
+checks it at connect; you don't need it.
+
+### Your methods (all optional)
+
+**`OnGttyStart(ext *gtty.Ext) error`** — once, before any window. Read your
+settings, log a start line. There is no window yet: only `ext.Log` and
+`ext.Name`.
+
+**`OnWindowStart(win *gtty.Window) error`** — once per window: first for
+the windows already open, then for each new one. Set up your UI here
+(`win.UI.Set` the chip first), register events, read saved state. Keep
+per-window state in a map keyed by `win.ID`.
+
+**`OnEvent(win *gtty.Window, ev *gtty.Event) error`** — every registered
+event and every click on your UI. Switch on `ev.Kind`; for
+`"button_click"` call `gtty.Dispatch`. Return fast.
+
+**`OnWindowClose(win *gtty.Window) error`** — the window is gone. Every
+`win` call now returns `gtty.ErrWindowClosed`; only drop your state for
+`win.ID`. `win.Log` still works.
+
+**`OnGttyClose(ext *gtty.Ext) error`** — gtty is closing; nobody waits for
+you. Don't save here (save as you go).
+
+An error you return becomes a line in `gtty ext logs`
+(`ErrWindowClosed` isn't logged); the extension keeps running and the
+user sees nothing. A panic ends the program: recover in your own
+goroutines.
+
+### `win` and `ext`
+
+**`win.ID uint32`** — the window's id, the same in every call for that
+window and unique in this gtty. Key your state by it.
+
+**`win.Log(level, message string)`** / **`ext.Log(level, message string)`**
+— a line in `gtty ext logs`; level `"debug"`, `"info"`, `"warn"` or
+`"err"` (another: `"info"`). Cut at 4096 bytes, safe from any goroutine
+and in `OnWindowClose`. `ext.Log` writes `-` for the window.
+
+**`ext.Name string`** — your extension's name, as gtty knows it.
+
+**`win.Shell() (string, error)`** — asks gtty which shell is in front in
+the window (`"zsh"`, `"bash"` inside zsh, …); with a program such as vim
+in front, the window's own shell. Waits for gtty's answer (a callback
+only).
+
+### UI: `win.UI`
+
+**`win.UI.Set(gtty.M{"chip": gtty.M{…}}) error`** — exactly one of
+`"chip"`, `"peek"`, `"epeek"`, `"dialog"` per call (else an error). Keys
+left out stay as they were, `nil` clears one, `gtty.M{"peek": nil}` /
+`gtty.M{"epeek": nil}` removes the whole thing. Doesn't wait for gtty: an
+update gtty rejects (a peek with no chip, an unknown key) is a line in
+`gtty ext logs`; the error returned is only `ErrWindowClosed` or a bad
+top-level key. Order matters: chip first, then peek / epeek. Callback
+only.
+
+**`win.UI.SetDisplayMode("chip" | "peek" | "epeek") error`** — opens your
+peek or epeek over your chip, or with `"chip"` closes it. Call it from a
+click or hover handler: then it opens even over another one and gets the
+keyboard. Called at another time it won't replace a peek that is open,
+and it gets no keyboard. Close your epeek yourself after a pick.
+
+**`win.UI.ShowDialog() error`** — shows the dialog last set with
+`win.UI.Set(gtty.M{"dialog": …})` (none set: a `NoDialog` line in the
+logs). From the user's click or key it gets the keyboard; otherwise only
+once the user clicks it. One dialog per window at a time; others wait.
+
+**`win.UI.CloseDialog() error`** — closes it. Buttons only report, so call
+this after every `ok`, `cancel`, `yes` and `no` you handle, unless you
+keep it open to show an error (`gtty.M{"dialog": gtty.M{"error": "…"}}`).
+Not after `kill` or `timeout`: gtty already closed it (the call does
+nothing then).
+
+### Events: `win.Events`
+
+**`win.Events.Register(kind string) error`** — start getting
+`"window_changed"`, `"command_started"` or `"key"` for this window
+(another name: an error). Register only what you use: every event costs
+time. `"window_changed"` arrives once right away with the current folder
+and branch. Clicks need no registering.
+
+**`win.Events.Unregister(kind string) error`** — stop getting it (for
+example `"key"` while your list is closed).
+
+### Clicks
+
+**`gtty.Dispatch(actions map[string]gtty.Action, win, ev) error`** — calls
+`actions[ev.Button.Function](win, b)`, the handler named by the `onclick`,
+`onhover` or `onexpand` string you set (`gtty.Action` is `func(win
+*gtty.Window, b *gtty.ButtonClick) error`). No such name: an error
+(logged). `nil` for events that aren't clicks.
+
+**`b.Field("host") (string, bool)`** — a dialog text box's or drop box's
+value; `false` when there is no such field (always for `kill` /
+`timeout`, which carry no fields).
+
+**`b.Checked("pin") bool`** — a dialog check box's value; `false` when
+missing.
+
+`ButtonClick` fields: `ID` (the line's, button's or item's `id`, the
+dialog button, or `"filter"`), `Text` (plain), `Data` (what you put in
+`data`: store what the handler needs there), `Function`, `Fields`,
+`Command` (⌘ held, Linux Ctrl).
+
+`Event` fields: `EventID`, `Kind`, `Folder`, `Branch`, `Remote`,
+`Command`, `Key`, `Text`, `Ctrl`, `Shift`, `Alt`, `Cmd`, `Button`.
+
+### Text
+
+**`gtty.Text(parts ...gtty.Part) []gtty.Part`** — a text of up to 8 parts
+(the rest dropped). `Part{String, Fg, Bk, Size, Bold, Stroke}`; empty
+fields take gtty's default. A plain string works wherever a text goes.
+
+**`gtty.RGB(0xe0b040) string`** — a color as gtty takes it (`"#e0b040"`),
+for `Fg` / `Bk`.
+
+**`gtty.M`** — `map[string]any`, the shape of every update.
+
+### Storage: `win.Ephemeral` and `win.Stateful`
+
+All wait for gtty's answer: callbacks only, and keep `timeoutMs` short.
+
+**`OpenWrite(name string, timeoutMs int) (*gtty.File, error)`** — opens
+`name` for writing; the new content replaces the file at `Close`. Waits
+up to `timeoutMs` while another instance or gtty uses it
+(`gtty.ErrFileInUse` after; 0 tries once). While you hold it nobody else
+can open it: write and close in the same callback.
+
+**`OpenRead(name string, timeoutMs int) (*gtty.File, error)`** — opens for
+reading; several readers at once are fine. `gtty.ErrNoFile` when it
+doesn't exist (normal on the first run).
+
+**`f.Read(max int) ([]byte, error)`** — up to `max` bytes (at most 1 MB);
+empty at the end. **`f.ReadAll() ([]byte, error)`** — the rest of the
+file.
+
+**`f.Write(data []byte) error`** — added to what this open will write (not
+to the old file).
+
+**`f.Close() error`** — ends the open; for a write, the file now holds
+exactly what you wrote. Forgetting it loses the write; gtty closes any
+file after 30 s and the next call returns `gtty.ErrFileClosed`. A second
+`Close` does nothing.
+
+**`Delete(name string, timeoutMs int) error`** — removes the file
+(`gtty.ErrNoFile` if there is none).
+
+**`List() ([]string, error)`** — the file names.
+
+`win.Ephemeral` is this window's own, deleted when it closes (scratch,
+caches); `win.Stateful` is shared by every window in every gtty, kept
+until uninstall (settings, lists the user built). Two windows may write
+the same stateful file: read, change, write in one callback, and handle
+`gtty.ErrFileInUse`. Compare errors with `errors.Is`.
 
 ## Check your work
 
