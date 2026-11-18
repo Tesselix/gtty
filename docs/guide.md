@@ -220,23 +220,37 @@ open selects its text.
 - **Env & Aliases…** (in a zsh or bash window) — every environment
   variable and alias the shell has, in a table: **key**, **value** and
   **source file**, the full path and line where it was set
-  (`/Users/me/.zshrc:12`; "inherited environment" for what the shell got
-  when it started). Type to filter by name or value. A ▸ next to a key
+  (`/Users/me/.zshrc:12`). TERM, COLORTERM and GTTY say "set by gtty",
+  SHLVL and PWD "set by the shell". "Inherited environment" is shown only
+  for a value nothing gtty read explains: a variable the startup files
+  set never shows it, even when the shell also got it at start. Type to filter by name or value. A ▸ next to a key
   means it was set more than once: open it (click ▸, Enter or Tab) for
   its history, each earlier value with the full path of the script that
   set it, newest first, down to the one that set it first. The pane at the bottom shows the selected value in full, its file
   and the line itself; ⌘C (Linux Ctrl+Shift+C) copies the value, Esc
   clears the filter, then closes.
+  **Change a value** for this shell only: double-click it (or F2), edit,
+  Enter. gtty runs `export NAME='…'` (an alias: `alias`) in the shell;
+  no file changes, and the row says "set in this shell". **Right-click**
+  a row for Edit Value, Unset (`unset` / `unalias`; an unset key can get
+  a value again), Copy Key, Copy Value, Copy Source File, Open File in
+  the Editor and Reload from Disk. A **double click on the source file**
+  (or ⌘O, Linux Ctrl+Shift+O) opens it at that line in your editor
+  (`$VISUAL`, else `$EDITOR`, else vi), in the shell. The shell must be
+  waiting at its prompt for these. The values are read again after each
+  change, each time the window opens, and with **reload** (⌘R, Linux
+  Ctrl+Shift+R).
   gtty reads the startup files your shell runs, in the order it runs
   them (zsh: zshenv, zprofile, zshrc, zlogin, the system's and yours;
   bash: /etc/profile and the profile files, or the system bashrc and
-  ~/.bashrc; on Linux also /etc/environment), following `source`, the
+  ~/.bashrc; on Linux first /etc/environment, ~/.pam_environment and
+  systemd's environment.d files), following `source`, the
   files of `/etc/profile.d` and the like. It doesn't run them: a value
   set under a test gtty can't answer is marked **?**; a part that comes
   from a program's output stays as written (`$(brew --prefix)`); lines
   like `eval "$(starship init zsh)"` are listed under "not traced".
-  Files it can't read are skipped. It works in the background, and
-  reads the files again when one of them changed.
+  Files it can't read are skipped. It works in the background, for each
+  shell as it starts, and reads the files again when one of them changed.
 
 ### gtty's own commands
 

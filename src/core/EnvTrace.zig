@@ -59,9 +59,18 @@ pub const native_os: Os = switch (builtin.os.tag) {
 pub const Kind = enum { env, alias, untraced };
 
 /// One place a name was set (or unset).
+/// Where a definition came from: a line of a file, or (no file) gtty or
+/// the shell setting it at start, or the environment the shell started
+/// with when nothing gtty read defines it.
+pub const Origin = enum { file, inherited, gtty, shell };
+
+/// The variables gtty sets for every program it starts (gtty_pty.c).
+pub const gtty_env = [_][]const u8{ "TERM", "COLORTERM", "GTTY" };
+
 pub const Def = struct {
-    /// Index into `Result.files`; 0 = the inherited environment.
+    /// Index into `Result.files` (`origin` file); 0 otherwise.
     file: u32,
+    origin: Origin = .file,
     line: u32,
     /// The value after this line ran (an append: the whole new value).
     value: []const u8,
@@ -500,20 +509,40 @@ const Tracer = struct {
     fn startup(t: *Tracer) Err!void {
         const in = t.in;
         t.cwd = in.cwd;
-        // /etc/environment (pam_env) first, then the environment the
-        // shell got; a value equal to /etc/environment's isn't repeated.
-        if (in.os == .linux) try t.etcEnvironment("/etc/environment");
+        // Where the environment the shell got comes from, before the
+        // shell runs: Linux's session files (pam_env, systemd's
+        // environment.d), then gtty itself. A value none of them explains
+        // is "inherited" — and only while no startup file sets it later
+        // (`entries` drops it then).
+        for (in.env) |e| {
+            const eq = std.mem.indexOfScalar(u8, e, '=') orelse continue;
+            if (std.mem.eql(u8, e[0..eq], "HOME")) try t.quiet("HOME", e[eq + 1 ..]);
+        }
+        if (in.os == .linux) {
+            try t.etcEnvironment("/etc/environment");
+            try t.pamEnvironment(try t.join(t.get("HOME").value, ".pam_environment"));
+            try t.environmentD();
+        }
+        // HOME was there only to find the user's files; the shell's own
+        // comes next.
+        if (t.hist.get("HOME") == null) _ = t.vars.remove("HOME");
         for (in.env) |e| {
             const eq = std.mem.indexOfScalar(u8, e, '=') orelse continue;
             const name = e[0..eq];
             const value = e[eq + 1 ..];
             if (!validName(name)) continue;
-            if (t.vars.get(name)) |v| if (std.mem.eql(u8, v.value, value)) continue;
+            const known = if (t.vars.get(name)) |v| std.mem.eql(u8, v.value, value) else false;
             try t.vars.put(t.a, name, .{ .value = value, .exported = true });
             try t.ever_exported.put(t.a, name, {});
-            try t.record(name, .{ .file = 0, .line = 0, .value = value });
+            if (known) continue;
+            const origin: Origin = if (isIn(&gtty_env, name)) .gtty else .inherited;
+            try t.record(name, .{ .file = 0, .line = 0, .value = value, .origin = origin });
         }
         if (t.cwd.len == 0) t.cwd = t.get("HOME").value;
+        // What the shell sets when it starts.
+        const lvl = std.fmt.parseInt(u32, t.get("SHLVL").value, 10) catch 0;
+        try t.shellSets("SHLVL", try std.fmt.allocPrint(t.a, "{d}", .{lvl + 1}));
+        try t.shellSets("PWD", t.cwd);
         // What the shell sets itself (not shown as definitions).
         const home = t.get("HOME").value;
         try t.quiet("-", switch (in.shell) {
@@ -671,6 +700,87 @@ const Tracer = struct {
         }
     }
 
+    /// A variable the shell itself sets at start (exported).
+    fn shellSets(t: *Tracer, name: []const u8, value: []const u8) Err!void {
+        try t.vars.put(t.a, name, .{ .value = value, .exported = true });
+        try t.ever_exported.put(t.a, name, {});
+        try t.record(name, .{ .file = 0, .line = 0, .value = value, .origin = .shell });
+    }
+
+    /// `~/.pam_environment` (pam_env, older Linux sessions): `NAME=value`
+    /// or `NAME DEFAULT=… OVERRIDE=…` (`@{HOME}` / `${VAR}`).
+    fn pamEnvironment(t: *Tracer, path: []const u8) Err!void {
+        try t.stamp(path);
+        const text = t.fs.read(t.fs.ctx, t.a, path, 1 << 20) orelse return;
+        const file = try t.addFile(path, text);
+        const saved = t.file;
+        t.file = file;
+        defer t.file = saved;
+        var it = std.mem.splitScalar(u8, text, '\n');
+        var line: u32 = 0;
+        while (it.next()) |raw| {
+            line += 1;
+            const l = std.mem.trim(u8, raw, " \t\r");
+            if (l.len == 0 or l[0] == '#') continue;
+            var name: []const u8 = "";
+            var value: ?[]const u8 = null;
+            if (std.mem.indexOfAny(u8, l, " \t")) |sp| if (std.mem.indexOfScalar(u8, l[0..sp], '=') == null) {
+                name = l[0..sp];
+                var words = std.mem.tokenizeAny(u8, l[sp..], " \t");
+                while (words.next()) |w| {
+                    if (std.mem.startsWith(u8, w, "DEFAULT=") and value == null) value = w[8..];
+                    if (std.mem.startsWith(u8, w, "OVERRIDE=")) value = w[9..];
+                }
+            };
+            if (value == null) {
+                const eq = std.mem.indexOfScalar(u8, l, '=') orelse continue;
+                name = l[0..eq];
+                value = l[eq + 1 ..];
+            }
+            if (!validName(name)) continue;
+            const raw_v = std.mem.trim(u8, value.?, "\"");
+            const v = try std.mem.replaceOwned(u8, t.a, raw_v, "@{", "${");
+            const e = try t.expand(v, .{});
+            try t.setVar(name, e, line, true);
+        }
+    }
+
+    /// systemd's environment.d (the user session's environment): every
+    /// `*.conf` in /usr/lib, /etc and ~/.config `environment.d`, by name,
+    /// `NAME=value` lines with `$VAR` / `${VAR}`.
+    fn environmentD(t: *Tracer) Err!void {
+        const dirs = [_][]const u8{ "/usr/lib/environment.d", "/etc/environment.d", try t.join(t.get("HOME").value, ".config/environment.d") };
+        var all: std.ArrayList([]const u8) = .empty;
+        for (dirs) |d| {
+            try t.stamp(d);
+            const names = t.fs.list(t.fs.ctx, t.a, d) orelse continue;
+            for (names) |n| if (std.mem.endsWith(u8, n, ".conf")) try all.append(t.a, try t.join(d, n));
+        }
+        std.mem.sort([]const u8, all.items, {}, struct {
+            fn less(_: void, x: []const u8, y: []const u8) bool {
+                return std.mem.lessThan(u8, std.fs.path.basename(x), std.fs.path.basename(y));
+            }
+        }.less);
+        for (all.items) |path| {
+            try t.stamp(path);
+            const text = t.fs.read(t.fs.ctx, t.a, path, 1 << 20) orelse continue;
+            const file = try t.addFile(path, text);
+            const saved = t.file;
+            t.file = file;
+            defer t.file = saved;
+            var it = std.mem.splitScalar(u8, text, '\n');
+            var line: u32 = 0;
+            while (it.next()) |raw| {
+                line += 1;
+                const l = std.mem.trim(u8, raw, " \t\r");
+                if (l.len == 0 or l[0] == '#' or l[0] == ';') continue;
+                const eq = std.mem.indexOfScalar(u8, l, '=') orelse continue;
+                if (!validName(l[0..eq])) continue;
+                try t.setVar(l[0..eq], try t.expand(l[eq + 1 ..], .{}), line, true);
+            }
+        }
+    }
+
     fn quiet(t: *Tracer, name: []const u8, value: []const u8) Err!void {
         if (t.vars.contains(name)) return;
         try t.vars.put(t.a, name, .{ .value = value });
@@ -699,7 +809,7 @@ const Tracer = struct {
         while (it.next()) |kv| {
             const name = kv.key_ptr.*;
             if (!t.ever_exported.contains(name)) continue;
-            const defs = kv.value_ptr.items;
+            const defs = try dropInherited(t.a, kv.value_ptr.items);
             if (defs.len == 0) continue;
             try envs.append(t.a, .{ .name = name, .kind = .env, .defs = defs });
         }
@@ -714,6 +824,18 @@ const Tracer = struct {
         try out.appendSlice(t.a, aliases.items);
         try out.appendSlice(t.a, t.untraced.items);
         return out.toOwnedSlice(t.a);
+    }
+
+    /// "Inherited" is said only when nothing gtty found defines the
+    /// variable: a definition after it (a startup file, gtty, the shell)
+    /// takes its place.
+    fn dropInherited(a: std.mem.Allocator, defs: []const Def) Err![]const Def {
+        var out: std.ArrayList(Def) = .empty;
+        for (defs, 0..) |d, i| {
+            if (d.origin == .inherited and i + 1 < defs.len) continue;
+            try out.append(a, d);
+        }
+        return out.items;
     }
 
     fn byName(_: void, x: Entry, y: Entry) bool {
@@ -2115,7 +2237,7 @@ test "zsh: chain order, ZDOTDIR, path array, overrides" {
         .shell = .zsh,
         .shell_path = "/bin/zsh",
         .login = true,
-        .env = &.{ "HOME=/home/u", "PATH=/usr/bin:/bin", "USER=u" },
+        .env = &.{ "HOME=/home/u", "PATH=/usr/bin:/bin", "USER=u", "TERM=xterm-256color", "SHLVL=1" },
         .os = .macos,
     });
     defer r.deinit();
@@ -2124,10 +2246,11 @@ test "zsh: chain order, ZDOTDIR, path array, overrides" {
     try t.expectEqualStrings("vi", editor.defs[0].value);
     try t.expectEqualStrings("nvim", editor.last().value);
     try t.expectEqualStrings("/home/u/.config/zsh/.zprofile", r.files[editor.last().file]);
+    // Defined in /etc/zprofile, then in .zshrc: no "inherited" step.
     const path = findEntry(&r, .env, "PATH").?;
-    try t.expectEqualStrings("/usr/bin:/bin", path.defs[0].value); // inherited
-    try t.expectEqual(@as(u32, 0), path.defs[0].file);
-    try t.expectEqualStrings("/usr/local/bin:/usr/bin:/bin:/usr/local/go/bin", path.defs[1].value);
+    try t.expectEqual(@as(usize, 2), path.defs.len);
+    try t.expectEqualStrings("/etc/zprofile", r.files[path.defs[0].file]);
+    try t.expectEqualStrings("/usr/local/bin:/usr/bin:/bin:/usr/local/go/bin", path.defs[0].value);
     try t.expectEqualStrings("/home/u/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/go/bin", path.last().value);
     const ll = findEntry(&r, .alias, "ll").?;
     try t.expectEqual(@as(usize, 2), ll.defs.len);
@@ -2142,6 +2265,13 @@ test "zsh: chain order, ZDOTDIR, path array, overrides" {
     try t.expectEqual(@as(usize, 1), r.count(.untraced));
     // ZDOTDIR was set in .zshenv but never exported: not listed.
     try t.expect(findEntry(&r, .env, "ZDOTDIR") == null);
+    // Nothing defines USER: inherited. TERM: gtty; SHLVL: the shell.
+    try t.expectEqual(Origin.inherited, findEntry(&r, .env, "USER").?.last().origin);
+    try t.expectEqual(Origin.gtty, findEntry(&r, .env, "TERM").?.last().origin);
+    const lvl = findEntry(&r, .env, "SHLVL").?;
+    try t.expectEqual(@as(usize, 1), lvl.defs.len);
+    try t.expectEqual(Origin.shell, lvl.last().origin);
+    try t.expectEqualStrings("2", lvl.last().value);
 }
 
 test "bash login: /etc/profile.d loop, pathmunge, first profile file, return" {
@@ -2224,12 +2354,40 @@ test "bash in gtty: system bashrc compiled in, then ~/.bashrc; unset; /etc/envir
     try t.expectEqualStrings("/etc/environment", r.files[path.defs[0].file]);
     const lang = findEntry(&r, .env, "LANG").?;
     try t.expectEqual(@as(usize, 2), lang.defs.len); // /etc/environment, then inherited
-    try t.expectEqual(@as(u32, 0), lang.last().file);
+    try t.expectEqual(Origin.inherited, lang.last().origin); // not explained
     try t.expectEqualStrings("/usr/lib/jvm/x", findEntry(&r, .env, "JAVA_HOME").?.last().value);
     const x = findEntry(&r, .env, "X").?;
     try t.expect(x.last().dynamic);
     try t.expectEqualStrings("$(brew --prefix)", x.last().value);
     try t.expectEqual(@as(usize, 1), r.count(.untraced));
+}
+
+test "Linux session files: ~/.pam_environment, environment.d; a later definition replaces inherited" {
+    const t = std.testing;
+    var r = try testTrace(&.{
+        .{ "/bin/bash", "" },
+        .{ "/h/.pam_environment", "EDITOR DEFAULT=nano\nXDG_DATA_DIRS DEFAULT=@{HOME}/.local/share\n" },
+        .{ "/etc/environment.d/10-a.conf", "GOPATH=$HOME/go\n" },
+        .{ "/h/.config/environment.d/20-b.conf", "GOPATH=${HOME}/code/go\n" },
+        .{ "/h/.bashrc", "export EDITOR=vim\n" },
+    }, .{
+        .shell = .bash,
+        .shell_path = "/bin/bash",
+        .login = false,
+        .env = &.{ "HOME=/h", "EDITOR=nano", "GOPATH=/h/code/go", "XDG_DATA_DIRS=/h/.local/share" },
+        .os = .linux,
+    });
+    defer r.deinit();
+    const ed = findEntry(&r, .env, "EDITOR").?;
+    try t.expectEqual(@as(usize, 2), ed.defs.len);
+    try t.expectEqualStrings("/h/.pam_environment", r.files[ed.defs[0].file]);
+    try t.expectEqualStrings("vim", ed.last().value);
+    const go = findEntry(&r, .env, "GOPATH").?;
+    try t.expectEqual(@as(usize, 2), go.defs.len);
+    try t.expectEqualStrings("/h/.config/environment.d/20-b.conf", r.files[go.last().file]);
+    try t.expectEqualStrings("/h/.local/share", findEntry(&r, .env, "XDG_DATA_DIRS").?.last().value);
+    try t.expectEqual(Origin.file, findEntry(&r, .env, "XDG_DATA_DIRS").?.last().origin);
+    try t.expectEqual(Origin.inherited, findEntry(&r, .env, "HOME").?.last().origin);
 }
 
 test "fromArgs: gtty's zsh and bash" {

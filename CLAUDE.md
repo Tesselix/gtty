@@ -528,7 +528,13 @@ the shell. Users expect it to behave like a shell in a terminal.
   /etc/profile + the first profile file, or SYS_BASHRC (found in the
   binary: /etc/bash.bashrc, /etc/bash/bashrc; NixOS /etc/bashrc) +
   ~/.bashrc; gtty's `--rcfile` bash: SYS_BASHRC, then those; Linux
-  /etc/environment first). Followed: `source` / `.`, globs,
+  first /etc/environment, ~/.pam_environment, environment.d
+  (`/usr/lib`, `/etc`, `~/.config`, by file name)). Origins (`Def.origin`,
+  2026-11-18, the user's rule): a file line; `gtty` (TERM, COLORTERM,
+  GTTY, `gtty_env`); `shell` (SHLVL + 1, PWD); `inherited` only when
+  nothing found explains the value — an inherited value equal to a
+  session file's isn't recorded, and `dropInherited` removes one any
+  later definition replaces. Followed: `source` / `.`, globs,
   `if` / `case` / `&&` on tests it can answer (`[ -r f ]`, `$-`,
   `command -v` through `$PATH`), functions (`pathmunge`), `local`,
   `set -a`, zsh `path` ↔ `PATH`, `$(dirname …)` and other pure commands,
@@ -540,8 +546,9 @@ the shell. Users expect it to behave like a shell in a terminal.
   only the arguments and folder come from the process, `fromProcess`;
   only shells gtty started, the user's rule); gtty's hook ZDOTDIR /
   GTTY_ZDOTDIR / GTTY_BASH_LOGIN are mapped back. On a thread
-  (`EnvTrace.Job`, polled by `App.tickEnv`; the first shell is traced
-  once 2 s after start, so the view usually opens ready); kept in
+  (`EnvTrace.Job`, polled by `App.tickEnv`; every shell window is traced
+  2 s after it starts, `env_seen`, unless the kept trace still fits it, so
+  the view usually opens ready); kept in
   `App.env_cache` by `Input.key` while every file read / looked for is
   unchanged (`Result.fresh`, stat stamps). The view: a modal over the
   screen, filter (name or any value; an older value's match opens its
@@ -549,8 +556,31 @@ the shell. Users expect it to behave like a shell in a terminal.
   path wins room over the value) with column titles, `?` / `×N`; ▸ = the
   key's history, each earlier value + the full path of the script that
   set it, newest first down to the first ("first set"), a detail pane;
-  keys in `App.envKey`. Tests: unit tests in EnvTrace / ShParse;
-  `test/envtrace.gt` with `ZDOTDIR=test/env-zdotdir`.
+  keys in `App.envKey`. **Changing values** (2026-11-18, the user's):
+  a double click on a value or F2 = a field in the value cell (all
+  selected; an older value's row edits the key with that value), Enter
+  → `App.envSet`: `\x15 export NAME='…'` / `alias 'name=…'` typed and
+  run in that shell at its prompt (busy / read-only: beep + notice, the
+  field stays), only that shell, no file changes; **Unset** (row menu,
+  ⌘⌫ / Ctrl+Shift+⌫) → `unset NAME` / `unalias 'name'` (`envUnset`);
+  kept in `App.env_edits` (per window, gone with it; `EnvView.Edit`,
+  value null = unset), shown "set / unset in this shell", the file's
+  value goes into the history; an unset key can be edited again. A right
+  click on a row = the row menu (`EnvView.Item`: Edit Value, Unset, Copy
+  Key / Value / Source File, Open File in the Editor, Reload from Disk).
+  **Open the file** (a double click on the source, ⌘O / Ctrl+Shift+O,
+  `envOpenFile`): the view closes, the editor command is typed and run
+  in the shell, which gets the keyboard (`EnvView.editorCommand`: VISUAL
+  / EDITOR as the trace or an edit knows them, `+LINE file`, VS Code and
+  kin `-g file:line`, subl / zed / hx `file:line`; unknown: the shell's
+  `${VISUAL:-${EDITOR:-vi}}`, zsh `${=…}`). **Reload** (the title bar's
+  reload, ⌘R / Ctrl+Shift+R, after each set / unset, and on every open
+  even when the kept trace is fresh, `envReload`): a new trace in the
+  background; the one shown stays until it comes (`EnvView.detach` →
+  `setResult`: selection, open keys and an edit kept by name).
+  `LineEdit.max` is 4095 (PATH). Tests: unit tests in EnvTrace / ShParse /
+  EnvView; `test/envtrace.gt`, `test/envedit.gt` with
+  `ZDOTDIR=test/env-zdotdir`.
 - **Left title-bar actions look clickable** (2026-10-28): each has a
   lighter gray face than the title bar (`JobWindow.actionBg`); the one
   under the mouse lights up more with a thin frame and the pointer is a
@@ -1155,7 +1185,7 @@ decisions; items marked *open* are undecided.
   README order (2026-10-21, the user's): everyday shell work first (edit,
   copy, env — Env & Aliases, `env.gt`, after copy: the user's, 2026-11-18;
   the demo home's .zshenv / .zprofile / .zshrc / .aliases set EDITOR,
-  PATH, ll twice — files), then focus, sessions (2026-10-28: `sessions.gt`, three
+  PATH, ll twice; PATH first set in /etc/zprofile — files), then focus, sessions (2026-10-28: `sessions.gt`, three
   shells run pwd, the chip's save, `/close all`, the session chip's list
   restores them, pwd again; the session chip ~400,644 in `shop`), the
   folder / git chips, windows, sync.
