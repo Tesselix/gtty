@@ -517,6 +517,40 @@ the shell. Users expect it to behave like a shell in a terminal.
   prompt after running a command (`JobWindow.lastInput`: the command line
   read back at the hooks' C mark, `Screen.lastCommand`, ≤ 1 KB); copies
   it (`toClipboard`). Test: `test/copyinput.gt`.
+- **Env & Aliases** (2026-11-18; right-click menu row of a window
+  whose program is zsh or bash, `Menu.edit_env`, `App.openEnvView`;
+  `src/core/EnvTrace.zig` + `ShParse.zig`, `src/ui/EnvView.zig`): where
+  each environment variable and alias was set. The startup files are
+  read and interpreted statically, never run (`EnvTrace.startup`: zsh
+  zshenv / zprofile / zshrc / zlogin, the global folder found in the zsh
+  binary (`/etc/zsh` Debian / Ubuntu / Arch / Gentoo, `/etc` macOS /
+  Fedora / RHEL / SUSE; else `/etc/os-release`), GLOBAL_RCS / RCS; bash
+  /etc/profile + the first profile file, or SYS_BASHRC (found in the
+  binary: /etc/bash.bashrc, /etc/bash/bashrc; NixOS /etc/bashrc) +
+  ~/.bashrc; gtty's `--rcfile` bash: SYS_BASHRC, then those; Linux
+  /etc/environment first). Followed: `source` / `.`, globs,
+  `if` / `case` / `&&` on tests it can answer (`[ -r f ]`, `$-`,
+  `command -v` through `$PATH`), functions (`pathmunge`), `local`,
+  `set -a`, zsh `path` ↔ `PATH`, `$(dirname …)` and other pure commands,
+  macOS `path_helper`. Unanswerable test: both branches, `Def.cond` (?);
+  program output: kept as written, `Def.dynamic`; `eval "$(…)"` /
+  `source <(…)`: kind `untraced`. Unreadable files skipped. The base is
+  the environment gtty gave the shell it started (`App.spawnedEnv`:
+  gtty's own + the spawn's TERM / COLORTERM / GTTY + `JobWindow.spawn_env`;
+  only the arguments and folder come from the process, `fromProcess`;
+  only shells gtty started, the user's rule); gtty's hook ZDOTDIR /
+  GTTY_ZDOTDIR / GTTY_BASH_LOGIN are mapped back. On a thread
+  (`EnvTrace.Job`, polled by `App.tickEnv`; the first shell is traced
+  once 2 s after start, so the view usually opens ready); kept in
+  `App.env_cache` by `Input.key` while every file read / looked for is
+  unchanged (`Result.fresh`, stat stamps). The view: a modal over the
+  screen, filter (name or any value; an older value's match opens its
+  row), a table key / value / source file (the full path + line; the
+  path wins room over the value) with column titles, `?` / `×N`; ▸ = the
+  key's history, each earlier value + the full path of the script that
+  set it, newest first down to the first ("first set"), a detail pane;
+  keys in `App.envKey`. Tests: unit tests in EnvTrace / ShParse;
+  `test/envtrace.gt` with `ZDOTDIR=test/env-zdotdir`.
 - **Left title-bar actions look clickable** (2026-10-28): each has a
   lighter gray face than the title bar (`JobWindow.actionBg`); the one
   under the mouse lights up more with a thin frame and the pointer is a
@@ -1113,11 +1147,15 @@ decisions; items marked *open* are undecided.
   `ZDOTDIR` there, `GTTY_FOCUS`, `GTTY_FONT_SIZE=16`, `GIT_PAGER=cat`,
   `GTTY_SHOW_DRY=1`, `GTTY_DRAG_DRY=1`, fills `@FRAMES@` / `@HOME@` in
   the script, merges
-  identical frames, holds the last 1.5 s, encodes with img2webp (lossy,
+  identical frames, holds the last 1.5 s (gtty runs under `env -i` with
+  a few neutral variables: Env & Aliases shows the inherited environment;
+  `GTTY_DEMO_OUT` records elsewhere), encodes with img2webp (lossy,
   q 80; `GTTY_DEMO_QUALITY`). Sizes: all 1200×760 (the hero too since 2026-10-28: three windows fit
   on one screen only at that height).
   README order (2026-10-21, the user's): everyday shell work first (edit,
-  copy, files), then focus, sessions (2026-10-28: `sessions.gt`, three
+  copy, env — Env & Aliases, `env.gt`, after copy: the user's, 2026-11-18;
+  the demo home's .zshenv / .zprofile / .zshrc / .aliases set EDITOR,
+  PATH, ll twice — files), then focus, sessions (2026-10-28: `sessions.gt`, three
   shells run pwd, the chip's save, `/close all`, the session chip's list
   restores them, pwd again; the session chip ~400,644 in `shop`), the
   folder / git chips, windows, sync.
@@ -1290,6 +1328,10 @@ decisions; items marked *open* are undecided.
   in its text boxes yet (a click places the cursor). Test: `test/dialog.gt`
   with `/dialog form|grid|table|yesno|unasked|peek|peekOpen|peekClose|shellName|storageWrite|storageRead|storageHold|storageTry|logLine|logFail` (the
   test extension `src/chips/dialog_test.zig`).
+- `src/core/EnvTrace.zig` — where a shell's environment variables and
+  aliases were set (static trace of its startup files, on a thread);
+  `src/core/ShParse.zig` — the small shell parser it uses (pure,
+  unit-tested); `src/ui/EnvView.zig` — the Env & Aliases modal.
 - `src/core/Sessions.zig` — gtty-sessions: the saved snapshots and their
   shared file (pure + file, unit-tested); `src/ui/SessionsWindow.zig` —
   the Session Manager window.

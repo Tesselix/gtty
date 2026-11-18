@@ -217,6 +217,26 @@ open selects its text.
   Pick one to paste it.
 - **History ▶** (in a shell window) — the last 10 folders your shell was
   in. Pick one to `cd` back there (while the shell waits for your input).
+- **Env & Aliases…** (in a zsh or bash window) — every environment
+  variable and alias the shell has, in a table: **key**, **value** and
+  **source file**, the full path and line where it was set
+  (`/Users/me/.zshrc:12`; "inherited environment" for what the shell got
+  when it started). Type to filter by name or value. A ▸ next to a key
+  means it was set more than once: open it (click ▸, Enter or Tab) for
+  its history, each earlier value with the full path of the script that
+  set it, newest first, down to the one that set it first. The pane at the bottom shows the selected value in full, its file
+  and the line itself; ⌘C (Linux Ctrl+Shift+C) copies the value, Esc
+  clears the filter, then closes.
+  gtty reads the startup files your shell runs, in the order it runs
+  them (zsh: zshenv, zprofile, zshrc, zlogin, the system's and yours;
+  bash: /etc/profile and the profile files, or the system bashrc and
+  ~/.bashrc; on Linux also /etc/environment), following `source`, the
+  files of `/etc/profile.d` and the like. It doesn't run them: a value
+  set under a test gtty can't answer is marked **?**; a part that comes
+  from a program's output stays as written (`$(brew --prefix)`); lines
+  like `eval "$(starship init zsh)"` are listed under "not traced".
+  Files it can't read are skipped. It works in the background, and
+  reads the files again when one of them changed.
 
 ### gtty's own commands
 

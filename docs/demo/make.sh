@@ -20,7 +20,7 @@ cd "$(dirname "$0")/../.."
 REPO=$PWD
 GTTY=${GTTY:-$REPO/zig-out/bin/gtty}
 ROOT=${GTTY_DEMO_ROOT:-/tmp/gtty-demo}
-OUT=$REPO/docs/images
+OUT=${GTTY_DEMO_OUT:-$REPO/docs/images}
 WORK=${TMPDIR:-/tmp}/gtty-demo-frames
 QUALITY=${GTTY_DEMO_QUALITY:-80}
 HOLD_MS=1500
@@ -53,13 +53,20 @@ for name in $names; do
     script=docs/demo/$name.gt
     [ -f "$script" ] || { echo "make.sh: no $script"; exit 1; }
     GTTY_DEMO_ROOT=$ROOT docs/demo/setup.sh
+    mkdir -p "$ROOT/tmp"
     rm -rf "$WORK/$name"
     mkdir -p "$WORK/$name"
     sed -e "s#@FRAMES@#$WORK/$name#g" -e "s#@HOME@#$ROOT/home#g" "$script" > "$WORK/$name.gt"
     # A neutral world: the demo's own home, zsh config and focus
     # folders, the project as gtty's folder; open / drag only say what
     # they'd do.
-    (cd "$ROOT/home/shop" && env HOME="$ROOT/home" ZDOTDIR="$ROOT/home" SHELL=/bin/zsh \
+    # Only a few variables from the environment make.sh runs in (Env &
+    # Aliases lists what the shell inherited; nothing of the real user's).
+    (cd "$ROOT/home/shop" && env -i PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin \
+        USER=me LOGNAME=me TMPDIR="$ROOT/tmp" LANG=en_US.UTF-8 \
+        ${DISPLAY:+DISPLAY="$DISPLAY"} ${WAYLAND_DISPLAY:+WAYLAND_DISPLAY="$WAYLAND_DISPLAY"} \
+        ${XDG_RUNTIME_DIR:+XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR"} \
+        HOME="$ROOT/home" ZDOTDIR="$ROOT/home" SHELL=/bin/zsh \
         GTTY_FOCUS="$ROOT/focus" \
         GIT_PAGER=cat PAGER=cat GTTY_FONT_SIZE=16 GTTY_ANIM_MS=260 GTTY_SHOW_DRY=1 GTTY_DRAG_DRY=1 \
         "$GTTY" --script "$WORK/$name.gt")

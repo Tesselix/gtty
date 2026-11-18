@@ -1,0 +1,47 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Env & Aliases (a shell window's right-click menu): where each variable
+# and alias was set, read from the startup files in the background.
+# Run from the repo with its own zsh config:
+#   ZDOTDIR=$PWD/test/env-zdotdir gtty --script test/envtrace.gt
+# Expected: env0 the menu with "Env & Aliases…" above New Shell; env1 the
+# list (environment, then aliases, then the eval line not traced);
+# env2 GTTY_DEMO_VAR open: first (.zshenv) under first:second (.zshrc);
+# env3 GTTY_MAYBE: "no" marked "?" (a test gtty can't answer), ×2;
+# env4 the aliases ll (×2, ls -la from .aliases) and gs; env5 the eval
+# line under "not traced"; env6 closed with Esc.
+/s zsh
+/wait 2500
+/rclick 300 300
+/wait 300
+/shot env0.bmp
+/click 370 520
+/wait 800
+/shot env1.bmp
+/text demo
+/key enter
+/wait 200
+/shot env2.bmp
+/key escape
+/text maybe
+/wait 200
+/shot env3.bmp
+/key escape
+/text alias
+/key backspace
+/key backspace
+/key backspace
+/key backspace
+/key backspace
+/text ls -l
+/wait 200
+/shot env4.bmp
+/key escape
+/text init zsh
+/wait 200
+/shot env5.bmp
+/key escape
+/key escape
+/wait 200
+/shot env6.bmp
+/quit
