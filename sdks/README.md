@@ -21,8 +21,10 @@ its installed copy (each `AGENTS.md`, "Debug"). A new language needs only the
 protocol, standard libraries, and its hosts example passing that check.
 
 Most extensions will be written with AI assistants, so every SDK ships an
-`AGENTS.md` that stands alone and lists only what exists, and a complete
-example the check covers.
+`AGENTS.md` that stands alone and lists only what exists (its "Function
+reference" covers every function one by one), a `CLAUDE.md` that explains
+gtty itself to an AI writing an extension (the same in every SDK), and a
+complete example the check covers.
 
 gtty's standard chips (`src/chips/`) use the Zig SDK inside gtty's own
 process. See the [developer guide](../docs/extensions.md).

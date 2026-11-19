@@ -927,7 +927,9 @@ the shell. Users expect it to behave like a shell in a terminal.
     window focused). Released without moving → a plain click
     (`mouseDown` + `mouseUp` at the press) that also copies the name
     (`copyNames`: text on the clipboard + paste history, the name
-    flashes, "copied X"; 2026-10-08, `test/copyname.gt`). A command
+    flashes, "copied X"; 2026-10-08, `test/copyname.gt`; since
+    2026-11-18 the text as shown, `markText`: `pwd`'s path stays a
+    path; the file is the icon's, name / path the file menu's). A command
     being typed in that shell (`JobWindow.typingCommand`: at its prompt,
     `Screen.inputPending`): the name (quoted when needed, `insertName`),
     or a selection of earlier output clicked inside (`press_sel`,
@@ -1544,9 +1546,14 @@ decisions; items marked *open* are undecided.
   extension system (chips, peeks, dialogs, their commands and rules). The
   developer guide is `docs/extensions.md`; keep the two in step. Extensions
   will mostly be written with AI: each SDK ships an `AGENTS.md` that stands
-  alone and lists only what exists (`sdks/zig/AGENTS.md`, plus a `CLAUDE.md`
-  pointing at it) and a complete example its tests compile
-  (`examples/hosts.zig`). **Any change to the SDK updates AGENTS.md too.**
+  alone and lists only what exists (`sdks/zig/AGENTS.md`; its "Function
+  reference": every public function, when to call it, what it returns,
+  its errors and traps, 2026-11-18) and a `CLAUDE.md` (the same in all four:
+  gtty's concept for an AI writing an extension — what gtty is, the
+  screen, chips / peeks / dialogs, what an extension can and can't see,
+  what makes a good one, the words; AGENTS.md points at it) and a complete
+  example its tests compile (`examples/hosts.zig`). **Any change to the SDK
+  updates AGENTS.md too** (its function reference included).
   SDKs live in `sdks/<language>/`: `zig`, `python` (`gtty.py`),
   `javascript` (`gtty.js` + `gtty.d.ts`), `go` (module
   `github.com/Tesselix/gtty/sdks/go`); standard libraries only, the same
