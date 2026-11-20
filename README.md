@@ -192,21 +192,24 @@ machines or folders at once.
 - Text reflows when you resize.
 - Paste history and folder history (`cd` back) in the right-click menu.
 
-More in the [user guide](docs/guide.md). Planned: extensions, see the
+More in the [user guide](docs/guide.md). Extensions (chips of your own,
+in Zig, Python, JavaScript or Go): see the
 [developer guide](docs/extensions.md).
 
 ## What it doesn't do
 
 - No account, no login, no telemetry.
-- Your shell stays your shell: bash, zsh or fish, with your own config.
+- Your shell stays your shell, with your own config. zsh and bash get
+  the full set (last-output copy, folder history, Env & Aliases, …);
+  fish and other shells run as plain shells, without those.
 - Programs get a real terminal: ssh, git, build tools and REPLs work as
   usual. Full-screen programs (vim, htop, tmux) aren't fully supported
   yet.
 
 ## Source & license
 
-Source and issues: codeberg.org/gttyterm/gtty *(TODO: the repository
-doesn't exist yet)*.
+Source and issues: [github.com/Tesselix/gtty](https://github.com/Tesselix/gtty)
+([report an issue](https://github.com/Tesselix/gtty/issues)).
 
 Copyright 2026 Sagi Forbes Nagar. gtty is free software, licensed under the
 GNU General Public License v3.0 or later — see [LICENSE](LICENSE).

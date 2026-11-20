@@ -8747,8 +8747,8 @@ fn render(app: *App) void {
 /// What the About box and `gtty --version` say.
 pub const copyright = "Copyright 2026 Sagi Forbes Nagar";
 pub const license_line = "License: GPL-3.0-or-later";
-// TODO: the repository doesn't exist there yet; keep in step with README.
-pub const source_url = "codeberg.org/gttyterm/gtty";
+// Keep in step with README.
+pub const source_url = "github.com/Tesselix/gtty";
 
 /// The About box: name, version, copyright, license, source; centered
 /// over a dimmed screen.

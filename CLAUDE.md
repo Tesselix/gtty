@@ -839,8 +839,8 @@ the shell. Users expect it to behave like a shell in a terminal.
   About row, re-targeted in `gtty_menu.m`; Linux: the drawn bar's first
   row; `/menu about`): gtty's own box (`App.drawAbout`, `about_visible`;
   any click or key closes it): name + version, tagline,
-  `App.copyright`, `App.license_line`, `App.source_url` (codeberg, TODO
-  until the repo exists); `gtty --version` prints the same copyright and
+  `App.copyright`, `App.license_line`, `App.source_url` (GitHub, as the
+  README); `gtty --version` prints the same copyright and
   license lines. **New Shell** (`App.newShell`, `GTTY_MENU_NEW_SHELL`;
   also ⌘T / Ctrl+Shift+T in `onKey` — on macOS the native menu owns ⌘T,
   `menuOwnsKey` — and the right-click menu's last row): the user's shell
