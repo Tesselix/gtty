@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Run by scripts/linux-check.sh (placeholders @OUT@ @MOD@ filled there).
+# Copy and paste: a drag selects "copy-me-please", Copy (Ctrl+Shift+C on
+# Linux), Paste (Ctrl+Shift+V) types it at the prompt. clip-1: the
+# selection and the pasted text after "echo :"; clip-2 the right-click menu
+# (Copy, Copy last output, Paste ▸, …).
+/s bash
+/wait 2000
+/type clear; echo copy-me-please
+/wait 600
+/drag 23 73 135 73
+/key @MOD@+c
+/text echo :
+/key @MOD@+v
+/wait 600
+/shot @OUT@/clip-1.bmp
+/rclick 300 300
+/wait 400
+/shot @OUT@/clip-2.bmp
+/key escape
+/quit

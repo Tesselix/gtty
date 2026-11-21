@@ -102,7 +102,7 @@ pub const Selection = struct {
     }
 };
 
-const State = enum { ground, esc, esc_skip_one, csi, osc, osc_esc, str, str_esc };
+const State = enum { ground, esc, esc_skip_one, esc_charset, csi, osc, osc_esc, str, str_esc };
 
 const Screen = @This();
 
@@ -227,6 +227,30 @@ alt: ?struct { base: usize, row: usize, col: u16 } = null,
 app_cursor: bool = false,
 /// The program hid the cursor (`ESC[?25l`, DECTCEM; `ESC[?25h` shows it).
 cursor_hidden: bool = false,
+/// The cursor's shape (DECSCUSR, `ESC[n q`): 0 = gtty's own (a bar),
+/// 1 / 2 block, 3 / 4 underline, 5 / 6 bar; blinking is drawn steady. Back
+/// to the bar at the shell's A / D marks and `ESC c` (vim's insert / normal
+/// shapes, a program killed with its own shape on).
+cursor_shape: CursorShape = .bar,
+/// The CSI being read had a space before its final byte (`ESC[2 q`).
+csi_space: bool = false,
+/// Mouse reporting the program asked for (vim `set mouse=a`, htop, tmux,
+/// less --mouse, …): which events (`ESC[?9h` presses only, `?1000`
+/// presses and releases, `?1002` + drags, `?1003` + any motion) and how
+/// they are written (`?1006` SGR, `?1015` urxvt, else the old X10 bytes).
+/// Off again at the shell's prompt (a program that died left it on).
+mouse: MouseMode = .off,
+mouse_enc: MouseEnc = .x10,
+/// Character sets G0 / G1 (`ESC ( 0` / `ESC ) 0` line drawing, `ESC ( B`
+/// ASCII): true = DEC line drawing, `lqqk` prints as `┌──┐` (ncurses'
+/// boxes for TERM xterm-256color: htop, mc, dialog). SO / SI pick G1 /
+/// G0. Back to ASCII at the shell's prompt and `ESC c`.
+g_dec: [2]bool = .{ false, false },
+g1_on: bool = false,
+/// The slot an `ESC (` / `ESC )` names (2, 3: G2 / G3, not used).
+charset_slot: u2 = 0,
+/// The last character printed, for `CSI n b` (repeat it n times).
+last_char: ?u21 = null,
 
 state: State = .ground,
 /// OSC being read: its first bytes, its length, where its ESC was.
@@ -354,6 +378,10 @@ fn feedByte(s: *Screen, b: u8) void {
         .ground => s.ground(b),
         .esc => s.escape(b),
         .esc_skip_one => s.state = .ground,
+        .esc_charset => {
+            s.state = .ground;
+            if (s.charset_slot < 2) s.g_dec[s.charset_slot] = b == '0';
+        },
         .csi => s.csi(b),
         .osc => switch (b) {
             0x07 => s.oscEnd(),
@@ -414,8 +442,10 @@ fn ground(s: *Screen, b: u8) void {
             s.cur_col = @min(next, s.cols - 1);
         },
         0x07, 0x00, 0x7f => {},
-        0x01...0x06, 0x0e...0x1a, 0x1c...0x1f => {},
-        0x20...0x7e => s.put(b),
+        0x0e => s.g1_on = true, // SO
+        0x0f => s.g1_on = false, // SI
+        0x01...0x06, 0x10...0x1a, 0x1c...0x1f => {},
+        0x20...0x7e => s.put(if (s.g_dec[@intFromBool(s.g1_on)]) decGraphic(b) else b),
         0x80...0xbf => s.put(0xfffd),
         else => {
             const len = std.unicode.utf8ByteSequenceLength(b) catch {
@@ -437,6 +467,7 @@ fn escape(s: *Screen, b: u8) void {
             s.nparams = 0;
             s.param_started = false;
             s.private = 0;
+            s.csi_space = false;
             @memset(&s.params, 0);
         },
         ']' => {
@@ -445,7 +476,16 @@ fn escape(s: *Screen, b: u8) void {
             s.osc_start = s.fed -| 1; // its ESC
         },
         'P', 'X', '^', '_' => s.state = .str, // DCS / SOS / PM / APC
-        '(', ')', '*', '+', '#', '%' => s.state = .esc_skip_one,
+        '(', ')', '*', '+' => {
+            s.charset_slot = switch (b) {
+                '(' => 0,
+                ')' => 1,
+                '*' => 2,
+                else => 3,
+            };
+            s.state = .esc_charset;
+        },
+        '#', '%' => s.state = .esc_skip_one,
         '7' => s.saveCursor(),
         '8' => s.restoreCursor(),
         'M' => s.reverseIndex(),
@@ -462,6 +502,9 @@ fn escape(s: *Screen, b: u8) void {
             s.app_cursor = false;
             s.cursor_hidden = false;
             s.bracketed_paste = false;
+            s.mouseOff();
+            s.charsetsOff();
+            s.cursor_shape = .bar;
             s.clear();
         },
         else => {},
@@ -480,7 +523,12 @@ fn oscEnd(s: *Screen) void {
     if (!std.mem.startsWith(u8, p, "133;") or p.len < 5 or (p.len > 5 and p[5] != ';')) return;
     s.has_marks = true;
     switch (p[4]) {
-        'A' => s.zone = .none,
+        'A' => {
+            s.zone = .none;
+            s.mouseOff();
+            s.charsetsOff();
+            s.cursor_shape = .bar;
+        },
         'B' => {
             s.zone = .input;
             s.cmd_start = .{ .row = s.cur_row, .col = s.cur_col };
@@ -497,6 +545,9 @@ fn oscEnd(s: *Screen) void {
         },
         'D' => {
             if (s.ai == .running) s.ai = .off;
+            s.mouseOff();
+            s.charsetsOff();
+            s.cursor_shape = .bar;
             s.at_prompt = true;
             s.prompt_row = s.cur_row;
             s.zone = .none;
@@ -579,7 +630,8 @@ fn csi(s: *Screen, b: u8) void {
             if (s.nparams < s.params.len) s.nparams += 1;
         },
         '?', '>', '<', '=' => s.private = b,
-        0x20...0x2f => {}, // intermediates
+        ' ' => s.csi_space = true,
+        0x21...0x2f => {}, // other intermediates
         0x40...0x7e => {
             s.state = .ground;
             s.dispatchCsi(b);
@@ -595,8 +647,8 @@ fn param(s: *const Screen, i: usize, default: u32) u32 {
 }
 
 /// DEC private modes (`ESC[?…h` / `ESC[?…l`): application cursor keys,
-/// the cursor shown / hidden, the alternate screen and bracketed paste;
-/// the rest are ignored.
+/// the cursor shown / hidden, the alternate screen, mouse reporting and
+/// bracketed paste; the rest are ignored.
 fn privateMode(s: *Screen, final: u8) void {
     if (s.private != '?' or (final != 'h' and final != 'l')) return;
     const on = final == 'h';
@@ -604,10 +656,93 @@ fn privateMode(s: *Screen, final: u8) void {
         1 => s.app_cursor = on,
         25 => s.cursor_hidden = !on,
         47, 1047, 1049 => if (on) s.enterAlt() else s.leaveAlt(),
+        9, 1000, 1002, 1003 => {
+            const m: MouseMode = switch (p) {
+                9 => .press,
+                1000 => .click,
+                1002 => .drag,
+                else => .motion,
+            };
+            if (on) s.mouse = m else if (s.mouse == m) {
+                s.mouse = .off;
+            }
+        },
+        1006 => s.mouse_enc = if (on) .sgr else if (s.mouse_enc == .sgr) .x10 else s.mouse_enc,
+        1015 => s.mouse_enc = if (on) .urxvt else if (s.mouse_enc == .urxvt) .x10 else s.mouse_enc,
         2004 => s.bracketed_paste = on,
         else => {},
     };
 }
+
+pub const MouseMode = enum { off, press, click, drag, motion };
+pub const MouseEnc = enum { x10, sgr, urxvt };
+
+fn charsetsOff(s: *Screen) void {
+    s.g_dec = .{ false, false };
+    s.g1_on = false;
+}
+
+/// DEC special graphics (line drawing): what `_` … `~` stand for.
+fn decGraphic(b: u8) u21 {
+    const table = [_]u21{
+        0x00a0, // _ blank
+        0x25c6, 0x2592, 0x2409, 0x240c, 0x240d, 0x240a, 0x00b0, 0x00b1, // ` a b c d e f g
+        0x2424, 0x240b, 0x2518, 0x2510, 0x250c, 0x2514, 0x253c, 0x23ba, // h i j k l m n o
+        0x23bb, 0x2500, 0x23bc, 0x23bd, 0x251c, 0x2524, 0x2534, 0x252c, // p q r s t u v w
+        0x2502, 0x2264, 0x2265, 0x03c0, 0x2260, 0x00a3, 0x00b7, // x y z { | } ~
+    };
+    return if (b >= '_' and b <= '~') table[b - '_'] else b;
+}
+
+pub const CursorShape = enum { bar, block, underline };
+
+fn mouseOff(s: *Screen) void {
+    s.mouse = .off;
+    s.mouse_enc = .x10;
+}
+
+/// One mouse event as the program asked for it (`mouse`, `mouse_enc`),
+/// written into `buf`; null when it doesn't want this one. `button`: 0
+/// left, 1 middle, 2 right, 64 / 65 wheel up / down; `col` / `row` from
+/// 1; `mods` the xterm bits (4 shift, 8 meta, 16 ctrl).
+pub fn mouseReport(s: *const Screen, buf: []u8, ev: MouseEvent) ?[]const u8 {
+    const wheel = ev.button >= 64;
+    switch (s.mouse) {
+        .off => return null,
+        .press => if (ev.kind != .press) return null,
+        .click => if (ev.kind == .motion) return null,
+        .drag => if (ev.kind == .motion and ev.button == 3) return null,
+        .motion => {},
+    }
+    if (wheel and ev.kind == .release) return null;
+    var code: u32 = ev.button;
+    if (s.mouse != .press) code |= ev.mods;
+    if (ev.kind == .motion) code |= 32;
+    return switch (s.mouse_enc) {
+        .sgr => std.fmt.bufPrint(buf, "\x1b[<{d};{d};{d}{c}", .{ code, ev.col, ev.row, @as(u8, if (ev.kind == .release) 'm' else 'M') }) catch null,
+        .urxvt => std.fmt.bufPrint(buf, "\x1b[{d};{d};{d}M", .{ (if (ev.kind == .release and !wheel) 3 | (code & ~@as(u32, 3)) else code) + 32, ev.col, ev.row }) catch null,
+        .x10 => blk: {
+            // One byte each, 32 + the value: nothing past column / row 223.
+            if (ev.col > 223 or ev.row > 223 or buf.len < 6) break :blk null;
+            const b = if (ev.kind == .release and !wheel) 3 | (code & ~@as(u32, 3)) else code;
+            buf[0..3].* = "\x1b[M".*;
+            buf[3] = @intCast(32 + b);
+            buf[4] = @intCast(32 + ev.col);
+            buf[5] = @intCast(32 + ev.row);
+            break :blk buf[0..6];
+        },
+    };
+}
+
+pub const MouseEvent = struct {
+    kind: enum { press, release, motion },
+    /// 0 left, 1 middle, 2 right, 3 none (motion without a button), 64 /
+    /// 65 wheel up / down.
+    button: u8,
+    col: u32,
+    row: u32,
+    mods: u8 = 0,
+};
 
 /// The answers queued since the last call (see `reply_buf`).
 pub fn takeReplies(s: *Screen) []const u8 {
@@ -641,6 +776,14 @@ fn query(s: *Screen, final: u8) void {
 fn dispatchCsi(s: *Screen, final: u8) void {
     if (final == 'n' or final == 'c') return s.query(final);
     if (s.private != 0) return s.privateMode(final);
+    if (s.csi_space) {
+        if (final == 'q') s.cursor_shape = switch (s.param(0, 0)) {
+            1, 2 => .block,
+            3, 4 => .underline,
+            else => .bar,
+        };
+        return;
+    }
     const top = s.screenTop();
     switch (final) {
         'm' => s.sgr(),
@@ -719,6 +862,11 @@ fn dispatchCsi(s: *Screen, final: u8) void {
             s.cur_col = 0;
         },
         'S' => s.scrollRows(s.region_top, s.regionBot(), s.param(0, 1), false),
+        // REP: the last character again, n times (one screen width at
+        // most: random input can ask for billions).
+        'b' => if (s.last_char) |ch| {
+            for (0..@min(s.param(0, 1), s.cols)) |_| s.put(ch);
+        },
         'T' => if (s.nparams <= 1) s.scrollRows(s.region_top, s.regionBot(), s.param(0, 1), true),
         else => {},
     }
@@ -986,6 +1134,7 @@ fn line(s: *Screen, row: usize) *Line {
 }
 
 fn put(s: *Screen, cp: u21) void {
+    s.last_char = cp;
     const w = wcwidth.width(cp);
     if (w == 0) return s.combine(cp);
     // A wide character in the last column goes on to the next row (that
@@ -2034,6 +2183,48 @@ test "hostile counts are clamped (cat /dev/random must not hang)" {
     try std.testing.expectEqual(s.lines.items.len, s.wrapped.items.len);
 }
 
+test "line drawing set and REP" {
+    var s = Screen.init(std.testing.allocator);
+    defer s.deinit();
+    s.resize(20, 5);
+    // G0 = line drawing; G1 too, picked with SO, back with SI. A program
+    // that died in line drawing: ASCII again at the prompt.
+    s.feed("\x1b(0lqk\x1b(Bq\r\n\x1b)0x\x0ex\x0fx\r\nA\x1b[3bZ\x1b(0\x1b]133;D;0\x07\r\nq");
+    const t = try textOf(&s);
+    defer std.testing.allocator.free(t);
+    try std.testing.expectEqualStrings("┌─┐q\nx│x\nAAAAZ\nq", t);
+}
+
+test "mouse reporting: modes, encodings, off at the prompt" {
+    var s = Screen.init(std.testing.allocator);
+    defer s.deinit();
+    s.resize(80, 24);
+    var buf: [32]u8 = undefined;
+    const press: MouseEvent = .{ .kind = .press, .button = 0, .col = 3, .row = 5 };
+    try std.testing.expect(s.mouseReport(&buf, press) == null);
+    s.feed("\x1b[?1000h");
+    try std.testing.expectEqualStrings("\x1b[M #%", s.mouseReport(&buf, press).?);
+    // Releases: button 3 in the old encodings; drags only from ?1002.
+    try std.testing.expectEqualStrings("\x1b[M##%", s.mouseReport(&buf, .{ .kind = .release, .button = 0, .col = 3, .row = 5 }).?);
+    try std.testing.expect(s.mouseReport(&buf, .{ .kind = .motion, .button = 0, .col = 4, .row = 5 }) == null);
+    s.feed("\x1b[?1002h\x1b[?1006h");
+    try std.testing.expectEqualStrings("\x1b[<0;3;5M", s.mouseReport(&buf, press).?);
+    try std.testing.expectEqualStrings("\x1b[<0;3;5m", s.mouseReport(&buf, .{ .kind = .release, .button = 0, .col = 3, .row = 5 }).?);
+    try std.testing.expectEqualStrings("\x1b[<32;4;5M", s.mouseReport(&buf, .{ .kind = .motion, .button = 0, .col = 4, .row = 5 }).?);
+    try std.testing.expect(s.mouseReport(&buf, .{ .kind = .motion, .button = 3, .col = 4, .row = 5 }) == null);
+    try std.testing.expectEqualStrings("\x1b[<81;300;5M", s.mouseReport(&buf, .{ .kind = .press, .button = 65, .col = 300, .row = 5, .mods = 16 }).?);
+    // X10 can't say column 300.
+    s.feed("\x1b[?1006l");
+    try std.testing.expect(s.mouseReport(&buf, .{ .kind = .press, .button = 0, .col = 300, .row = 5 }) == null);
+    // Turning off a mode that isn't the one on leaves it.
+    s.feed("\x1b[?1000l");
+    try std.testing.expectEqual(MouseMode.drag, s.mouse);
+    // The shell's prompt mark turns it off (vim killed with it on).
+    s.feed("\x1b[?1006h\x1b]133;D;0\x07");
+    try std.testing.expectEqual(MouseMode.off, s.mouse);
+    try std.testing.expectEqual(MouseEnc.x10, s.mouse_enc);
+}
+
 test "bracketed paste mode follows ESC[?2004h / l" {
     var s = Screen.init(std.testing.allocator);
     defer s.deinit();
@@ -2178,4 +2369,20 @@ test "at the prompt the cursor goes up past the screen's top to the prompt" {
     // Running a command: the screen's top is the limit again.
     s.feed("\x1b]133;C\x07\x1b[10B\x1b[20A");
     try std.testing.expectEqual(s.screenTop(), s.cur_row);
+}
+
+test "cursor shape (DECSCUSR)" {
+    var s = Screen.init(std.testing.allocator);
+    defer s.deinit();
+    s.resize(10, 3);
+    s.feed("\x1b[2 q");
+    try std.testing.expectEqual(CursorShape.block, s.cursor_shape);
+    s.feed("\x1b[4 q");
+    try std.testing.expectEqual(CursorShape.underline, s.cursor_shape);
+    s.feed("\x1b[0 q");
+    try std.testing.expectEqual(CursorShape.bar, s.cursor_shape);
+    s.feed("\x1b[1 qx"); // not a REP / other CSI
+    try std.testing.expectEqual(CursorShape.block, s.cursor_shape);
+    s.feed("\x1b]133;D;0\x07");
+    try std.testing.expectEqual(CursorShape.bar, s.cursor_shape);
 }

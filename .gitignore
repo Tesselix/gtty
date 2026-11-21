@@ -10,3 +10,4 @@ test/shots/
 extension-examples/*/*/build/
 extension-examples/commands/go/commands
 __pycache__/
+gtty-check-*

@@ -105,6 +105,12 @@ arranged: bool = false,
 /// window drag it becomes once the mouse moves (`onMotion`): dropped on
 /// another window there, the two swap places (`dropWindow`).
 win_press: ?struct { window: ids_mod.Id, x: f32, y: f32 } = null,
+/// A key sent as Meta (ESC + the key, `metaBytes`): the text event that
+/// follows it (å for ⌥A on macOS, a for Alt+A on Linux) is dropped.
+drop_text: bool = false,
+/// A button pressed over a program that takes the mouse (vim, htop,
+/// tmux, …): its moves and its release go to that window's program.
+mouse_report: ?struct { window: ids_mod.Id, button: u8 } = null,
 win_drag: ?WinDrag = null,
 /// This gtty's control socket (`<tmp>/ctl.sock`, -1: none): job windows
 /// come and go between gttys through it (core/Handoff.zig).
@@ -2927,6 +2933,7 @@ fn applyChange(app: *App, ch: SettingsWindow.Change) void {
         .file_opener => app.setFileOpener(app.cfg.file_opener),
         .color_folders => app.setColorFolders(app.cfg.color_folders),
         .refresh_ls => JobWindow.refresh_ls = app.cfg.refresh_ls,
+        .option_as_meta => {}, // read at each key
         .quit_on_last_shell => app.quit_on_last_shell = app.cfg.quit_on_last_shell,
         .check_updates => {}, // read at the next start
         .command => {}, // at the next start
@@ -5115,6 +5122,16 @@ fn execGtty(app: *App, cmd_parsed: commands.Command) void {
             pushMouse(win, c.SDL_EVENT_MOUSE_BUTTON_DOWN, p.x, p.y, c.SDL_BUTTON_RIGHT);
             pushMouse(win, c.SDL_EVENT_MOUSE_BUTTON_UP, p.x, p.y, c.SDL_BUTTON_RIGHT);
         },
+        .wheel => |p| {
+            app.notePointer(p.x, p.y, false);
+            var ev: c.SDL_Event = std.mem.zeroes(c.SDL_Event);
+            ev.type = c.SDL_EVENT_MOUSE_WHEEL;
+            ev.wheel.windowID = app.scriptWindow();
+            ev.wheel.mouse_x = p.x;
+            ev.wheel.mouse_y = p.y;
+            ev.wheel.y = p.dy;
+            _ = c.SDL_PushEvent(&ev);
+        },
         .move => |p| {
             app.notePointer(p.x, p.y, false);
             pushMouse(app.scriptWindow(), c.SDL_EVENT_MOUSE_MOTION, p.x, p.y, app.script_btn);
@@ -5213,6 +5230,9 @@ fn keySpec(spec: []const u8) ?struct { key: c.SDL_Keycode, mod: c.SDL_Keymod } {
         .{ .name = "3", .v = c.SDLK_3 },                 .{ .name = "4", .v = c.SDLK_4 },
         .{ .name = "f", .v = c.SDLK_F },                 .{ .name = "o", .v = c.SDLK_O },
         .{ .name = "r", .v = c.SDLK_R },
+        .{ .name = "f1", .v = c.SDLK_F1 },               .{ .name = "f4", .v = c.SDLK_F4 },
+        .{ .name = "f5", .v = c.SDLK_F5 },               .{ .name = "f10", .v = c.SDLK_F10 },
+        .{ .name = "f12", .v = c.SDLK_F12 },             .{ .name = "b", .v = c.SDLK_B },
     };
     var mod: c.SDL_Keymod = 0;
     var it = std.mem.splitScalar(u8, spec, '+');
@@ -5364,7 +5384,7 @@ fn handle(app: *App, ev: *const c.SDL_Event) void {
         // again under the mouse.
         c.SDL_EVENT_KEY_UP => if (isModifier(ev.key.key)) app.sendHover(),
         c.SDL_EVENT_MOUSE_BUTTON_DOWN => app.onClick(ev.button.x * app.density, ev.button.y * app.density, ev.button.button, ev.button.clicks),
-        c.SDL_EVENT_MOUSE_BUTTON_UP => app.onMouseUp(ev.button.x * app.density, ev.button.y * app.density),
+        c.SDL_EVENT_MOUSE_BUTTON_UP => app.onMouseUp(ev.button.x * app.density, ev.button.y * app.density, ev.button.button),
         c.SDL_EVENT_MOUSE_MOTION => app.onMotion(ev.motion.x * app.density, ev.motion.y * app.density),
         c.SDL_EVENT_WINDOW_MOUSE_LEAVE => app.onMouseLeave(),
         c.SDL_EVENT_MOUSE_WHEEL => app.onWheel(ev.wheel.mouse_x * app.density, ev.wheel.mouse_y * app.density, ev.wheel.y),
@@ -5389,6 +5409,10 @@ fn eventWindow(ev: *const c.SDL_Event) c.SDL_WindowID {
 
 /// Typed text goes to the focused running window, otherwise to the prompt.
 fn onText(app: *App, text: []const u8) void {
+    if (app.drop_text) {
+        app.drop_text = false;
+        return;
+    }
     if (app.modal) |*m| {
         m.typed(text, c.SDL_GetTicks());
         app.dirty = true;
@@ -5428,6 +5452,8 @@ fn onKey(app: *App, key: c.SDL_Keycode, mod: c.SDL_Keymod) void {
     const alt = mod & c.SDL_KMOD_ALT != 0;
     const shift = mod & c.SDL_KMOD_SHIFT != 0;
     app.dirty = true;
+    // A key after a Meta key: its text is its own (also for script keys).
+    if (!isModifier(key)) app.drop_text = false;
     // The mouse no longer "has" a file (`pointerFresh`) once a key is
     // pressed (modifier keys alone don't count).
     defer if (!isModifier(key)) {
@@ -5579,6 +5605,19 @@ fn onKey(app: *App, key: c.SDL_Keycode, mod: c.SDL_Keymod) void {
     }
     // A running window has focus: keys go straight to its terminal.
     if (app.focusedJob()) |w| {
+        var kbuf: [16]u8 = undefined;
+        // Alt (macOS: ⌥ with the setting) + a key: Meta, ESC + the key.
+        if (alt and !ctrl and app.metaOn()) if (metaBytes(key, shift, &kbuf)) |bytes| {
+            app.drop_text = true;
+            w.typeBytes(bytes);
+            return;
+        };
+        // F1–F12 (F11 is gtty's maximize) and Insert, with their
+        // modifiers as xterm sends them.
+        if (fnKeyBytes(key, shift, alt, ctrl, &kbuf)) |bytes| {
+            w.typeBytes(bytes);
+            return;
+        }
         if (jobKeyBytes(key, ctrl, shift, w.out.app_cursor, w.out.alt != null)) |bytes| {
             w.typeBytes(bytes);
         } else switch (key) {
@@ -5703,6 +5742,67 @@ fn editKey(app: *App, w: *JobWindow, key: c.SDL_Keycode, ctrl: bool, cmd: bool, 
     return true;
 }
 
+/// Alt is Meta: always on Linux, on macOS only with `option-as-meta`
+/// (else ⌥ types its characters: å, €, …).
+fn metaOn(app: *const App) bool {
+    return builtin.os.tag != .macos or app.cfg.option_as_meta;
+}
+
+/// Meta + a key that types a character: ESC and the character the key
+/// types with Shift alone (⌥⇧. → ESC >), from the keyboard layout.
+fn metaBytes(key: c.SDL_Keycode, shift: bool, buf: *[16]u8) ?[]const u8 {
+    if (key & c.SDLK_SCANCODE_MASK != 0) return null;
+    const sc = c.SDL_GetScancodeFromKey(key, null);
+    const base = if (sc == c.SDL_SCANCODE_UNKNOWN) key else c.SDL_GetKeyFromScancode(sc, if (shift) c.SDL_KMOD_SHIFT else c.SDL_KMOD_NONE, false);
+    if (base < 0x20 or base >= 0x7f) return null;
+    buf[0] = 0x1b;
+    buf[1] = @intCast(base);
+    return buf[0..2];
+}
+
+/// F1–F12 (not F11: gtty's maximize) and Insert, as xterm sends them:
+/// F1–F4 `ESC O P`…, the rest `ESC [ 15 ~`…; with Shift / Alt / Ctrl the
+/// modifier number (`ESC [ 1 ; 5 P`, `ESC [ 15 ; 2 ~`).
+fn fnKeyBytes(key: c.SDL_Keycode, shift: bool, alt: bool, ctrl: bool, buf: *[16]u8) ?[]const u8 {
+    const m: u8 = 1 + @as(u8, @intFromBool(shift)) + 2 * @as(u8, @intFromBool(alt)) + 4 * @as(u8, @intFromBool(ctrl));
+    const ss3: u8 = switch (key) {
+        c.SDLK_F1 => 'P',
+        c.SDLK_F2 => 'Q',
+        c.SDLK_F3 => 'R',
+        c.SDLK_F4 => 'S',
+        else => 0,
+    };
+    if (ss3 != 0) return if (m == 1)
+        std.fmt.bufPrint(buf, "\x1bO{c}", .{ss3}) catch null
+    else
+        std.fmt.bufPrint(buf, "\x1b[1;{d}{c}", .{ m, ss3 }) catch null;
+    const num: u8 = switch (key) {
+        c.SDLK_INSERT => 2,
+        c.SDLK_F5 => 15,
+        c.SDLK_F6 => 17,
+        c.SDLK_F7 => 18,
+        c.SDLK_F8 => 19,
+        c.SDLK_F9 => 20,
+        c.SDLK_F10 => 21,
+        c.SDLK_F12 => 24,
+        else => return null,
+    };
+    return if (m == 1)
+        std.fmt.bufPrint(buf, "\x1b[{d}~", .{num}) catch null
+    else
+        std.fmt.bufPrint(buf, "\x1b[{d};{d}~", .{ num, m }) catch null;
+}
+
+test "function keys as xterm sends them" {
+    var buf: [16]u8 = undefined;
+    try std.testing.expectEqualStrings("\x1bOP", fnKeyBytes(c.SDLK_F1, false, false, false, &buf).?);
+    try std.testing.expectEqualStrings("\x1b[1;5S", fnKeyBytes(c.SDLK_F4, false, false, true, &buf).?);
+    try std.testing.expectEqualStrings("\x1b[21~", fnKeyBytes(c.SDLK_F10, false, false, false, &buf).?);
+    try std.testing.expectEqualStrings("\x1b[15;2~", fnKeyBytes(c.SDLK_F5, true, false, false, &buf).?);
+    try std.testing.expectEqualStrings("\x1b[2~", fnKeyBytes(c.SDLK_INSERT, false, false, false, &buf).?);
+    try std.testing.expect(fnKeyBytes(c.SDLK_F11, false, false, false, &buf) == null);
+}
+
 /// Bytes a terminal sends for a non-text key (text arrives as TEXT_INPUT).
 /// `app_cursor`: the program asked for application cursor keys (vim, less);
 /// `full_screen`: it runs on the alternate screen, so PageUp / PageDown
@@ -5823,6 +5923,23 @@ fn onClick(app: *App, x: f32, y: f32, button: u8, clicks: u8) void {
     // opener first: double-click opens it; a single press waits to see if
     // it becomes a click, a drag of the file or a text selection.
     app.last_point_ms = c.SDL_GetTicks();
+    // A program that takes the mouse (vim, htop, tmux, …): the press is
+    // its (Shift held: gtty's, to select text or open the menu).
+    if (app.programMouseAt(x, y)) |i| {
+        const b: u8 = switch (button) {
+            c.SDL_BUTTON_LEFT => 0,
+            c.SDL_BUTTON_MIDDLE => 1,
+            c.SDL_BUTTON_RIGHT => 2,
+            else => return,
+        };
+        const w = app.jobs.items[i];
+        app.setFocus(i);
+        if (w.reportMouse(.press, b, x, y, mouseMods())) {
+            app.mouse_report = .{ .window = w.uid, .button = b };
+            app.dirty = true;
+            return;
+        }
+    }
     const sel_mod = c.SDL_GetModState() & (if (builtin.os.tag == .macos) c.SDL_KMOD_GUI else c.SDL_KMOD_CTRL) != 0;
     if (button == c.SDL_BUTTON_LEFT) if (app.textWindowAt(x, y)) |i| {
         // Hover there first (the outline is for the spot clicked).
@@ -5968,7 +6085,20 @@ fn clickJob(app: *App, i: usize, x: f32, y: f32, button: u8, clicks: u8) void {
     }
 }
 
-fn onMouseUp(app: *App, x: f32, y: f32) void {
+fn onMouseUp(app: *App, x: f32, y: f32, button: u8) void {
+    if (app.mouse_report) |r| {
+        const b: u8 = switch (button) {
+            c.SDL_BUTTON_LEFT => 0,
+            c.SDL_BUTTON_MIDDLE => 1,
+            c.SDL_BUTTON_RIGHT => 2,
+            else => 255,
+        };
+        if (b == r.button) {
+            app.mouse_report = null;
+            if (app.jobByUid(r.window)) |w| _ = w.reportMouse(.release, b, x, y, mouseMods());
+        }
+        return;
+    }
     app.text_drag = .none;
     app.win_press = null;
     if (app.win_drag != null) return app.dropWindow(x, y);
@@ -6012,6 +6142,12 @@ fn onMotion(app: *App, x: f32, y: f32) void {
         if (v.motion(x, y)) app.dirty = true;
         return;
     }
+    // A button held over a program that takes the mouse: a drag, its.
+    if (app.mouse_report) |r| if (app.jobByUid(r.window)) |w| {
+        _ = w.reportMouse(.motion, r.button, x, y, mouseMods());
+        app.mouse = .{ x, y };
+        return;
+    };
     const over_update = app.updatePartAt(x, y);
     if (over_update != app.update_over) {
         app.update_over = over_update;
@@ -6115,7 +6251,30 @@ fn onMotion(app: *App, x: f32, y: f32) void {
         app.dirty = true;
     }
     app.mouse = .{ x, y };
+    // A program that asked for every move (`?1003`): this one, no button.
+    if (!in_peek) if (app.programMouseAt(x, y)) |i| {
+        _ = app.jobs.items[i].reportMouse(.motion, 3, x, y, mouseMods());
+    };
     app.sendHover(); // sets the pointer shape too
+}
+
+/// The window whose program takes the mouse at (x, y) (it asked for
+/// reports; see `JobWindow.mouseToProgram`), unless Shift is held: then
+/// the mouse is gtty's (select text, the menu), as in xterm.
+fn programMouseAt(app: *App, x: f32, y: f32) ?usize {
+    if (c.SDL_GetModState() & c.SDL_KMOD_SHIFT != 0) return null;
+    const i = app.textWindowAt(x, y) orelse return null;
+    return if (app.jobs.items[i].mouseToProgram()) i else null;
+}
+
+/// The modifier bits of a mouse report (xterm: 8 Alt / Meta, 16 Ctrl;
+/// Shift never reaches the program, it gives the mouse to gtty).
+fn mouseMods() u8 {
+    const m = c.SDL_GetModState();
+    var bits: u8 = 0;
+    if (m & c.SDL_KMOD_ALT != 0) bits |= 8;
+    if (m & c.SDL_KMOD_CTRL != 0) bits |= 16;
+    return bits;
 }
 
 /// The mouse in one of gtty's other windows (Settings, the Session
@@ -6791,6 +6950,8 @@ fn sendHover(app: *App) void {
     defer app.updateCursor();
     const pt = app.mouse orelse return app.sendLeave();
     const i = app.textWindowAt(pt[0], pt[1]) orelse return app.sendLeave();
+    // The program takes the mouse: no name outlines (Shift: they're back).
+    if (app.programMouseAt(pt[0], pt[1]) != null) return app.sendLeave();
     const w = app.jobs.items[i];
     if (app.hover_src) |src| if (src != w.uid) app.sendLeave();
     app.hover_src = w.uid;
@@ -8492,6 +8653,15 @@ fn onWheel(app: *App, x: f32, y: f32, dy: f32) void {
     const w = for (app.jobs.items, 0..) |j, i| {
         if (app.isShown(i) and j.hit(x, y) != .none) break j;
     } else return;
+    // The program's: mouse reports, or ↑ / ↓ on the alternate screen
+    // (Shift: gtty's view scrolls).
+    const wmods = c.SDL_GetModState();
+    if (wmods & (c.SDL_KMOD_CTRL | c.SDL_KMOD_GUI | c.SDL_KMOD_SHIFT) == 0 and w.out_r.contains(x, y) and !w.kill_menu) {
+        if (w.wheelToProgram(x, y, dy, mouseMods())) {
+            app.dirty = true;
+            return;
+        }
+    }
     if (c.SDL_GetModState() & (c.SDL_KMOD_CTRL | c.SDL_KMOD_GUI) != 0) {
         w.setZoom(&app.gfx, if (dy > 0) w.zoom * 1.1 else w.zoom / 1.1);
     } else {
@@ -8747,8 +8917,8 @@ fn render(app: *App) void {
 /// What the About box and `gtty --version` say.
 pub const copyright = "Copyright 2026 Sagi Forbes Nagar";
 pub const license_line = "License: GPL-3.0-or-later";
-// TODO: the repository doesn't exist there yet; keep in step with README.
-pub const source_url = "codeberg.org/gttyterm/gtty";
+// Keep in step with README.
+pub const source_url = "github.com/Tesselix/gtty";
 
 /// The About box: name, version, copyright, license, source; centered
 /// over a dimmed screen.
@@ -9607,7 +9777,7 @@ fn tickScript(app: *App) void {
     // Test hooks run directly, without touching the prompt (so a shot shows
     // the prompt as the user would see it); everything else is typed in.
     switch (commands.parse(line)) {
-        .wait, .shot, .click, .rclick, .dclick, .down, .up, .type, .text, .key, .resize, .menu, .target, .mods, .record, .slow, .glide, .pace, .dropover, .drop => return app.exec(line),
+        .wait, .shot, .click, .rclick, .wheel, .dclick, .down, .up, .type, .text, .key, .resize, .menu, .target, .mods, .record, .slow, .glide, .pace, .dropover, .drop => return app.exec(line),
         else => {},
     }
     app.prompt.clear();

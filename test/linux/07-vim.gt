@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Run by scripts/linux-check.sh (placeholders @OUT@ @MOD@ filled there).
+# needs: vim
+# vim with the mouse: vim-1 scrolled by the wheel, an X typed where the
+# click put the cursor, Alt+b in insert mode (Linux: Meta, vim sees
+# Esc b); vim-2 back at the shell.
+/s bash
+/wait 2000
+/type clear; vim -u NONE -N -c 'set mouse=a' numbers.txt
+/wait 1200
+/wheel 300 226 -3
+/wait 400
+/click 60 226
+/wait 300
+/text iX
+/key escape
+/wait 500
+/shot @OUT@/vim-1.bmp
+/text :q!
+/key enter
+/wait 800
+/shot @OUT@/vim-2.bmp
+/quit

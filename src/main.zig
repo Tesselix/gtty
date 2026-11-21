@@ -24,6 +24,18 @@ pub fn main(init: std.process.Init.Minimal) !void {
         }
         c.exit(@import("core/ExtCli.zig").run(rest[0..n]));
     };
+    // `gtty --self-test [options]`: the embedded check suite, no window.
+    var st = init.args.iterate();
+    _ = st.next();
+    if (st.next()) |first| if (std.mem.eql(u8, first, "--self-test")) {
+        var rest: [32][:0]const u8 = undefined;
+        var n: usize = 0;
+        while (st.next()) |a| : (n += 1) {
+            if (n == rest.len) break;
+            rest[n] = a;
+        }
+        c.exit(@import("core/SelfTest.zig").run(rest[0..n]));
+    };
 
     // Settings file first; then GTTY_* variables and options win for this
     // run. A test script reads (and writes) one only with GTTY_CONFIG, so
@@ -78,6 +90,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             std.debug.print(
                 \\usage: gtty [-c command] [--script file] [--scrollback lines]
                 \\       gtty ext logs [-f] [--pid N] [extension]
+                \\       gtty --self-test [--only NAME] [--no-manual]   (pre-releases)
                 \\  -c, --command cmd   run cmd at start as if typed at the prompt
                 \\                      (default and "": s, your shell; gtty always
                 \\                      opens your shell if the command starts nothing)
@@ -133,6 +146,7 @@ test {
     _ = @import("chips/Host.zig");
     _ = @import("core/ExtStorage.zig");
     _ = @import("core/ExtLog.zig");
+    _ = @import("core/SelfTest.zig");
     _ = @import("core/ExtCli.zig");
     _ = @import("core/Archive.zig");
     _ = @import("core/Extensions.zig");
@@ -147,4 +161,6 @@ test {
     _ = @import("ui/ChipUi.zig");
     _ = @import("ui/text.zig");
     _ = @import("ui/Dialog.zig");
+    _ = @import("App.zig");
+    _ = @import("render/Gfx.zig");
 }

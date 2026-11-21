@@ -202,6 +202,11 @@ cell_h: f32 = 1,
 /// What the held left mouse button is doing: selecting text, or dragging
 /// the scroller thumb (`grab` = where on the thumb it was taken).
 drag: enum { none, select, scroller } = .none,
+/// Wheel notches not sent to the program yet (a trackpad sends fractions).
+wheel_acc: f32 = 0,
+/// The cell of the last mouse report: motion is sent only when it moves
+/// to another cell.
+mouse_cell: ?[2]u32 = null,
 grab: f32 = 0,
 /// The mouse is over the scroller (its thumb is drawn wider).
 over_scroller: bool = false,
@@ -2332,6 +2337,75 @@ pub fn scrollAt(w: *JobWindow, lines: isize) void {
     w.out.scrollBy(lines);
 }
 
+// The mouse for the program (vim, htop, tmux, less, …).
+
+/// The program takes the mouse here: it asked for mouse reports, the
+/// window is in the windows area showing its live screen, it runs, and
+/// no dialog / sync typing keeps input out.
+pub fn mouseToProgram(w: *const JobWindow) bool {
+    return w.out.mouse != .off and w.grid_r == null and w.out.scroll == 0 and
+        w.dialog_open == null and w.sync != .follower and w.running();
+}
+
+/// The screen cell under (x, y), from 1 (column, row), clamped into the
+/// live screen.
+fn mouseCell(w: *const JobWindow, x: f32, y: f32) [2]u32 {
+    const colf = std.math.clamp(@floor((x - w.out_r.x) / w.cell_w), 0, @as(f32, @floatFromInt(w.out.cols -| 1)));
+    const row = (w.viewTop() + w.viewRow(y)) -| w.out.screenTop();
+    return .{ @as(u32, @intFromFloat(colf)) + 1, @as(u32, @intCast(@min(row, w.out.rows -| 1))) + 1 };
+}
+
+/// A press, release or move of the mouse at (x, y), reported to the
+/// program as it asked (`Screen.mouseReport`). False: the program doesn't
+/// take the mouse (gtty handles it).
+pub fn reportMouse(w: *JobWindow, kind: @FieldType(Screen.MouseEvent, "kind"), button: u8, x: f32, y: f32, mods: u8) bool {
+    if (!w.mouseToProgram()) return false;
+    const cell = w.mouseCell(x, y);
+    if (kind == .motion) {
+        if (w.mouse_cell) |m| if (m[0] == cell[0] and m[1] == cell[1]) return true;
+    }
+    w.mouse_cell = cell;
+    var buf: [32]u8 = undefined;
+    const bytes = w.out.mouseReport(&buf, .{ .kind = kind, .button = button, .col = cell[0], .row = cell[1], .mods = mods }) orelse return true;
+    w.writeMouse(bytes);
+    return true;
+}
+
+/// The wheel over the text: to the program when it takes the mouse
+/// (buttons 64 / 65), or as ↑ / ↓ (3 per notch) on the alternate screen
+/// (less, man, a pager without mouse reports), as other terminals do.
+/// False: gtty scrolls its view.
+pub fn wheelToProgram(w: *JobWindow, x: f32, y: f32, dy: f32, mods: u8) bool {
+    const report = w.mouseToProgram();
+    if (!report) {
+        if (w.out.alt == null or w.grid_r != null or w.out.scroll != 0 or
+            w.dialog_open != null or w.sync == .follower or !w.running()) return false;
+    }
+    w.wheel_acc += dy;
+    const n = @trunc(w.wheel_acc);
+    w.wheel_acc -= n;
+    const up = n > 0;
+    const notches: usize = @intFromFloat(@min(@abs(n), 20));
+    for (0..notches) |_| {
+        if (report) {
+            w.mouse_cell = null;
+            _ = w.reportMouse(.press, if (up) 64 else 65, x, y, mods);
+        } else {
+            const key = if (w.out.app_cursor) (if (up) "\x1bOA" else "\x1bOB") else (if (up) "\x1b[A" else "\x1b[B");
+            for (0..3) |_| w.writeMouse(key);
+        }
+    }
+    return true;
+}
+
+/// Mouse bytes to the program: not mirrored to sync-typing windows (the
+/// cells differ there), not counted as typing (no echo, cursor).
+fn writeMouse(w: *JobWindow, bytes: []const u8) void {
+    trace.bytes("to", w.serial, bytes);
+    w.used = true;
+    w.proc.write(bytes);
+}
+
 // Mouse on the content (windows area only; grid copies are too small).
 
 /// Absolute line index of the top visible row.
@@ -3522,7 +3596,7 @@ fn drawPane(gfx: *Gfx, theme: *const Theme, f: *Gfx.Face, s: *Screen, r: Rect, p
             if (cell.attrs.dim) fg = fg.mix(bg, 0.4);
             fg = theme.readable(fg, bg);
             const cells: u2 = if (cell.attrs.wide) 2 else 1;
-            gfx.glyphCells(f, x, y, cell.cp, cell.extra, cells, fg);
+            gfx.glyphCellsStyled(f, x, y, cell.cp, cell.extra, cells, fg, Gfx.style(cell.attrs.bold, cell.attrs.italic));
             if (cell.attrs.underline) gfx.fill(.{ .x = x, .y = y + f.cell_h - 2, .w = f.cell_w * @as(f32, @floatFromInt(cells)), .h = 1 }, fg);
         }
     }
@@ -3530,7 +3604,22 @@ fn drawPane(gfx: *Gfx, theme: *const Theme, f: *Gfx.Face, s: *Screen, r: Rect, p
     if (cursor and s.cur_row >= start and s.cur_row - start < rows) {
         const cy = r.y + @as(f32, @floatFromInt(s.cur_row - start)) * f.cell_h;
         const cx = r.x + @as(f32, @floatFromInt(s.cur_col)) * f.cell_w;
-        gfx.fill(.{ .x = cx, .y = cy, .w = @max(@round(f.cell_w * 0.12), 2), .h = f.cell_h }, theme.cursor);
+        switch (s.cursor_shape) {
+            .bar => gfx.fill(.{ .x = cx, .y = cy, .w = @max(@round(f.cell_w * 0.12), 2), .h = f.cell_h }, theme.cursor),
+            .underline => {
+                const h = @max(@round(f.cell_h * 0.1), 2);
+                gfx.fill(.{ .x = cx, .y = cy + f.cell_h - h, .w = f.cell_w, .h = h }, theme.cursor);
+            },
+            .block => {
+                // The cell in the cursor's color, its character in the
+                // body's color on it.
+                const line = if (s.cur_row < s.lines.items.len) s.lines.items[s.cur_row].items else &.{};
+                const cell: ?Screen.Cell = if (s.cur_col < line.len) line[s.cur_col] else null;
+                const cells: u2 = if (cell) |cl| (if (cl.attrs.wide) 2 else 1) else 1;
+                gfx.fill(.{ .x = cx, .y = cy, .w = f.cell_w * @as(f32, @floatFromInt(cells)), .h = f.cell_h }, theme.cursor);
+                if (cell) |cl| if (cl.cp != 0) gfx.glyphCellsStyled(f, cx, cy, cl.cp, cl.extra, cells, pane_bg, Gfx.style(cl.attrs.bold, cl.attrs.italic));
+            },
+        }
     }
 
     // "↑ N" while scrolled back, only for a moment after scrolling (it

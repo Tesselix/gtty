@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Run by scripts/linux-check.sh (placeholders @OUT@ @MOD@ filled there).
+# needs: less
+# Mouse for programs. mouse-1: mouse-read.sh's "got:" line: a click
+# (0;C;RM, m), a drag (32;…M, m), wheel 64 / 65, a right click (2;…);
+# no Shift-click (that one is gtty's). mouse-2: less scrolled by the
+# wheel (line 7 on top). mouse-3: ?1000 left on, the prompt turned it off:
+# the drag selects text (highlighted).
+/s bash
+/wait 2000
+/type clear; sh mouse-read.sh
+/wait 600
+/click 300 226
+/drag 300 226 360 226
+/wheel 300 226 1
+/wheel 300 226 -1
+/rclick 300 226
+/mods shift
+/click 400 226
+/mods none
+/wait 2600
+/shot @OUT@/mouse-1.bmp
+/click 300 400
+/type seq 1 200 | less
+/wait 800
+/wheel 300 226 -2
+/wait 500
+/shot @OUT@/mouse-2.bmp
+/text q
+/wait 500
+/type clear; printf '\033[?1000h'; echo some words to select here
+/wait 600
+/drag 27 73 180 73
+/wait 300
+/shot @OUT@/mouse-3.bmp
+/quit

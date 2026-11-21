@@ -41,6 +41,12 @@ pub fn build(b: *std.Build) void {
     const options = b.addOptions();
     options.addOption([]const u8, "version", version);
     mod.addOptions("build_options", options);
+    // `gtty --self-test`: the check suite (scripts/linux-check.sh +
+    // test/linux/) inside the binary. Pre-releases (odd MINOR) and dev
+    // builds have it; -Dself-test overrides.
+    const self_test = b.option(bool, "self-test", "Embed the check suite for gtty --self-test (default: pre-release and dev builds)") orelse isPreRelease(version);
+    options.addOption(bool, "self_test", self_test);
+    mod.addImport("selftest", selfTestModule(b, self_test));
 
     const exe = b.addExecutable(.{ .name = "gtty", .root_module = mod });
     b.installArtifact(exe);
@@ -62,9 +68,62 @@ pub fn build(b: *std.Build) void {
     configure(b, test_mod, target, optimize, sdl);
     test_mod.addImport("gtty", sdk);
     test_mod.addOptions("build_options", options);
+    test_mod.addImport("selftest", selfTestModule(b, false));
     const tests = b.addTest(.{ .root_module = test_mod });
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&b.addRunArtifact(tests).step);
+
+    // zig build linux-check [-- --only tab --no-manual]: the unit tests,
+    // then scripts/linux-check.sh on the gtty just built (screenshots,
+    // traces and system facts packed into one archive to send back).
+    const check_cmd = b.addSystemCommand(&.{ "bash", "scripts/linux-check.sh", "--gtty" });
+    check_cmd.addArg(b.getInstallPath(.bin, "gtty"));
+    if (b.args) |args| check_cmd.addArgs(args);
+    check_cmd.step.dependOn(b.getInstallStep());
+    check_cmd.step.dependOn(&b.addRunArtifact(tests).step);
+    check_cmd.has_side_effects = true;
+    const check_step = b.step("linux-check", "Run the check suite (test/linux) on the built gtty");
+    check_step.dependOn(&check_cmd.step);
+}
+
+/// 0.0.0-dev (git) or an odd MINOR (a pre-release, see release.yml).
+fn isPreRelease(version: []const u8) bool {
+    var it = std.mem.splitScalar(u8, version, '.');
+    const major = it.next() orelse return true;
+    const minor = it.next() orelse return true;
+    if (std.mem.eql(u8, major, "0") and std.mem.eql(u8, minor, "0")) return true;
+    const n = std.fmt.parseInt(u32, minor, 10) catch return true;
+    return n % 2 == 1;
+}
+
+/// A module `selftest` with `files`: path + bytes of the check suite
+/// (empty when `on` is false), laid out as in the repo.
+fn selfTestModule(b: *std.Build, on: bool) *std.Build.Module {
+    const wf = b.addWriteFiles();
+    var src: std.ArrayList(u8) = .empty;
+    const w = struct {
+        fn add(bb: *std.Build, wfs: *std.Build.Step.WriteFile, list: *std.ArrayList(u8), path: []const u8) void {
+            _ = wfs.addCopyFile(bb.path(path), path);
+            list.print(bb.allocator, "    .{{ .path = \"{s}\", .data = @embedFile(\"{s}\") }},\n", .{ path, path }) catch @panic("OOM");
+        }
+    };
+    src.appendSlice(b.allocator, "pub const File = struct { path: []const u8, data: []const u8 };\npub const files = [_]File{\n") catch @panic("OOM");
+    if (on) {
+        w.add(b, wf, &src, "scripts/linux-check.sh");
+        w.add(b, wf, &src, "test/keys-read.sh");
+        w.add(b, wf, &src, "test/mouse-read.sh");
+        const io = b.graph.io;
+        var dir = b.build_root.handle.openDir(io, "test/linux", .{ .iterate = true }) catch @panic("test/linux missing");
+        defer dir.close(io);
+        var it = dir.iterate();
+        while (it.next(io) catch null) |e| {
+            if (e.kind != .file) continue;
+            w.add(b, wf, &src, b.fmt("test/linux/{s}", .{e.name}));
+        }
+    }
+    src.appendSlice(b.allocator, "};\n") catch @panic("OOM");
+    const root = wf.add("selftest.zig", src.items);
+    return b.createModule(.{ .root_source_file = root });
 }
 
 const Sdl = struct {

@@ -289,6 +289,9 @@ fix it.
 | ⌘F (Linux: Ctrl+Shift+F) | find in the window: matches on screen highlighted |
 | ⌘/Ctrl + = − 0 | zoom in / out / reset |
 | Mouse wheel, PageUp / PageDown | scroll; over a grid, scroll the grid |
+| F1–F12 (not F11: maximize), Insert | to the program, as xterm sends them (htop's F10 quits) |
+| Alt + a key (macOS: ⌥, with **Option key as Meta** on in Settings → General) | Meta: Esc + the key, for emacs, readline, tmux, vim; without the setting ⌥ types its characters (å, €) |
+| In vim, less, htop, … | the mouse and the wheel are the program's when it asks for them (vim `set mouse=a`); the wheel scrolls less, man and other pagers. Hold **Shift** to select text, scroll or open the right-click menu yourself |
 | ⌘T (Linux: Ctrl+Shift+T) | new shell, in the folder of the window you're working in |
 | ⌘N (Linux: Ctrl+Shift+N) | new gtty window (another gtty), in that folder too |
 | ⌘W | close the window you're typing into |

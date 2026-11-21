@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Run by scripts/linux-check.sh (placeholders @OUT@ @MOD@ filled there).
+# needs: htop
+# htop: htop-1 its screen (meters, boxes, the F-key bar), a click on the
+# CPU% column header sorts by it; htop-2 after F10 (quit): the shell.
+/s bash
+/wait 2000
+/type htop
+/wait 2000
+/shot @OUT@/htop-1.bmp
+/key f10
+/wait 800
+/shot @OUT@/htop-2.bmp
+/quit

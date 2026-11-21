@@ -40,6 +40,20 @@ pub const Rect = struct {
 };
 
 const font_data = @embedFile("../assets/JetBrainsMono-Regular.ttf");
+/// The other faces of gtty's font, by `Style` - 1: bold, italic, bold
+/// italic (opened per size when first needed).
+const style_data = [3][]const u8{
+    @embedFile("../assets/JetBrainsMono-Bold.ttf"),
+    @embedFile("../assets/JetBrainsMono-Italic.ttf"),
+    @embedFile("../assets/JetBrainsMono-BoldItalic.ttf"),
+};
+
+/// A text style: bit 0 bold, bit 1 italic (0 = regular).
+pub const Style = u2;
+
+pub fn style(bold: bool, italic: bool) Style {
+    return @as(Style, @intFromBool(bold)) | (@as(Style, @intFromBool(italic)) << 1);
+}
 
 pub const Glyph = struct {
     tex: *c.SDL_Texture,
@@ -96,6 +110,9 @@ pub const Face = struct {
     /// The fallback fonts at this size, opened when first needed.
     fallback: [max_fallbacks]?*c.TTF_Font = @splat(null),
     tried: [max_fallbacks]bool = @splat(false),
+    /// gtty's bold / italic / bold italic faces at this size (`style_data`).
+    styled: [3]?*c.TTF_Font = @splat(null),
+    styled_tried: [3]bool = @splat(false),
 };
 
 const Gfx = @This();
@@ -156,6 +173,7 @@ pub fn deinit(g: *Gfx) void {
         while (git.next()) |gl| if (gl.*) |gly| c.SDL_DestroyTexture(gly.tex);
         f.glyphs.deinit(g.gpa);
         for (f.fallback) |fb| if (fb) |font| c.TTF_CloseFont(font);
+        for (f.styled) |sf| if (sf) |font| c.TTF_CloseFont(font);
         c.TTF_CloseFont(f.font);
         g.gpa.destroy(f);
     }
@@ -187,13 +205,33 @@ pub fn face(g: *Gfx, px_in: u16) !*Face {
     return f;
 }
 
-/// The glyph for `cp` (cached): from gtty's font, else the first fallback
-/// font that has it, else a '?'. `emoji`: the color emoji font first.
-fn glyph(g: *Gfx, f: *Face, cp: u21, emoji: bool) ?Glyph {
-    const key: u32 = @as(u32, cp) | (@as(u32, @intFromBool(emoji)) << 21);
+/// gtty's font in `st` at `f`'s size (null: regular, or it can't open).
+fn styledFont(f: *Face, st: Style) ?*c.TTF_Font {
+    if (st == 0) return null;
+    const i = st - 1;
+    if (!f.styled_tried[i]) {
+        f.styled_tried[i] = true;
+        const data = style_data[i];
+        if (c.SDL_IOFromConstMem(data.ptr, data.len)) |io| {
+            f.styled[i] = c.TTF_OpenFontIO(io, true, @floatFromInt(f.px));
+            if (f.styled[i]) |font| c.TTF_SetFontHinting(font, c.TTF_HINTING_LIGHT);
+        }
+    }
+    return f.styled[i];
+}
+
+/// The glyph for `cp` (cached): from gtty's font (in style `st` when it
+/// has the character), else the first fallback font that has it, else a
+/// '?'. `emoji`: the color emoji font first (no style).
+fn glyph(g: *Gfx, f: *Face, cp: u21, emoji: bool, st: Style) ?Glyph {
+    const s: Style = if (emoji) 0 else st;
+    const key: u32 = @as(u32, cp) | (@as(u32, @intFromBool(emoji)) << 21) | (@as(u32, s) << 22);
     if (f.glyphs.get(key)) |gl| return gl;
     var result: ?Glyph = null;
     if (emoji) result = g.fromFallbacks(f, cp, true);
+    if (result == null) if (styledFont(f, s)) |font| {
+        if (c.TTF_FontHasGlyph(font, cp)) result = g.render(font, cp, false, false);
+    };
     if (result == null and c.TTF_FontHasGlyph(f.font, cp)) result = g.render(f.font, cp, false, false);
     if (result == null) result = g.fromFallbacks(f, cp, false);
     if (result == null) result = g.render(f.font, '?', false, false);
@@ -360,9 +398,15 @@ pub fn glyphAt(g: *Gfx, f: *Face, x: f32, y: f32, cp: u21, col: Rgb) void {
 /// emoji, U+FE0E for text). A color glyph, or one too big for its cells,
 /// is scaled to fit and centered.
 pub fn glyphCells(g: *Gfx, f: *Face, x: f32, y: f32, cp: u21, extra: u21, cells: u2, col: Rgb) void {
+    g.glyphCellsStyled(f, x, y, cp, extra, cells, col, 0);
+}
+
+/// `glyphCells` in a style (bold / italic, `style`).
+pub fn glyphCellsStyled(g: *Gfx, f: *Face, x: f32, y: f32, cp: u21, extra: u21, cells: u2, col: Rgb, st: Style) void {
     if (cp == ' ' or cp == 0) return;
+    if (boxLines(cp)) |arms| return g.drawBox(f, x, y, arms, col);
     const emoji = (cells == 2 or extra == 0xfe0f) and extra != 0xfe0e;
-    const gl = g.glyph(f, cp, emoji) orelse return;
+    const gl = g.glyph(f, cp, emoji, st) orelse return;
     const box_w = f.cell_w * @as(f32, @floatFromInt(@max(cells, 1)));
     var w = gl.w;
     var h = gl.h;
@@ -383,6 +427,88 @@ pub fn glyphCells(g: *Gfx, f: *Face, x: f32, y: f32, cp: u21, extra: u21, cells:
     }
     const dst: c.SDL_FRect = .{ .x = @round(x + dx), .y = @round(y + dy), .w = w, .h = h };
     _ = c.SDL_RenderTexture(g.renderer, gl.tex, if (gl.src) |*r| r else null, &dst);
+}
+
+/// Box-drawing lines (U+2500…): the arms from the cell's center, left,
+/// up, right, down; 0 none, 1 light, 2 heavy. Drawn as rectangles that
+/// reach the cell's edges, so boxes join across rows and columns (the
+/// font's glyphs are shorter than a cell with line spacing: gaps). Dashed
+/// lines are drawn solid; double lines (═ ║ ╔ …) are left to the font.
+fn boxLines(cp: u21) ?[4]u2 {
+    // 4 digits per character: left, up, right, down.
+    const main =
+        "101020200101020210102020010102021010202001010202" ++
+        "0011002100120022100120011002200201100120021002201100210012002200" ++
+        "0111012102110112021202210122022211012101120111021202220121022202" ++
+        "1011201110212021101220121022202211102110112021201210221012202220" ++
+        "1111211111212121121111121212221112212112112222212122221212222222" ++
+        "1010202001010202";
+    const misc = [_]struct { cp: u21, arms: *const [4]u8 }{
+        .{ .cp = 0x256D, .arms = "0011" }, .{ .cp = 0x256E, .arms = "1001" },
+        .{ .cp = 0x256F, .arms = "1100" }, .{ .cp = 0x2570, .arms = "0110" },
+        .{ .cp = 0x2574, .arms = "1000" }, .{ .cp = 0x2575, .arms = "0100" },
+        .{ .cp = 0x2576, .arms = "0010" }, .{ .cp = 0x2577, .arms = "0001" },
+        .{ .cp = 0x2578, .arms = "2000" }, .{ .cp = 0x2579, .arms = "0200" },
+        .{ .cp = 0x257A, .arms = "0020" }, .{ .cp = 0x257B, .arms = "0002" },
+        .{ .cp = 0x257C, .arms = "1020" }, .{ .cp = 0x257D, .arms = "0102" },
+        .{ .cp = 0x257E, .arms = "2010" }, .{ .cp = 0x257F, .arms = "0201" },
+    };
+    const digits: *const [4]u8 = if (cp >= 0x2500 and cp <= 0x254F)
+        main[(cp - 0x2500) * 4 ..][0..4]
+    else for (misc) |m| {
+        if (m.cp == cp) break m.arms;
+    } else return null;
+    var arms: [4]u2 = undefined;
+    for (digits, 0..) |d, i| arms[i] = @intCast(d - '0');
+    return arms;
+}
+
+/// The arms of `boxLines` in the cell at (x, y).
+fn drawBox(g: *Gfx, f: *const Face, x: f32, y: f32, arms: [4]u2, col: Rgb) void {
+    const light = @max(1, @round(f.cell_w / 9));
+    const thick = [3]f32{ 0, light, light * 2 };
+    const x0 = @round(x);
+    const x1 = @round(x + f.cell_w);
+    const y0 = @round(y);
+    const y1 = @round(y + f.cell_h);
+    const xm = @round(x + f.cell_w / 2);
+    const ym = @round(y + f.cell_h / 2);
+    // A line of thickness t covers [m - floor(t/2), m - floor(t/2) + t).
+    // A horizontal arm reaches to the far edge of the vertical line it
+    // meets (none: the center), so corners and joints close exactly.
+    const hv = @max(thick[arms[1]], thick[arms[3]]); // vertical lines
+    const hh = @max(thick[arms[0]], thick[arms[2]]); // horizontal lines
+    const v_lo = xm - @floor(hv / 2);
+    const h_lo = ym - @floor(hh / 2);
+    if (arms[0] != 0) {
+        const t = thick[arms[0]];
+        g.fill(.{ .x = x0, .y = ym - @floor(t / 2), .w = v_lo + hv - x0, .h = t }, col);
+    }
+    if (arms[2] != 0) {
+        const t = thick[arms[2]];
+        g.fill(.{ .x = v_lo, .y = ym - @floor(t / 2), .w = x1 - v_lo, .h = t }, col);
+    }
+    if (arms[1] != 0) {
+        const t = thick[arms[1]];
+        g.fill(.{ .x = xm - @floor(t / 2), .y = y0, .w = t, .h = h_lo + hh - y0 }, col);
+    }
+    if (arms[3] != 0) {
+        const t = thick[arms[3]];
+        g.fill(.{ .x = xm - @floor(t / 2), .y = h_lo, .w = t, .h = y1 - h_lo }, col);
+    }
+}
+
+test "box drawing arms" {
+    try std.testing.expectEqual([4]u2{ 1, 0, 1, 0 }, boxLines(0x2500).?); // ─
+    try std.testing.expectEqual([4]u2{ 0, 0, 1, 1 }, boxLines(0x250C).?); // ┌
+    try std.testing.expectEqual([4]u2{ 1, 1, 0, 0 }, boxLines(0x2518).?); // ┘
+    try std.testing.expectEqual([4]u2{ 1, 1, 1, 1 }, boxLines(0x253C).?); // ┼
+    try std.testing.expectEqual([4]u2{ 2, 2, 2, 2 }, boxLines(0x254B).?); // ╋
+    try std.testing.expectEqual([4]u2{ 2, 1, 2, 0 }, boxLines(0x2537).?); // ┷
+    try std.testing.expectEqual([4]u2{ 0, 2, 0, 2 }, boxLines(0x254F).?); // ╏
+    try std.testing.expectEqual([4]u2{ 0, 1, 1, 0 }, boxLines(0x2570).?); // ╰
+    try std.testing.expect(boxLines(0x2550) == null); // ═: the font's
+    try std.testing.expect(boxLines('q') == null);
 }
 
 /// Draw a UTF-8 string on the monospace grid starting at (x, y): a wide

@@ -41,7 +41,7 @@ CodeQL (`.github/workflows/codeql.yml`) scans the C code and the
 workflows; security reports: [SECURITY.md](SECURITY.md).
 Details in CLAUDE.md ("Releases").
 
-Not yet: full-screen programs (vim, htop, less), bold/italic, and scrolling back past the memory window. New commands from the
+Not yet: bold/italic, and scrolling back past the memory window. New commands from the
 prompt still start in gtty's own folder (a shell window's `cd` doesn't carry
 over to them).
 
@@ -55,7 +55,7 @@ zig build run -- --script test/smoke.gt   # scripted smoke test
 Script mode (`gtty --script file`) types each line into the prompt. Test
 hooks (slash only): `/wait <ms>`, `/shot <file.bmp>`, `/type <text>` (text +
 Enter), `/text <text>` (no Enter), `/key <keys>` (e.g. `cmd+v`,
-`ctrl+shift+left`), `/click <x> <y>`, `/rclick <x> <y>`, `/dclick <x> <y>`,
+`ctrl+shift+left`), `/click <x> <y>`, `/rclick <x> <y>`, `/dclick <x> <y>`, `/wheel <x> <y> <dy>`,
 `/down <x> <y>`, `/up <x> <y>`, `/move <x> <y>`, `/drag <x1> <y1> <x2> <y2>`, `/resize <w> <h>`, `/mods cmd+shift | none`
 (modifier keys held), `/menu run | settings | new-shell | new-window | sync-typing | about` (a menu pick), `/target main | settings` (which OS window the
 next clicks, keys and shots go to), `/quit`. For demos: `/record start
@@ -69,6 +69,28 @@ window unless `-c` is given, and reads no settings file unless
 macOS. `GTTY_AI_REPLY=<file>` turns the AI on without a provider: the
 file's text is its answer (`test/ai.gt`); `GTTY_AI_MEMORY=<file>` puts the
 AI memory there (a script keeps none otherwise).
+
+**Check run on another machine** (Linux above all): `scripts/linux-check.sh`
+runs every script in `test/linux/` against the installed gtty (the one on
+`$PATH`; `--gtty PATH` for another) in a scratch world of its own (a
+home with neutral zsh / bash prompts, a git project with branches, names
+with blanks, links; gtty's state files there too), then asks for a short
+manual step (Tab completion, Alt keys: real key events a script can't
+send; `--no-manual` skips it). Everything lands in
+`gtty-check-<host>-<time>/` and one `.tar.gz` to send back: `report.txt`
+(the system, session type, fonts, shells, tools gtty calls, each test's
+result), `shots/` (PNG when magick / convert / ffmpeg / PIL is there),
+`traces/` (`GTTY_TRACE` of every test: the events and the bytes sent to
+each job), `logs/` (gtty's own output), `scripts/`. `--only NAME` runs
+some. `zig build linux-check [-- --no-manual]` = the unit tests, then
+the same on `zig-out/bin/gtty`. Pre-release builds (odd MINOR, and
+dev builds) carry the suite inside: **`gtty --self-test`** (same options)
+runs it on itself, no checkout needed; stable builds leave it out
+(`-Dself-test=true|false` overrides). A test needing a program says so (`#
+needs: vim`) and is skipped without it. The scripts use `@MOD@` (cmd on
+macOS, ctrl+shift on Linux) and `@OUT@`; on macOS the runner sets
+`GTTY_MENU_BAR=1`, so the layout and coordinates match Linux (text rows
+from y 64, 18 px each; columns from x 23, 8 px).
 
 **README animations** (`docs/images/*.webp`): `docs/demo/make.sh`
 re-records all of them (or `make.sh copy files` for some), one gtty

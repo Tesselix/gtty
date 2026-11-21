@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Run by scripts/linux-check.sh (placeholders @OUT@ @MOD@ filled there).
+# needs: zsh
+# The Tab-completion list in a zsh window (it vanished on Linux once).
+# Expect: tab-zsh-1 / -2 the list of fi… names under the line, still
+# there after 0.6 s; -3 / -4 the menu (second Tab); -5 cd's folders;
+# -6 the gtty prompt with "ls fi" after Tab.
+/s zsh
+/wait 2000
+/pace 150
+/text ls fi
+/key tab
+/shot @OUT@/tab-zsh-1.bmp
+/wait 600
+/shot @OUT@/tab-zsh-2.bmp
+/key tab
+/shot @OUT@/tab-zsh-3.bmp
+/wait 1000
+/shot @OUT@/tab-zsh-4.bmp
+/key ctrl+c
+/wait 300
+/text cd s
+/key backspace
+/key tab
+/key tab
+/wait 800
+/shot @OUT@/tab-zsh-5.bmp
+/key ctrl+c
+/wait 300
+/click 300 680
+/text ls fi
+/key tab
+/wait 800
+/shot @OUT@/tab-zsh-6.bmp
+/quit
