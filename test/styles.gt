@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Bold, italic and bold italic text (SGR 1 / 3), each in gtty's own face;
+# a block cursor on a bold character keeps it bold.
+# Run: zig build && zig-out/bin/gtty --script test/styles.gt
+/s bash
+/wait 1500
+/type printf 'plain \033[1mbold\033[0m \033[3mitalic\033[0m \033[1;3mbold italic\033[0m \033[1;31mred bold\033[0m \033[3;4mitalic under\033[0m 漢字 ✓\n\033[1mBOLD\033[2D\033[2 q'; sleep 3
+/wait 1000
+/shot styles.bmp
+/quit

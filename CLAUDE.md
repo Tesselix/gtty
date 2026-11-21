@@ -759,7 +759,11 @@ the shell. Users expect it to behave like a shell in a terminal.
   (programs, other shells): xterm modified sequences `ESC[1;<mod>D`.
 - **Colors:** SGR colors (16 / 256 / truecolor, inverse, dim, underline) on
   the dark body; 16 colors = xterm's default table; bold makes colors 0–7
-  bright; unreadable colors are lightened. Per window, colors can be turned
+  bright and is drawn in JetBrains Mono Bold, italic (SGR 3) in Italic,
+  both in BoldItalic (2026-11-20; `Gfx.style`, `glyphCellsStyled`, the
+  faces opened per size when first needed, `Face.styled`; a character
+  the style lacks: the regular font's; test `test/styles.gt`); unreadable
+  colors are lightened. Per window, colors can be turned
   off (title-bar button or `colors [on|off]`): plain text, no escape codes
   shown; it is draw-time only, so turning them on restores everything.
   Blink (SGR 5/6) is ignored: steady text.
@@ -878,7 +882,11 @@ the shell. Users expect it to behave like a shell in a terminal.
   the `settings` command): a second OS window (own renderer + Gfx; App
   routes SDL events by window id, `eventWindow`), tabs General / Colors /
   Timing / AI (row labels wrap before the controls column, the row
-  grows: `rowLabel`). It edits `App.cfg`
+  grows: `rowLabel`; a tab taller than the window scrolls, 2026-11-20:
+  wheel / trackpad, PageUp / PageDown / Home / End, a thin bar on the
+  right; content clipped between the tabs and the footer, `view`,
+  controls scrolled out aren't registered, `addCtl`; field clips through
+  `clipIn`; another tab starts at the top). It edits `App.cfg`
   (`src/core/Config.zig`), queues `Change`s; `tickSettings` applies them
   live (`applyChange`) and saves. File: `$GTTY_CONFIG`, else
   `$XDG_CONFIG_HOME/gtty/config`, else `~/.config/gtty/config`; flags and
@@ -1151,8 +1159,8 @@ decisions; items marked *open* are undecided.
 - **Script mode** (`gtty --script file`) is how to test UI changes: each line
   is typed into the prompt; hooks run directly: `/wait ms`, `/shot x.bmp`
   (screenshot; convert with `sips -s format png`), `/type text` (text + Enter
-  through the real keyboard path), `/click x y` (real mouse event, window coords), `/dclick x y` (double click), `/down x y` / `/up x y` (left button), `/rclick x y` (right click), `/move x y` (mouse move, no button: hover / tooltips), `/drag x1 y1 x2 y2` (press, move, release), `/text text` (typed, no Enter; each ASCII character's key down first, as a keyboard sends it, `scriptTyping`),
-  `/key ctrl+shift+left` (a key with modifiers: ctrl shift alt cmd + left right up down home end backspace delete enter escape tab c v x insert a n t f period pageup pagedown f2 space 1 2 3 4), `/resize w h`
+  through the real keyboard path), `/click x y` (real mouse event, window coords), `/dclick x y` (double click), `/down x y` / `/up x y` (left button), `/rclick x y` (right click), `/wheel x y dy` (the wheel, dy notches, > 0 up), `/move x y` (mouse move, no button: hover / tooltips), `/drag x1 y1 x2 y2` (press, move, release), `/text text` (typed, no Enter; each ASCII character's key down first, as a keyboard sends it, `scriptTyping`),
+  `/key ctrl+shift+left` (a key with modifiers: ctrl shift alt cmd + left right up down home end backspace delete enter escape tab c v x insert a n t f o r b period pageup pagedown f1 f2 f4 f5 f10 f12 space 1 2 3 4), `/resize w h`
   (gtty's OS window), `/menu run|settings|extensions|new-shell|new-window|sync-typing|about|help` (a menu pick; macOS
   menus can't be clicked from a script), `/target main|settings|sessions|extensions` (where
   the next /click /move /drag /text /key /type /shot go), `/mods
@@ -1168,6 +1176,20 @@ decisions; items marked *open* are undecided.
   keeps the button of the last `/down`), `/pace ms` (gap between script
   lines, default 400), `/dropover x y` / `/drop x y path` (SDL drop events
   as another app's drag would send: hover, then drop a file).
+- **Check suite** (2026-11-21; `scripts/linux-check.sh`, `test/linux/*.gt`,
+  `zig build linux-check`; see HACKING.md): for a machine I can't run
+  gtty on (Linux): the installed gtty, a scratch world, screenshots +
+  traces + system facts + a manual Tab / Alt step in one archive the user
+  sends back. **`gtty --self-test [--only NAME] [--no-manual]`**
+  (`src/core/SelfTest.zig`, handled first in `main`): the same suite
+  embedded in the binary (build.zig `selfTestModule`: the runner, the two
+  read scripts and every file in test/linux/, as module `selftest`),
+  written to `$TMPDIR/gtty-selftest-<pid>/` and run with bash against
+  gtty's own executable; results in the current folder. Embedded only in
+  pre-releases (odd MINOR) and `0.0.0-dev` (`isPreRelease`;
+  `-Dself-test` overrides); a stable build says it has none (exit 2).
+  New Linux-relevant features: add a script there (`@MOD@`,
+  `@OUT@`; check coordinates on macOS, the runner sets GTTY_MENU_BAR=1).
 - **README animations** (`docs/images/*.webp`, animated WebP, loop
   forever): `docs/demo/make.sh [name…]` re-records them (all, or the
   named `docs/demo/<name>.gt`). It rebuilds the demo world with
@@ -1413,6 +1435,44 @@ decisions; items marked *open* are undecided.
   again blank, the program redraws); `?1` application cursor keys
   (`app_cursor` → `jobKeyBytes`: `ESC O A`…); PageUp / PageDown go to
   the program while on the alternate screen.
+  **Mouse for programs** (2026-11-20; `Screen.mouse` / `mouse_enc`,
+  `mouseReport`, unit-tested; `JobWindow.mouseToProgram`,
+  `reportMouse`, `wheelToProgram`; `App.programMouseAt`,
+  `mouse_report`, `mouseMods`): `?9` / `?1000` / `?1002` / `?1003`
+  modes, `?1006` SGR / `?1015` urxvt / X10 bytes; press, release, drag
+  (a new cell only), any motion, wheel 64 / 65, Alt 8 / Ctrl 16 bits;
+  only in the windows area, live view (`scroll == 0`), no dialog, not
+  a sync follower. **Shift** = gtty's (select, the menu, the view's
+  scroll), as xterm; no name outlines while the program has the mouse.
+  The modes go off at the shell's A / D marks and `ESC c` (a program
+  killed with them on). The wheel on the alternate screen without a
+  mode: ↑ / ↓ ×3 a notch (`app_cursor` honored; trackpad fractions
+  summed in `wheel_acc`). Not mirrored to sync followers. Test:
+  `test/mouse.gt` (`test/mouse-read.sh` prints what it got).
+  **Line drawing and REP** (2026-11-20): `ESC ( 0` / `ESC ) 0` (DEC
+  special graphics, `Screen.g_dec`; SO / SI pick G1 / G0, `g1_on`;
+  `decGraphic`: `_`…`~` → ┌ ─ │ …; off at the A / D marks and `ESC c`,
+  `charsetsOff`): ncurses' boxes for TERM xterm-256color. `CSI n b`
+  repeats `last_char` (≤ one width). Box characters U+2500–U+254F, the
+  rounded corners and half lines are drawn by `Gfx.drawBox` as
+  rectangles to the cell's edges (`boxLines`: arms left / up / right /
+  down, light / heavy; dashed drawn solid, rounded square; double lines
+  ═ ║ ╔ stay the font's). **Keys** (`App.fnKeyBytes`, unit-tested;
+  App.zig's tests run since 2026-11-20, `main.zig`'s test block):
+  F1–F4 `ESC O P`…, F5–F10 / F12 `ESC [ 15 ~`…, Insert `ESC [ 2 ~`,
+  modifiers as xterm (`ESC [ 1 ; 5 P`, `ESC [ 15 ; 2 ~`); F11 stays
+  gtty's maximize, Shift+Insert paste. **Meta** (`metaOn`, `metaBytes`):
+  Alt + a key that types a character = ESC + that key's character with
+  Shift alone (from the layout: ⌥⇧. → `ESC >`); always on Linux, on
+  macOS only with config `option-as-meta` (default off, Settings →
+  General "Option key as Meta"; else ⌥ types å …); the text event after
+  it is dropped (`drop_text`, cleared by the next key down). Test:
+  `test/keys.gt` (`test/keys-read.sh`).
+  **Cursor shape** (2026-11-20; DECSCUSR `ESC[n q`, `Screen.cursor_shape`,
+  `csi_space`): 1 / 2 block (the character drawn in the body's color on
+  it), 3 / 4 underline, 0 / 5 / 6 the bar (gtty's own; blinking drawn
+  steady); back to the bar at the A / D marks and `ESC c`. Test:
+  `test/cursor.gt`.
   Cursor (2026-10-09): `?25` hides / shows it (`Screen.cursor_hidden`);
   output the user didn't just type for (> `echo_wait_ms` after the last
   key, `JobWindow.key_ms`) hides it until the output rests
@@ -1429,7 +1489,8 @@ decisions; items marked *open* are undecided.
   contrast fix for unreadable colors. The per-window colors on/off flag
   (`JobWindow.colors`) is applied in `drawPane`, never to the stored cells.
 - `src/render/Gfx.zig` — SDL_Renderer helpers (Metal on macOS), glyph cache per
-  pixel size, lines/discs for icons, embedded JetBrains Mono.
+  pixel size, lines/discs for icons, embedded JetBrains Mono (Regular,
+  Bold, Italic, BoldItalic).
 
 ## Conventions
 
@@ -1614,11 +1675,9 @@ checking its license first; record third-party components in
 - More chips; folder chip: siblings, a remote folder; peek shrink
   animation, selecting text inside a peek;
   modals, the ⋯ menu.
-- Full-screen programs: the wheel on the alternate screen still scrolls
-  gtty's view (xterm sends arrow keys); mouse reporting (`?1000`…).
 - Blinking text (SGR 5/6 is ignored today; nice-to-have, low priority;
   color-off should stop it too). Blinking cursor.
-- Bold/italic faces; scrolling back past the memory window
+- Scrolling back past the memory window
   (older output is only in the tee file).
 - New jobs started from the prompt still run in gtty's own folder (the git
   chip follows each window's process folder already).

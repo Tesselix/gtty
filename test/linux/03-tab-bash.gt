@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Run by scripts/linux-check.sh (placeholders @OUT@ @MOD@ filled there).
+# The Tab-completion list in a bash window: the first Tab completes "fi",
+# the second lists the names. Expect: tab-bash-1 the line; -2 / -3 the
+# list under it, still there after 1 s.
+/s bash
+/wait 2000
+/type clear
+/wait 300
+/pace 150
+/text ls fi
+/key tab
+/wait 300
+/shot @OUT@/tab-bash-1.bmp
+/key tab
+/shot @OUT@/tab-bash-2.bmp
+/wait 1000
+/shot @OUT@/tab-bash-3.bmp
+/quit

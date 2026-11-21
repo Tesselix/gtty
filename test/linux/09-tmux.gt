@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Run by scripts/linux-check.sh (placeholders @OUT@ @MOD@ filled there).
+# needs: tmux
+# tmux with the mouse on: tmux-1 two panes side by side (Ctrl+B %), its
+# status line; the left one clicked and "left" typed there.
+/s bash
+/wait 2000
+/type tmux -f /dev/null -L gttycheck new -s check
+/wait 1500
+/type tmux set -g mouse on
+/wait 400
+/key ctrl+b
+/text %
+/wait 800
+/click 200 300
+/wait 300
+/type echo left
+/wait 600
+/shot @OUT@/tmux-1.bmp
+/type tmux -L gttycheck kill-server
+/wait 800
+/shot @OUT@/tmux-2.bmp
+/quit

@@ -202,9 +202,9 @@ in Zig, Python, JavaScript or Go): see the
 - Your shell stays your shell, with your own config. zsh and bash get
   the full set (last-output copy, folder history, Env & Aliases, …);
   fish and other shells run as plain shells, without those.
-- Programs get a real terminal: ssh, git, build tools and REPLs work as
-  usual. Full-screen programs (vim, htop, tmux) aren't fully supported
-  yet.
+- Programs get a real terminal: ssh, git, build tools, REPLs and
+  full-screen programs (vim, less) work as usual, the mouse included
+  (hold Shift to select text yourself).
 
 ## Source & license
 

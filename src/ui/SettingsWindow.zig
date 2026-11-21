@@ -38,6 +38,7 @@ pub const Change = union(enum) {
     file_opener,
     color_folders,
     refresh_ls,
+    option_as_meta,
     quit_on_last_shell,
     check_updates,
     /// An AI setting (read at each request).
@@ -70,6 +71,7 @@ const Ctl = union(enum) {
     file_opener,
     color_folders,
     refresh_ls,
+    option_as_meta,
     quit_on_last_shell,
     check_updates,
     ai_provider,
@@ -103,6 +105,17 @@ ctls: [max_ctls]struct { r: Rect, what: Ctl } = undefined,
 n_ctls: usize = 0,
 changes: [16]Change = undefined,
 n_changes: usize = 0,
+/// The tab's content scrolled up by this many pixels (wheel, PageUp /
+/// PageDown, Home / End); back to the top on another tab.
+scroll: f32 = 0,
+/// How far it can scroll (from the last draw: content taller than the
+/// room between the tabs and the footer).
+max_scroll: f32 = 0,
+/// The tab `scroll` belongs to.
+scroll_tab: usize = 0,
+/// Where the tab's content shows (between the tabs and the footer): the
+/// clip while it is drawn; controls outside it aren't clickable.
+view: ?Rect = null,
 
 /// Point size of the window's text (fixed: gtty's text size is a setting
 /// shown here; changing it shouldn't resize the settings themselves).
@@ -183,6 +196,10 @@ pub fn handle(s: *SettingsWindow, ev: *const c.SDL_Event) void {
         c.SDL_EVENT_MOUSE_BUTTON_DOWN => if (ev.button.button == c.SDL_BUTTON_LEFT)
             s.onClick(ev.button.x * s.density, ev.button.y * s.density),
         c.SDL_EVENT_MOUSE_MOTION => s.onMotion(ev.motion.x * s.density, ev.motion.y * s.density),
+        c.SDL_EVENT_MOUSE_WHEEL => {
+            const dy = if (ev.wheel.direction == c.SDL_MOUSEWHEEL_FLIPPED) -ev.wheel.y else ev.wheel.y;
+            s.scrollBy(-dy * 40 * s.ui);
+        },
         c.SDL_EVENT_WINDOW_MOUSE_LEAVE => s.onMotion(-1, -1),
         else => {},
     }
@@ -231,6 +248,10 @@ pub fn onKey(s: *SettingsWindow, key: c.SDL_Keycode, mod: c.SDL_Keymod) void {
         c.SDLK_W => if (cmd) {
             s.want_close = true;
         },
+        c.SDLK_PAGEUP => s.scrollBy(-s.pageH()),
+        c.SDLK_PAGEDOWN => s.scrollBy(s.pageH()),
+        c.SDLK_HOME => s.scrollBy(-s.scroll),
+        c.SDLK_END => s.scrollBy(s.max_scroll - s.scroll),
         // Ctrl+Tab / Ctrl+Shift+Tab: next / previous tab.
         c.SDLK_TAB => if (mod & c.SDL_KMOD_CTRL != 0) {
             const n = s.tabCount();
@@ -239,6 +260,30 @@ pub fn onKey(s: *SettingsWindow, key: c.SDL_Keycode, mod: c.SDL_Keymod) void {
         },
         else => {},
     }
+}
+
+fn scrollBy(s: *SettingsWindow, d: f32) void {
+    const to = std.math.clamp(s.scroll + d, 0, s.max_scroll);
+    if (to == s.scroll) return;
+    s.scroll = to;
+    s.dirty = true;
+    s.over = null; // the controls moved
+}
+
+/// A page: the view's height less a little overlap.
+fn pageH(s: *const SettingsWindow) f32 {
+    const v = s.view orelse return 0;
+    return @max(v.h * 0.9, 1);
+}
+
+/// Clip to `r` inside the view (a field box half scrolled out).
+fn clipIn(s: *SettingsWindow, r: Rect) void {
+    const v = s.view orelse return s.gfx.clip(r);
+    const x0 = @max(r.x, v.x);
+    const y0 = @max(r.y, v.y);
+    const x1 = @min(r.x + r.w, v.x + v.w);
+    const y1 = @min(r.y + r.h, v.y + v.h);
+    s.gfx.clip(.{ .x = x0, .y = y0, .w = @max(x1 - x0, 0), .h = @max(y1 - y0, 0) });
 }
 
 fn onMotion(s: *SettingsWindow, x: f32, y: f32) void {
@@ -292,6 +337,10 @@ pub fn onClick(s: *SettingsWindow, x: f32, y: f32) void {
         .refresh_ls => {
             s.cfg.refresh_ls = !s.cfg.refresh_ls;
             s.changed(.refresh_ls);
+        },
+        .option_as_meta => {
+            s.cfg.option_as_meta = !s.cfg.option_as_meta;
+            s.changed(.option_as_meta);
         },
         .quit_on_last_shell => {
             s.cfg.quit_on_last_shell = !s.cfg.quit_on_last_shell;
@@ -382,6 +431,9 @@ fn tabName(i: usize) []const u8 {
 
 fn addCtl(s: *SettingsWindow, r: Rect, what: Ctl) void {
     if (s.n_ctls == max_ctls) return;
+    // Scrolled out of the view: not clickable (a click there is on the
+    // tabs or the footer).
+    if (s.view) |v| if (r.y + r.h <= v.y or r.y >= v.y + v.h) return;
     s.ctls[s.n_ctls] = .{ .r = r, .what = what };
     s.n_ctls += 1;
 }
@@ -425,7 +477,17 @@ pub fn render(s: *SettingsWindow, theme: *const Theme) void {
         tx += tw;
     }
 
-    var y = tab_h + pad;
+    // The tab's content: scrolled, clipped between the tabs and the
+    // footer.
+    if (s.tab != s.scroll_tab) {
+        s.scroll_tab = s.tab;
+        s.scroll = 0;
+    }
+    const foot_h = @round(small.cell_h * 2.6);
+    const view: Rect = .{ .x = 0, .y = tab_h, .w = W, .h = @max(H - tab_h - foot_h, 1) };
+    s.view = view;
+    g.clip(view);
+    var y = tab_h + pad - s.scroll;
     const row_h = @round(f.cell_h * 2.1);
     const label_x = pad * 1.5;
     const ctl_x = @round(@max(W * 0.42, label_x + 24 * f.cell_w));
@@ -437,6 +499,7 @@ pub fn render(s: *SettingsWindow, theme: *const Theme) void {
             y = s.checkRow(f, theme, y, row_h, label_x, ctl_x, "File names: mark on hover, double-click opens", s.cfg.file_opener, .file_opener);
             y = s.checkRow(f, theme, y, row_h, label_x, ctl_x, "Folder names in blue (output without colors)", s.cfg.color_folders, .color_folders);
             y = s.checkRow(f, theme, y, row_h, label_x, ctl_x, "Run ls again after a file action in gtty", s.cfg.refresh_ls, .refresh_ls);
+            if (builtin.os.tag == .macos) y = s.checkRow(f, theme, y, row_h, label_x, ctl_x, "Option key as Meta (Esc + key)", s.cfg.option_as_meta, .option_as_meta);
             y = s.checkRow(f, theme, y, row_h, label_x, ctl_x, "Quit gtty when the last shell closes", s.cfg.quit_on_last_shell, .quit_on_last_shell);
             y = s.checkRow(f, theme, y, row_h, label_x, ctl_x, "Check for a newer gtty at start", s.cfg.check_updates, .check_updates);
             y += @round(row_h * 0.3);
@@ -476,6 +539,7 @@ pub fn render(s: *SettingsWindow, theme: *const Theme) void {
             const label = "Reset colors";
             const br: Rect = .{ .x = label_x, .y = y, .w = Gfx.textWidth(f, label) + 2 * pad, .h = @round(row_h * 0.8) };
             s.button(f, theme, br, label, .colors_reset);
+            y += br.h;
         },
         2 => {
             const rows = [_]struct { key: []const u8, label: []const u8 }{
@@ -488,9 +552,27 @@ pub fn render(s: *SettingsWindow, theme: *const Theme) void {
             for (rows) |r| y = s.numRow(f, small, theme, y, row_h, label_x, ctl_x, Config.numIndex(r.key).?, r.label, "ms");
             y += @round(row_h * 0.2);
             _ = g.text(small, label_x, y, "0 ms animation: no transitions. Kill: SIGHUP first, SIGKILL after this.", theme.dim);
+            y += small.cell_h;
         },
-        3 => s.aiTab(f, small, theme, y, row_h, label_x, ctl_x, W, pad),
+        3 => y = s.aiTab(f, small, theme, y, row_h, label_x, ctl_x, W, pad),
         else => {},
+    }
+    // How far it can scroll now (the window or the content changed: back
+    // into range on the next draw).
+    s.max_scroll = @max(y + s.scroll + pad - (view.y + view.h), 0);
+    if (s.scroll > s.max_scroll) {
+        s.scroll = s.max_scroll;
+        s.dirty = true;
+    }
+    g.clip(null);
+    s.view = null;
+    // A thin scroll bar on the right while it overflows.
+    if (s.max_scroll > 0) {
+        const bw = @max(@round(4 * ui), 2);
+        const total = view.h + s.max_scroll;
+        const th = @max(view.h * view.h / total, 20 * ui);
+        const ty = view.y + (view.h - th) * (s.scroll / s.max_scroll);
+        g.fill(.{ .x = W - bw - @round(3 * ui), .y = ty, .w = bw, .h = th }, theme.dim.mix(theme.desktop, 0.4));
     }
 
     // Footer: where the settings are saved.
@@ -532,7 +614,7 @@ pub fn render(s: *SettingsWindow, theme: *const Theme) void {
 /// The AI tab: provider (click to change), model, endpoint, API key, the
 /// local memory; notes on what is sent. (No way to change the system
 /// prompt.)
-fn aiTab(s: *SettingsWindow, f: *Gfx.Face, small: *Gfx.Face, theme: *const Theme, y_in: f32, row_h: f32, label_x: f32, ctl_x: f32, W: f32, pad: f32) void {
+fn aiTab(s: *SettingsWindow, f: *Gfx.Face, small: *Gfx.Face, theme: *const Theme, y_in: f32, row_h: f32, label_x: f32, ctl_x: f32, W: f32, pad: f32) f32 {
     const g = &s.gfx;
     var y = y_in;
     const p = s.cfg.ai_provider;
@@ -570,9 +652,9 @@ fn aiTab(s: *SettingsWindow, f: *Gfx.Face, small: *Gfx.Face, theme: *const Theme
                     .off => "",
                 },
             };
-            g.clip(box.inset(1));
+            s.clipIn(box.inset(1));
             _ = g.text(f, box.x + @round(6 * s.ui), box.y + @round((box.h - f.cell_h) / 2), ph, theme.dim.mix(theme.prompt_bg, 0.35));
-            g.clip(null);
+            g.clip(s.view);
         }
         y += row_h;
     }
@@ -596,6 +678,7 @@ fn aiTab(s: *SettingsWindow, f: *Gfx.Face, small: *Gfx.Face, theme: *const Theme
         _ = g.text(small, label_x, y, n, theme.dim);
         y += @round(small.cell_h * 1.35);
     }
+    return y;
 }
 
 /// "••••abcd": a key shown by its last 4 characters.
@@ -704,8 +787,8 @@ fn fieldBox(s: *SettingsWindow, f: *Gfx.Face, theme: *const Theme, r: Rect, fiel
     g.outline(r, if (editing) theme.focus else if (s.isOver(.{ .field = field })) theme.dim else theme.divider, @max(@round(s.ui), 1));
     const p = @round(6 * s.ui);
     const ty = r.y + @round((r.h - f.cell_h) / 2);
-    g.clip(r.inset(1));
-    defer g.clip(null);
+    s.clipIn(r.inset(1));
+    defer s.gfx.clip(s.view);
     if (editing) {
         const e = s.edit.?;
         var mbuf: [Config.max_text * 3]u8 = undefined;

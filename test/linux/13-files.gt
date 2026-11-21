@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Run by scripts/linux-check.sh (placeholders @OUT@ @MOD@ filled there).
+# File names: files-1 notes.txt outlined under the mouse (an icon by it);
+# files-2 its right-click menu (Open…, Show in Files, Get Info / Properties,
+# Rename, Copy, Move to Trash when supported); files-3 a double click
+# (dry: the status line says what would open); files-4 the folder chip's
+# peek on hover.
+/s bash
+/wait 2000
+/type clear; ls -1 notes.txt numbers.txt
+/wait 800
+/move 50 0
+/move 51 73
+/wait 800
+/shot @OUT@/files-1.bmp
+/rclick 51 73
+/wait 500
+/shot @OUT@/files-2.bmp
+/key escape
+/dclick 51 73
+/wait 600
+/shot @OUT@/files-3.bmp
+/move 45 618
+/wait 1200
+/shot @OUT@/files-4.bmp
+/quit

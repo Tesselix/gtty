@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Run by scripts/linux-check.sh (placeholders @OUT@ @MOD@ filled there).
+# needs: git
+# The chips (footer) with their keys (Ctrl+Shift+1…4 on Linux): chips-1
+# the folder list, -2 the branches (main, feature/login, fix/typo),
+# -3 the focus folders (src, docs), -4 the sessions (none yet, save).
+/s bash
+/wait 2000
+/key @MOD@+1
+/wait 600
+/shot @OUT@/chips-1.bmp
+/key escape
+/key @MOD@+2
+/wait 800
+/shot @OUT@/chips-2.bmp
+/key escape
+/key @MOD@+3
+/wait 600
+/shot @OUT@/chips-3.bmp
+/key escape
+/key @MOD@+4
+/wait 600
+/shot @OUT@/chips-4.bmp
+/key escape
+/quit

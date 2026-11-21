@@ -81,6 +81,9 @@ pub const Command = union(enum) {
     click: struct { x: f32, y: f32 },
     /// /rclick <x> <y> — right click at window coordinates (for scripts).
     rclick: struct { x: f32, y: f32 },
+    /// /wheel <x> <y> <dy> — the mouse wheel there, dy notches (> 0 up,
+    /// as SDL; for scripts).
+    wheel: struct { x: f32, y: f32, dy: f32 },
     /// /move <x> <y> — move the mouse there, no button (for scripts).
     move: struct { x: f32, y: f32 },
     /// /dclick <x> <y> — left double-click (for scripts).
@@ -288,6 +291,14 @@ pub fn parseGtty(text: []const u8, explicit: bool) Command {
         if (eq(sub, "up")) return .{ .up = .{ .x = x, .y = y } };
         return .{ .click = .{ .x = x, .y = y } };
     }
+    if (eq(sub, "wheel")) {
+        const usage = "/wheel <x> <y> <dy>";
+        var nums = std.mem.tokenizeAny(u8, rest, " \t,");
+        const x = std.fmt.parseFloat(f32, nums.next() orelse "") catch return .{ .bad = usage };
+        const y = std.fmt.parseFloat(f32, nums.next() orelse "") catch return .{ .bad = usage };
+        const dy = std.fmt.parseFloat(f32, nums.next() orelse "") catch return .{ .bad = usage };
+        return .{ .wheel = .{ .x = x, .y = y, .dy = dy } };
+    }
     if (eq(sub, "glide") or eq(sub, "dropover") or eq(sub, "drop")) {
         const usage = if (eq(sub, "glide")) "/glide <x> <y> [ms]" else if (eq(sub, "drop")) "/drop <x> <y> <path>" else "/dropover <x> <y>";
         var nums = std.mem.tokenizeAny(u8, rest, " \t,");
@@ -428,6 +439,7 @@ test "parse prompt lines and gtty commands" {
     try t.expectEqual(@as(f32, 40), parse("/click 40 600").click.x);
     try t.expect(parse("/click 40") == .bad);
     try t.expectEqual(@as(f32, 600), parse("/rclick 40 600").rclick.y);
+    try t.expectEqual(@as(f32, -2), parse("/wheel 40 600 -2").wheel.dy);
     try t.expectEqual(@as(f32, 300), parse("/drag 10 20 300 40").drag[2]);
     try t.expect(parse("/drag 10 20") == .bad);
     try t.expectEqual(@as(f32, 7), parse("/move 5 7").move.y);

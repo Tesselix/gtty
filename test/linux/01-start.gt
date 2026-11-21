@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Run by scripts/linux-check.sh. Start: a bash shell in the project, the
+# About box, Help, the Settings window (General tab, then scrolled).
+# Expect: start-1 a shell window, the drawn menu bar on top (Linux);
+# start-2 the About box; start-3 a "help" window; start-4 / start-5
+# Settings, the second scrolled down.
+/s bash
+/wait 1500
+/type ls
+/wait 600
+/shot @OUT@/start-1.bmp
+/menu about
+/wait 500
+/shot @OUT@/start-2.bmp
+/click 400 400
+/menu help
+/wait 1200
+/shot @OUT@/start-3.bmp
+/menu settings
+/wait 1000
+/target settings
+/shot @OUT@/start-4.bmp
+/wheel 300 300 -20
+/wait 400
+/shot @OUT@/start-5.bmp
+/target main
+/quit

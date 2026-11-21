@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Cursor shapes (DECSCUSR): block, underline, then back to the bar at the
+# prompt. Run: zig build && zig-out/bin/gtty --script test/cursor.gt
+/s bash
+/wait 1500
+/type printf 'block: \033[2 q'; sleep 2; printf '\nunder: \033[4 q'; sleep 2
+/wait 1000
+/shot cursor-1.bmp
+/wait 2000
+/shot cursor-2.bmp
+/wait 1500
+/shot cursor-3.bmp
+/quit

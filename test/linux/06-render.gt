@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Run by scripts/linux-check.sh (placeholders @OUT@ @MOD@ filled there).
+# Drawing: render-1 render.sh's lines: plain / bold / italic / bold
+# italic / colors, boxes (line drawing set and box characters joined
+# without gaps), REP (A×10 Z), 256 and true colors, emoji, CJK, an accent;
+# the cursor a block on the B of BOLD. render-2: underline cursor;
+# render-3 back to the bar at the prompt.
+/s bash
+/wait 2000
+/type clear; sh render.sh
+/wait 1500
+/shot @OUT@/render-1.bmp
+/wait 2500
+/shot @OUT@/render-2.bmp
+/wait 2500
+/shot @OUT@/render-3.bmp
+/quit

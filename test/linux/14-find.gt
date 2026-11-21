@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Run by scripts/linux-check.sh (placeholders @OUT@ @MOD@ filled there).
+# Find (Ctrl+Shift+F on Linux): find-1 the box in the title bar with "tw",
+# 1 match (two) highlighted.
+/s bash
+/wait 2000
+/type clear; cat notes.txt
+/wait 600
+/key @MOD@+f
+/text tw
+/wait 500
+/shot @OUT@/find-1.bmp
+/key escape
+/quit

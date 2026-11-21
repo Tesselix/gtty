@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Keys for full-screen programs:  zig build run -- --script test/keys.gt
+# keys-1: test/keys-read.sh got F1 (033OP), Ctrl+F4 (033[1;5S), F5
+# (033[15~), Shift+F5 (033[15;2~), F10 (033[21~), F12 (033[24~),
+# Insert (033[2~), then Alt+b: on Linux ESC b (033b); on macOS ⌥b types
+# its character (option-as-meta is off without GTTY_CONFIG).
+# keys-2: a line-drawing box and REP: ┌────┐ │ │ └────┘, AAAAAAAAAAZ.
+/s bash
+/wait 1500
+/type sh test/keys-read.sh
+/wait 400
+/key f1
+/key ctrl+f4
+/key f5
+/key shift+f5
+/key f10
+/key f12
+/key insert
+/key alt+b
+/wait 2600
+/shot keys-1.bmp
+/type printf '\033(0lqqqqk\nx    x\nmqqqqj\033(B\n'; printf 'A\033[9bZ\n'
+/wait 600
+/shot keys-2.bmp
+/quit

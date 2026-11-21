@@ -8,7 +8,7 @@ license and whether it can go with GPL-3.0.
 
 | Component | Where | License | With GPL-3.0 |
 |---|---|---|---|
-| JetBrains Mono (font) | `src/assets/JetBrainsMono-Regular.ttf`, embedded in the binary (`@embedFile`) | SIL Open Font License 1.1 (`src/assets/JetBrainsMono-OFL.txt`) | **Check** (see note 1) |
+| JetBrains Mono (font, v2.305) | `src/assets/JetBrainsMono-Regular.ttf`, `-Bold.ttf`, `-Italic.ttf`, `-BoldItalic.ttf` (from github.com/JetBrains/JetBrainsMono `fonts/ttf`), embedded in the binary (`@embedFile`) | SIL Open Font License 1.1 (`src/assets/JetBrainsMono-OFL.txt`) | **Check** (see note 1) |
 
 The app icon (`src/assets/gtty-icon.png`, `src/assets/AppIcon.icns`)
 is gtty's own: generated with Claude (Anthropic) for this project. It

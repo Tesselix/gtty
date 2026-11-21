@@ -104,6 +104,10 @@ color_folders: bool = true,
 /// After a file action done in gtty: run the shell's last listing
 /// command again.
 refresh_ls: bool = true,
+/// macOS: Option + a key sends ESC + the key (Meta, for emacs, vim,
+/// tmux, readline) instead of the character Option types (å). Linux:
+/// Alt always does.
+option_as_meta: bool = false,
 /// The last shell window closed or exited (and no other job running):
 /// gtty quits instead of opening a new shell.
 quit_on_last_shell: bool = true,
@@ -275,6 +279,8 @@ pub fn parseLine(cfg: *Config, line_in: []const u8) void {
     } else if (std.mem.eql(u8, key, "file-opener") or std.mem.eql(u8, key, "sub.file-opener")) {
         // sub.file-opener: its name from when it was a subscriber.
         if (parseBool(val)) |b| cfg.file_opener = b;
+    } else if (std.mem.eql(u8, key, "option-as-meta")) {
+        if (parseBool(val)) |b| cfg.option_as_meta = b;
     } else if (std.mem.eql(u8, key, "refresh-ls")) {
         if (parseBool(val)) |b| cfg.refresh_ls = b;
     } else if (std.mem.eql(u8, key, "color-folders")) {
@@ -318,6 +324,7 @@ pub fn format(cfg: *const Config, w: *std.Io.Writer) !void {
     try w.print("file-opener = {s}\n", .{if (cfg.file_opener) "on" else "off"});
     try w.print("color-folders = {s}\n", .{if (cfg.color_folders) "on" else "off"});
     try w.print("refresh-ls = {s}\n", .{if (cfg.refresh_ls) "on" else "off"});
+    try w.print("option-as-meta = {s}\n", .{if (cfg.option_as_meta) "on" else "off"});
     try w.print("quit-on-last-shell = {s}\n", .{if (cfg.quit_on_last_shell) "on" else "off"});
     try w.print("check-updates = {s}\n", .{if (cfg.check_updates) "on" else "off"});
     try w.print("prompt-pinned = {s}\n\n", .{if (cfg.prompt_pinned) "on" else "off"});

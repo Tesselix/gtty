@@ -30,4 +30,5 @@ pub const c = @cImport({
     @cInclude("sys/file.h");
     @cInclude("time.h");
     @cInclude("signal.h");
+    @cInclude("sys/wait.h");
 });

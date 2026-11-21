@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Run by scripts/linux-check.sh (placeholders @OUT@ @MOD@ filled there).
+# Windows: win-1 three shells, all shown (the current one on top; on a
+# small screen the rest in the grid on the right); win-2 #1 current; win-3 New Window (dry: the status
+# line says where); win-4 sync typing on (the other shown windows framed).
+/s bash
+/wait 1500
+/s bash
+/wait 1500
+/s bash
+/wait 1800
+/shot @OUT@/win-1.bmp
+/focus 1
+/wait 600
+/shot @OUT@/win-2.bmp
+/menu new-window
+/wait 500
+/shot @OUT@/win-3.bmp
+/menu sync-typing
+/wait 500
+/shot @OUT@/win-4.bmp
+/menu sync-typing
+/quit

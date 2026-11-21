@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Run by scripts/linux-check.sh (placeholders @OUT@ @MOD@ filled there).
+# Keys: keys-1 keys-read.sh's "got:" line: F1 033OP, Ctrl+F4 033[1;5S,
+# F5 033[15~, Shift+F5 033[15;2~, F10 033[21~, F12 033[24~, Insert
+# 033[2~, Alt+b 033b, Alt+Shift+. 033>, Alt+Left 033[1;3D (macOS without
+# Meta: ⌥ types its character instead). keys-2: bash at its prompt, Alt+B
+# Alt+B Alt+F then X: "echo one twoX three" (Linux; macOS: unchanged).
+/s bash
+/wait 2000
+/type clear; sh keys-read.sh
+/wait 500
+/key f1
+/key ctrl+f4
+/key f5
+/key shift+f5
+/key f10
+/key f12
+/key insert
+/key alt+b
+/key alt+shift+period
+/key alt+left
+/wait 2600
+/shot @OUT@/keys-1.bmp
+/text echo one two three
+/key alt+b
+/key alt+b
+/key alt+f
+/text X
+/wait 600
+/shot @OUT@/keys-2.bmp
+/quit
