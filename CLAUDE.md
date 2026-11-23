@@ -1279,7 +1279,10 @@ decisions; items marked *open* are undecided.
   and sets its own text (`win.ui.set` → `App.chipChanged` →
   `JobWindow.setChip`; no text = not shown). Events (`App.fireChipEvents`):
   `window_changed` (at start, then only on a change: `changed_seq`, set in
-  `tickRest`), `command_started` (`started_seq`, in `pump`) and `key`
+  `tickRest`, and at a command's end, the D mark: `busy` false + `status`
+  from `JobWindow.cmd_busy` / `cmd_status`, 2026-11-23; a field on the
+  event, not a new one), `command_started` (`started_seq`, in `pump`;
+  fired before `window_changed` in the same frame) and `key`
   (2026-11-11; `App.keyPressed` / `textTyped` / `flushKey`: a key and its
   text as one event, the key's name from `keyName`, the modifier flags;
   not at a password prompt, `gtty_pty_secret`: ICANON on, ECHO off; a
@@ -1646,7 +1649,8 @@ decisions; items marked *open* are undecided.
   relative path (`package.sh` copies it in). `commands`: a chip listing
   the commands run before (`command_started`; a line is dropped only
   when every part is a very common one, cd / ls / pwd / clear / exit;
-  failed ones are kept too: no exit status reaches an extension; the rules in `commands/README.md` and `commands/cases.tsv`,
+  failed ones are kept too (the exit status reaches extensions since
+  2026-11-23, `window_changed`'s `status`; the example doesn't use it); the rules in `commands/README.md` and `commands/cases.tsv`,
   which every language's tests read); a pick copies through `win.copy`
   (2026-11-23; before: pbcopy / wl-copy / xclip / xsel). Each
   language's has its own name (`commands-python`, …: all four install

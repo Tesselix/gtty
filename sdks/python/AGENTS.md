@@ -158,13 +158,18 @@ win.events.unregister("window_changed")
 
 | `ev.kind` | When | Fields |
 |---|---|---|
-| `"window_changed"` | At the start, then when something changed | `folder`, `branch`, `remote`, `host` (the ssh / mosh destination) |
+| `"window_changed"` | At the start, then when something changed or a command ended | `folder`, `branch`, `remote`, `host` (the ssh / mosh destination), `busy`, `status` |
 | `"command_started"` | A command starts in the window's shell | `command`, `folder`, `remote` |
 | `"key"` | A key pressed while the window has the keyboard | `key`, `text`, `ctrl`, `shift`, `alt`, `cmd` |
 | `"button_click"` | Your click, hover or filter; never register it | `button` |
 
 Also `ev.event_id`. `branch` is empty outside a repo. With `remote` true,
 `folder` is the local one.
+`busy` is true while a command runs in the window's shell (from its
+`command_started`); when it ends, `window_changed` comes with `busy` false
+and `status`, its exit status (0 = success, 130 = Ctrl+C; None before the
+first command or when the shell didn't say). Only zsh and bash windows
+report commands; in an ssh session the command running is ssh itself.
 
 ### Keys
 

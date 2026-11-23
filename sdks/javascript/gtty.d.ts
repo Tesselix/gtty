@@ -46,6 +46,10 @@ export class Event {
   folder: string; branch: string; remote: boolean; command: string;
   /** window_changed in an ssh / mosh session: the host */
   host: string;
+  /** window_changed: a command runs in the shell */
+  busy: boolean;
+  /** window_changed: the exit status of the last command that ended (null: none yet, or not said) */
+  status: number | null;
   /** key: its name, what it typed, the modifier keys (cmd: ⌘ / Super) */
   key: string; text: string; ctrl: boolean; shift: boolean; alt: boolean; cmd: boolean;
   button: ButtonClick | null;

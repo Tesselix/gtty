@@ -42,6 +42,7 @@ exits with a message on stderr.
 ```json
 {"eventId": 7, "kind": "window_changed", "folder": "/src/app", "branch": "main", "remote": false}
 {"eventId": 11, "kind": "window_changed", "folder": "/src/app", "remote": true, "host": "dev@build1"}
+{"eventId": 12, "kind": "window_changed", "folder": "/src/app", "branch": "main", "status": 2}
 {"eventId": 8, "kind": "command_started", "folder": "/src/app", "command": "make test"}
 {"eventId": 10, "kind": "key", "key": "a", "text": "A", "shift": true}
 {"eventId": 9, "kind": "button_click", "button": {"id": "ok", "text": "OK", "data": "row-2",
@@ -49,7 +50,10 @@ exits with a message on stderr.
   "command": false}}
 ```
 
-Fields at their default (`""`, `false`, `[]`) are left out.
+Fields at their default (`""`, `false`, `[]`, `null`) are left out.
+`window_changed`'s `busy` (a command runs in the shell) and `status` (the
+exit status of the last command that ended) are its own: one comes when a
+command ends, `busy` false, `status` set.
 
 ## Extension → gtty
 

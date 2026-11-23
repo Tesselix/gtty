@@ -162,8 +162,9 @@ pub fn newText(v: anytype) Text {
 
 /// What an extension can register for. Few on purpose.
 pub const EventKind = enum(u5) {
-    /// The window's folder, branch or remote session changed. Sent once
-    /// when the window starts, then only on a change.
+    /// The window's folder, branch or remote session changed, or a
+    /// command in its shell ended (`busy`, `status`). Sent once when the
+    /// window starts, then only on a change.
     window_changed,
     /// A command started in the window's shell.
     command_started,
@@ -196,6 +197,16 @@ pub const Event = struct {
     /// `window_changed` in an ssh / mosh session: the host (as typed:
     /// `user@name`, an alias of ~/.ssh/config).
     host: []const u8 = "",
+    /// `window_changed`: a command runs in the window's shell (true from
+    /// its `command_started` until it ends; each end sends a
+    /// `window_changed`).
+    busy: bool = false,
+    /// `window_changed`: the exit status of the last command that ended
+    /// in the window's shell (0 = success; 130 = Ctrl+C), null before the
+    /// first one or when the shell didn't say. Only zsh and bash
+    /// windows report commands; in an ssh session the command running is
+    /// ssh itself, the remote shell's commands aren't seen.
+    status: ?u8 = null,
     /// `command_started`: the command line.
     command: []const u8 = "",
     /// `key`: the key's name: the character on it, unshifted (`a`, `1`,

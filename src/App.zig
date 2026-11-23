@@ -3251,18 +3251,19 @@ fn windowStarted(app: *App, w: *JobWindow) void {
 
 fn fireWindowChanged(app: *App, w: *JobWindow) void {
     const host = w.remoteDest();
-    app.chips.fire(w.uid, .{ .kind = .window_changed, .folder = w.cwd(), .branch = w.branch() orelse "", .remote = host.len > 0, .host = host });
+    app.chips.fire(w.uid, .{ .kind = .window_changed, .folder = w.cwd(), .branch = w.branch() orelse "", .remote = host.len > 0, .host = host, .busy = w.cmd_busy, .status = w.cmd_status });
 }
 
-/// What changed in a window since the last frame, as events.
+/// What changed in a window since the last frame, as events. A command
+/// that started and ended within one frame: its start goes first.
 fn fireChipEvents(app: *App, w: *JobWindow) void {
-    if (w.changed_seq != w.changed_seen) {
-        w.changed_seen = w.changed_seq;
-        app.fireWindowChanged(w);
-    }
     if (w.started_seq != w.started_seen) {
         w.started_seen = w.started_seq;
         app.chips.fire(w.uid, .{ .kind = .command_started, .folder = w.started_dir.items, .remote = w.remoteDest().len > 0, .command = w.started_cmd.items });
+    }
+    if (w.changed_seq != w.changed_seen) {
+        w.changed_seen = w.changed_seq;
+        app.fireWindowChanged(w);
     }
 }
 

@@ -203,12 +203,12 @@ pub fn fire(h: *Host, uid: u32, ev: sdk.Event) void {
         h.dropped += 1;
         return;
     }
-    const text = h.gpa.alloc(u8, ev.folder.len + ev.branch.len + ev.command.len + ev.key.len + ev.text.len) catch return;
+    const text = h.gpa.alloc(u8, ev.folder.len + ev.branch.len + ev.host.len + ev.command.len + ev.key.len + ev.text.len) catch return;
     var e = ev;
     h.next_id +%= 1;
     e.eventId = h.next_id;
     var at: usize = 0;
-    inline for (.{ "folder", "branch", "command", "key", "text" }) |name| {
+    inline for (.{ "folder", "branch", "host", "command", "key", "text" }) |name| {
         const s = @field(ev, name);
         @memcpy(text[at..][0..s.len], s);
         @field(e, name) = text[at..][0..s.len];

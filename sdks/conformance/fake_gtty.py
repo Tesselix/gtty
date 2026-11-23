@@ -242,7 +242,7 @@ def main():
     ep = find(got, "set", "epeek")
     check(ep is not None and ep["epeek"].get("lines") == [] and "filter" in ep["epeek"].get("frame", {}), "sets an empty epeek with a filter (no hosts file yet)")
 
-    g.send({"t": "event", "win": WIN, "event": {"eventId": 50, "kind": "window_changed", "folder": "/tmp", "remote": True}})
+    g.send({"t": "event", "win": WIN, "event": {"eventId": 50, "kind": "window_changed", "folder": "/tmp", "remote": True, "busy": True, "status": 130}})
     got = g.settle()
     chip = find(got, "set", "chip")
     check(chip is not None and chip["chip"].get("dimmed") is True, "window_changed in a remote session dims the chip")

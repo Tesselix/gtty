@@ -136,7 +136,11 @@ type Event struct {
 	Branch  string `json:"branch"`
 	Remote  bool   `json:"remote"`
 	// Host: window_changed in an ssh / mosh session.
-	Host    string `json:"host"`
+	Host string `json:"host"`
+	// Busy, Status: window_changed. A command runs in the shell; the exit
+	// status of the last one that ended (nil: none yet, or not said).
+	Busy    bool   `json:"busy"`
+	Status  *int   `json:"status"`
 	Command string `json:"command"`
 	// key: its name, what it typed, the modifier keys (Cmd: ⌘ / Super).
 	Key    string       `json:"key"`

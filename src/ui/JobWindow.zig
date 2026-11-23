@@ -179,10 +179,15 @@ started_seq: u32 = 0,
 started_seen: u32 = 0,
 started_cmd: std.ArrayList(u8) = .empty,
 started_dir: std.ArrayList(u8) = .empty,
-/// The folder, branch or remote session changed: App fires
-/// `window_changed` when it differs from `changed_seen`.
+/// The folder, branch or remote session changed, or a command ended: App
+/// fires `window_changed` when it differs from `changed_seen`.
 changed_seq: u32 = 0,
 changed_seen: u32 = 0,
+/// A command runs in the shell (from its C mark to its D mark), and the
+/// exit status of the last one that ended (null: none yet, or the shell
+/// didn't say): `window_changed`'s `busy` / `status`.
+cmd_busy: bool = false,
+cmd_status: ?u8 = null,
 /// gtty typed a cd (`cdTo`): once it ended well, list the new folder
 /// (`refresh_ls`).
 list_after_cd: bool = false,
@@ -680,11 +685,15 @@ pub fn pump(w: *JobWindow, gfx: *Gfx) bool {
         w.started_dir.clearRetainingCapacity();
         w.started_dir.appendSlice(w.gpa, w.folder_now.items) catch {};
         w.started_seq +%= 1;
+        w.cmd_busy = true;
     }
     // A command in the shell ended: its output, if plain, gets its folder
     // names colored.
     if (w.out.done_seq != w.folders_done) {
         w.folders_done = w.out.done_seq;
+        w.cmd_busy = false;
+        w.cmd_status = w.out.done_status;
+        w.changed_seq +%= 1;
         if (w.list_after_cd) {
             w.list_after_cd = false;
             if ((w.out.done_status orelse 0) == 0) _ = w.listFolder(true);

@@ -156,12 +156,22 @@ pub fn onEvent(win: *gtty.Window, ev: *const gtty.Event) !void {
 
 | Event | Fires | Carries |
 |---|---|---|
-| `window_changed` | When the window starts, then only when something changed | `folder`, `branch`, `remote`, `host` (in an ssh / mosh session) |
+| `window_changed` | When the window starts, then only when something changed, and when a command in its shell ended | `folder`, `branch`, `remote`, `host` (in an ssh / mosh session), `busy`, `status` |
 | `command_started` | When a command starts in the window's shell | `command`, `folder`, `remote` |
 | `key` | When a key is pressed while the window has the keyboard | `key`, `text`, `ctrl`, `shift`, `alt`, `cmd` |
 | `button_click` | When one of your buttons is pressed; no need to register | `button` |
 
-More will come as chips need them, and few on purpose.
+More will come as chips need them, and few on purpose: a new fact goes on
+an existing event when one fits (a command's end is `window_changed`, not
+an event of its own).
+
+**Commands.** `busy` is true while a command runs in the window's shell
+(from its `command_started`). When it ends, `window_changed` comes with
+`busy` false and `status`, the command's exit status (0 = success, 130 =
+Ctrl+C; none before the first command, or when the shell didn't say). A
+command that starts and ends within one frame still gives its
+`command_started` first. Only zsh and bash windows report commands (gtty's
+shell hooks); in an ssh session the command running is ssh itself.
 
 **Keys.** `key` is the key's name: the character on it, unshifted (`a`,
 `1`, `/`), or `enter`, `escape`, `tab`, `backspace`, `delete`, `space`,

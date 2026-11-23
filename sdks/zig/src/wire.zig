@@ -331,6 +331,18 @@ test "a dialog and a click with fields" {
     _ = try roundTrip(sdk.Event, .{ .eventId = 3, .kind = .button_click, .button = .{ .id = "ok", .function = "add", .fields = &fields, .command = true } });
 }
 
+test "a command's end: status 0 is sent, busy false and no status are left out" {
+    const a = std.testing.allocator;
+    const json = try toJson(a, sdk.Event{ .eventId = 4, .kind = .window_changed, .folder = "/w", .status = 0 });
+    defer a.free(json);
+    try std.testing.expectEqualStrings("{\"eventId\":4,\"kind\":\"window_changed\",\"folder\":\"/w\",\"status\":0}", json);
+    _ = try roundTrip(sdk.Event, .{ .kind = .window_changed, .busy = true, .status = 130 });
+    var arena: std.heap.ArenaAllocator = .init(a);
+    defer arena.deinit();
+    const old = try decode(sdk.Event, arena.allocator(), try std.json.parseFromSliceLeaky(Value, arena.allocator(), "{\"kind\":\"window_changed\"}", .{}));
+    try std.testing.expect(!old.busy and old.status == null);
+}
+
 test "bad input is an error, not a crash" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();

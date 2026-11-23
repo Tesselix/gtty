@@ -97,6 +97,10 @@ class Event {
     this.remote = !!d.remote;
     // window_changed in an ssh / mosh session: the host
     this.host = d.host || "";
+    // window_changed: a command runs in the shell; the exit status of the
+    // last one that ended (null: none yet, or not said)
+    this.busy = !!d.busy;
+    this.status = d.status ?? null;
     this.command = d.command || "";
     // key: its name, what it typed, the modifier keys (cmd: ⌘ / Super)
     this.key = d.key || "";

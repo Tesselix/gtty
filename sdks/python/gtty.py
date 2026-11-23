@@ -138,6 +138,10 @@ class Event:
         self.remote = d.get("remote", False)
         # window_changed in an ssh / mosh session: the host
         self.host = d.get("host", "")
+        # window_changed: a command runs in the shell; the exit status of
+        # the last one that ended (None: none yet, or not said)
+        self.busy = d.get("busy", False)
+        self.status = d.get("status")
         self.command = d.get("command", "")
         # key: its name, what it typed, the modifier keys (cmd: ⌘ / Super)
         self.key = d.get("key", "")

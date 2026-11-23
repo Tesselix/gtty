@@ -17,7 +17,9 @@ chips, peeks, epeeks and dialogs, `setDisplayMode`, `showDialog`,
 `src/core/Extensions.zig`), the four SDKs, `gtty ext`, the extension
 manager (`src/ui/ExtensionsWindow.zig`), and the
 events `window_changed`, `command_started`, `key` and `button_click`. `window_changed` carries `host` in an ssh /
-mosh session (2026-11-22, for the git chip's note; reusing the event). Everything
+mosh session (2026-11-22, for the git chip's note; reusing the event), and
+`busy` / `status`, a command's end and its exit status (2026-11-23; one
+`window_changed` when a command ends, not a new event). Everything
 else here (icon files, `windowText`, labels) is design
 only: don't tell a user it works, and check
 the code before relying on a name. `test/dialog.gt` and `test/peek.gt` with
