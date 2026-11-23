@@ -114,7 +114,10 @@ class Actions:
 
     @staticmethod
     def pick(win, b):
+        # The host on the chip, and on the clipboard (the user's click:
+        # gtty allows the copy).
         win.ui.set(chip={"text": b.data})
+        win.copy(b.data)
         win.ui.set_display_mode("chip")  # gtty only reports: close it here
 
     @staticmethod
@@ -127,7 +130,7 @@ class Actions:
     def about(win, b):
         win.ui.set(dialog={
             "title": "About hosts", "layout": "form", "timeout": 20, "buttons": "ok", "onclick": "closeIt",
-            "fields": [{"id": "info", "type": "label", "label": "running under " + win.shell()}],
+            "fields": [{"id": "info", "type": "label", "label": "window #%d, running under %s" % (win.number, win.shell())}],
         })
         win.ui.show_dialog()
 

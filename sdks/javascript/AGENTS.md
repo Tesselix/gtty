@@ -35,7 +35,7 @@ JavaScript file and ship that.
    await slow work (network) in a callback: start it, and update the UI
    from a later event.
 3. Calls that answer return promises: `await win.shell()`, every storage
-   call. **Await them** inside the callback; a callback that returns before
+   call, every request (`win.notice`, `copy`, `cd`, …, `win.sessions`). **Await them** inside the callback; a callback that returns before
    its awaits are done lets the next event in.
 4. Don't invent events, keys or values. If it isn't here, it doesn't exist.
    Say so to the user. A wrong key is a line in `gtty ext logs`, not a throw.
@@ -160,7 +160,7 @@ win.events.unregister("window_changed");
 
 | `ev.kind` | When | Fields |
 |---|---|---|
-| `"window_changed"` | At the start, then when something changed | `folder`, `branch`, `remote` |
+| `"window_changed"` | At the start, then when something changed | `folder`, `branch`, `remote`, `host` (the ssh / mosh destination) |
 | `"command_started"` | A command starts in the window's shell | `command`, `folder`, `remote` |
 | `"key"` | A key pressed while the window has the keyboard | `key`, `text`, `ctrl`, `shift`, `alt`, `cmd` |
 | `"button_click"` | Your click, hover or filter; never register it | `button` |
@@ -299,6 +299,46 @@ const names = await win.stateful.list();
 const name = await win.shell();   // "bash" inside zsh; not a shell in front: the window's own
 ```
 
+## Asking gtty
+
+gtty is the core: it runs the windows and their shells. Besides your own
+UI and files you can ask it for a few things; each waits for gtty's answer
+(call them from a callback). Those marked **user** work only while you
+handle the user's click or key (an event they caused, still recent);
+otherwise they fail with `NotFromUser`, and that is on purpose: an
+extension must not change the clipboard, type in the shell or replace the
+user's windows by itself.
+
+```js
+await win.notice("3 hosts found", "ok"); // "plain", "ok" (green), "err" (red)
+await win.beep();
+await win.copy(b.data);                  // user
+try {
+  await win.cd(folder);                  // user
+} catch (e) {
+  if (e.name !== "ShellBusy") throw e;
+  await win.notice("the shell is busy", "err");
+}
+await win.refresh();                     // folder and branch looked at now
+const n = win.number;                    // the #3 the user sees
+
+const recent = await win.sessions.list(7);   // [{ id, name }], the last used last
+const name = await win.sessions.suggestName(); // NothingToSave
+await win.sessions.save(name);
+await win.sessions.restore(recent[0].id, false); // user; true: a new gtty
+await win.sessions.manage();                     // user
+```
+
+- `cd` is the only thing an extension can make the shell do, and only at its
+  prompt with nothing typed; it can't type anything else, nor read the
+  window's text.
+- `copy` flashes what was clicked in your open peek (the row picked, else
+  the top text) and says "copied …" in the status bar: don't add your own
+  notice for it.
+- Sessions are gtty's saved screens (shell windows and where they were),
+  shared by every gtty. `restore` here replaces this gtty's windows (gtty
+  asks first when some still work); with `new_window` a new gtty opens.
+
 ## Logs
 
 ```js
@@ -322,12 +362,16 @@ something doesn't work, read these first.
 ## Errors
 
 `gtty.GttyError`, its `name` one of `WindowClosed`, `NoChip`, `BadName`,
-`NoFile`, `FileInUse`, `FileClosed`, `StorageFull`, `StorageFailed`.
+`NoFile`, `FileInUse`, `FileClosed`, `StorageFull`, `StorageFailed`,
+`ShellBusy` (`cd`: the shell isn't at its prompt), `NotFromUser` (a
+**user** request outside the user's click or key), `NothingToSave`
+(`sessions.suggestName`).
 
 - `win.ui.*` and `win.events.*` don't wait for gtty: a mistake gtty finds is
   a line in `gtty ext logs`. A wrong argument here (`setDisplayMode("x")`)
   throws a `TypeError`.
-- Storage and `win.shell()` wait for gtty's answer and reject with its error.
+- Storage, `win.shell()` and the requests wait for gtty's answer and
+  reject with its error.
 
 ## Package and run
 
@@ -452,6 +496,31 @@ A throw or a rejected promise in any callback becomes a line in `gtty ext
 logs`; the extension keeps running and the user sees nothing.
 
 ### `win` and `ext`
+
+**`win.number`** — the number the user sees on the window (`#3`), for
+text the user reads.
+
+**`await win.notice(text, kind = "plain")`** — a short notice in the status
+bar; `kind` `"plain"`, `"ok"` (green), `"err"` (red).
+
+**`await win.beep()`** — gtty's error beep.
+
+**`await win.copy(text)`** — **user**. The clipboard and gtty's paste
+history; "copied …" in the status bar; what was clicked in your open peek
+flashes. `NotFromUser` outside the user's click or key.
+
+**`await win.cd(folder)`** — **user**. `cd -- '<folder>'` typed and run in
+the window's shell; rejects with `ShellBusy` when it isn't waiting at its
+prompt with nothing typed.
+
+**`await win.refresh()`** — gtty looks at the folder and branch now;
+`window_changed` follows if they changed (after your own `git switch`).
+
+**`await win.sessions.list(max = 7)`** → `[{ id, name }]`, the last used
+last. **`suggestName()`** → the name gtty gives a session now;
+`NothingToSave` when no window would be kept. **`save(name)`**.
+**`restore(id, newWindow = false)`** — **user**; here (gtty may ask first)
+or in a new gtty. **`manage()`** — **user**; opens the Session Manager.
 
 **`win.id`** — the window's id (number), the same in every call for that
 window and unique in this gtty. Key your state by it.

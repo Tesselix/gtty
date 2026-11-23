@@ -10,7 +10,7 @@
 const std = @import("std");
 const sdk = @import("gtty");
 const core_git = @import("../core/git.zig");
-const hooks = @import("hooks.zig");
+const inproc = @import("inproc.zig");
 const list = @import("list.zig");
 
 const no_git_label = "git";
@@ -20,6 +20,8 @@ const State = struct {
     win: ?*sdk.Window = null,
     dir: list.Owned = .{},
     branch: list.Owned = .{},
+    /// In an ssh / mosh session: the host.
+    host: list.Owned = .{},
     target: list.Owned = .{},
     filter: list.Owned = .{},
     branches: std.ArrayList([]u8) = .empty,
@@ -27,19 +29,20 @@ const State = struct {
     switch_run: ?core_git.Run = null,
 
     fn clearBranches(s: *State) void {
-        for (s.branches.items) |b| hooks.gpa.free(b);
+        for (s.branches.items) |b| inproc.gpa.free(b);
         s.branches.clearRetainingCapacity();
     }
 
     pub fn deinit(s: *State) void {
         s.clearBranches();
-        s.branches.deinit(hooks.gpa);
-        if (hooks.reaper) |r| {
-            if (s.list_run) |*x| x.deinit(hooks.gpa, r);
-            if (s.switch_run) |*x| x.deinit(hooks.gpa, r);
+        s.branches.deinit(inproc.gpa);
+        if (inproc.reaper) |r| {
+            if (s.list_run) |*x| x.deinit(inproc.gpa, r);
+            if (s.switch_run) |*x| x.deinit(inproc.gpa, r);
         }
         s.dir.deinit();
         s.branch.deinit();
+        s.host.deinit();
         s.target.deinit();
         s.filter.deinit();
     }
@@ -69,6 +72,7 @@ pub fn onEvent(win: *sdk.Window, ev: *const sdk.Event) !void {
     }
     s.dir.set(ev.folder);
     s.branch.set(ev.branch);
+    s.host.set(ev.host);
     // The branch of a remote folder: switching would run git here, in the
     // wrong folder.
     if (ev.remote) {
@@ -88,7 +92,7 @@ pub fn onEvent(win: *sdk.Window, ev: *const sdk.Event) !void {
 }
 
 fn setList(win: *sdk.Window, s: *const State) !void {
-    var arena: std.heap.ArenaAllocator = .init(hooks.gpa);
+    var arena: std.heap.ArenaAllocator = .init(inproc.gpa);
     defer arena.deinit();
     const a = arena.allocator();
     var rows: std.ArrayList(sdk.Line) = .empty;
@@ -123,13 +127,13 @@ pub const Actions = struct {
     }
 
     pub fn remoteNote(win: *sdk.Window, b: sdk.ButtonClick) !void {
-        const host = if (hooks.remoteDest) |f| f(hooks.ctx, win.id) else "";
+        const s = try windows.of(win.id);
         var buf: [300]u8 = undefined;
-        hooks.say(std.fmt.bufPrint(&buf, "{s} on {s} (switching branches there: not yet)", .{ b.data, host }) catch "not yet");
+        try win.notice(std.fmt.bufPrint(&buf, "{s} on {s} (switching branches there: not yet)", .{ b.data, s.host.s }) catch "not yet", .plain);
     }
 
-    pub fn copy(_: *sdk.Window, b: sdk.ButtonClick) !void {
-        if (hooks.copy) |f| f(hooks.ctx, b.data, false);
+    pub fn copy(win: *sdk.Window, b: sdk.ButtonClick) !void {
+        try win.copy(b.data);
     }
 
     /// The epeek opened: read the branches.
@@ -166,29 +170,29 @@ pub const Actions = struct {
 };
 
 fn startGit(s: *State, args: []const []const u8) ?core_git.Run {
-    const z = hooks.gpa.dupeZ(u8, s.dir.s) catch return null;
-    defer hooks.gpa.free(z);
-    return core_git.Run.start(hooks.gpa, z, args) catch null;
+    const z = inproc.gpa.dupeZ(u8, s.dir.s) catch return null;
+    defer inproc.gpa.free(z);
+    return core_git.Run.start(inproc.gpa, z, args) catch null;
 }
 
 /// Once a frame: collect the git runs.
 pub fn tick() void {
-    const reaper = hooks.reaper orelse return;
+    const reaper = inproc.reaper orelse return;
     var it = windows.map.valueIterator();
     while (it.next()) |sp| {
         const s = sp.*;
         const win = s.win orelse continue;
-        if (s.list_run) |*r| if (r.tick(hooks.gpa, reaper)) {
+        if (s.list_run) |*r| if (r.tick(inproc.gpa, reaper)) {
             listDone(win, s, r);
-            r.deinit(hooks.gpa, reaper);
+            r.deinit(inproc.gpa, reaper);
             s.list_run = null;
             setList(win, s) catch {};
         };
-        if (s.switch_run) |*r| if (r.tick(hooks.gpa, reaper)) {
+        if (s.switch_run) |*r| if (r.tick(inproc.gpa, reaper)) {
             const ok = r.code == 0;
             var buf: [600]u8 = undefined;
             if (ok) switched(win, s, &buf) else failed(win, s, r.out.items, &buf);
-            r.deinit(hooks.gpa, reaper);
+            r.deinit(inproc.gpa, reaper);
             s.switch_run = null;
             setList(win, s) catch {};
         };
@@ -199,8 +203,8 @@ fn listDone(win: *sdk.Window, s: *State, r: *const core_git.Run) void {
     if (r.code == 0) {
         const S = struct {
             fn add(st: *State, l: []const u8) void {
-                const b = hooks.gpa.dupe(u8, l) catch return;
-                st.branches.append(hooks.gpa, b) catch hooks.gpa.free(b);
+                const b = inproc.gpa.dupe(u8, l) catch return;
+                st.branches.append(inproc.gpa, b) catch inproc.gpa.free(b);
             }
         };
         core_git.lines(r.out.items, s, S.add);
@@ -213,17 +217,15 @@ fn switched(win: *sdk.Window, s: *State, buf: []u8) void {
     var row: [1]sdk.Text = undefined;
     win.ui.set(.{ .epeek = sdk.EpeekUpdate{ .state = .{ .set = .ok }, .message = .{ .set = list.oneRow(&row, "switched") } } }) catch {};
     // Show the new branch on the chip at once.
-    if (hooks.branchChanged) |f| f(hooks.ctx, win.id);
-    const n = if (hooks.serial) |f| f(hooks.ctx, win.id) else 0;
-    hooks.sayAs(std.fmt.bufPrint(buf, "#{d}: switched to {s}", .{ n, s.target.s }) catch "switched", .ok);
+    win.refresh() catch {};
+    win.notice(std.fmt.bufPrint(buf, "#{d}: switched to {s}", .{ win.number, s.target.s }) catch "switched", .ok) catch {};
 }
 
 fn failed(win: *sdk.Window, s: *State, out: []const u8, buf: []u8) void {
     _ = s;
     const first = showError(win, out);
-    if (hooks.beep) |f| f(hooks.ctx);
-    const n = if (hooks.serial) |f| f(hooks.ctx, win.id) else 0;
-    hooks.sayAs(std.fmt.bufPrint(buf, "#{d}: git: {s}", .{ n, first }) catch "git failed", .err);
+    win.beep() catch {};
+    win.notice(std.fmt.bufPrint(buf, "#{d}: git: {s}", .{ win.number, first }) catch "git failed", .err) catch {};
 }
 
 /// The last lines of git's output, in red. The first of them.

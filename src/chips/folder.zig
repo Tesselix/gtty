@@ -9,7 +9,7 @@
 
 const std = @import("std");
 const sdk = @import("gtty");
-const hooks = @import("hooks.zig");
+const inproc = @import("inproc.zig");
 const list = @import("list.zig");
 
 const State = struct {
@@ -68,7 +68,7 @@ fn fillFolders(dir: []const u8, out: *std.ArrayList([]const u8), a: std.mem.Allo
 }
 
 fn setList(win: *sdk.Window, s: *const State) !void {
-    var arena: std.heap.ArenaAllocator = .init(hooks.gpa);
+    var arena: std.heap.ArenaAllocator = .init(inproc.gpa);
     defer arena.deinit();
     const a = arena.allocator();
     var all: std.ArrayList([]const u8) = .empty;
@@ -99,8 +99,8 @@ pub const Actions = struct {
         try win.ui.setDisplayMode(.peek);
     }
 
-    pub fn copyPath(_: *sdk.Window, b: sdk.ButtonClick) !void {
-        if (hooks.copy) |f| f(hooks.ctx, b.data, false);
+    pub fn copyPath(win: *sdk.Window, b: sdk.ButtonClick) !void {
+        try win.copy(b.data);
     }
 
     pub fn filter(win: *sdk.Window, b: sdk.ButtonClick) !void {
@@ -112,11 +112,8 @@ pub const Actions = struct {
     pub fn pick(win: *sdk.Window, b: sdk.ButtonClick) !void {
         const s = try windows.of(win.id);
         // The current one: its path is copied, as a click on a name in
-        // the text does; its row flashes.
-        if (std.mem.eql(u8, b.data, s.dir.s)) {
-            if (hooks.copy) |f| f(hooks.ctx, b.data, true);
-            return;
-        }
+        // the text does; its row flashes (gtty flashes what was clicked).
+        if (std.mem.eql(u8, b.data, s.dir.s)) return win.copy(b.data);
         try sendCd(win, b.data, &s.sent);
     }
 };
@@ -125,13 +122,13 @@ pub const Actions = struct {
 /// the list stays.
 pub fn sendCd(win: *sdk.Window, dir: []const u8, sent: *bool) !void {
     var row: [1]sdk.Text = undefined;
-    const ok = if (hooks.cd) |f| f(hooks.ctx, win.id, dir) else false;
-    if (ok) {
-        sent.* = true;
-        return win.ui.set(.{ .epeek = sdk.EpeekUpdate{ .state = .{ .set = .ok }, .message = .{ .set = list.oneRow(&row, "cd sent") } } });
-    }
-    if (hooks.beep) |f| f(hooks.ctx);
-    try win.ui.set(.{ .epeek = sdk.EpeekUpdate{ .state = .{ .set = .err }, .message = .{ .set = list.oneRow(&row, "the shell is busy: cd only at its prompt") } } });
+    win.cd(dir) catch |e| {
+        if (e != error.ShellBusy) return e;
+        try win.beep();
+        return win.ui.set(.{ .epeek = sdk.EpeekUpdate{ .state = .{ .set = .err }, .message = .{ .set = list.oneRow(&row, "the shell is busy: cd only at its prompt") } } });
+    };
+    sent.* = true;
+    try win.ui.set(.{ .epeek = sdk.EpeekUpdate{ .state = .{ .set = .ok }, .message = .{ .set = list.oneRow(&row, "cd sent") } } });
 }
 
 test "the folders above, / first, the current last" {

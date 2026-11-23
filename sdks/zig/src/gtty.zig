@@ -44,6 +44,13 @@ pub const Error = error{
     /// The storage's size limit.
     StorageFull,
     StorageFailed,
+    /// `cd`: the shell isn't waiting at its prompt.
+    ShellBusy,
+    /// `copy`, `cd`, `sessions.restore`, `sessions.manage` work only
+    /// while handling the user's click or key.
+    NotFromUser,
+    /// `sessions.suggestName`: no window that a session would keep.
+    NothingToSave,
 };
 
 /// How many parts a text can have; more are left out.
@@ -186,6 +193,9 @@ pub const Event = struct {
     branch: []const u8 = "",
     /// In an ssh / mosh session: `folder` is the local one.
     remote: bool = false,
+    /// `window_changed` in an ssh / mosh session: the host (as typed:
+    /// `user@name`, an alias of ~/.ssh/config).
+    host: []const u8 = "",
     /// `command_started`: the command line.
     command: []const u8 = "",
     /// `key`: the key's name: the character on it, unshifted (`a`, `1`,
@@ -466,6 +476,41 @@ pub const Connection = struct {
     storageClose: *const fn (ctx: *anyopaque, handle: u32) Error!void,
     storageDelete: *const fn (ctx: *anyopaque, kind: StorageKind, name: []const u8, timeout_ms: u32) Error!void,
     storageList: *const fn (ctx: *anyopaque, kind: StorageKind, out: []u8) Error!usize,
+    /// Everything else an extension asks of gtty (`Request`).
+    request: *const fn (ctx: *anyopaque, req: Request) Error!Answer,
+};
+
+/// How a notice in the status bar looks.
+pub const NoticeKind = enum { plain, ok, err };
+
+/// A saved session (`win.sessions.list`).
+pub const Session = struct {
+    id: []const u8,
+    name: []const u8,
+};
+
+/// What an extension asks gtty to do, beyond its own UI and files. Each
+/// is one call of the protocol (`op`, docs/protocol.md). Strings asked
+/// for are copied into the buffers given.
+pub const Request = union(enum) {
+    notice: struct { text: []const u8, kind: NoticeKind },
+    beep,
+    copy: []const u8,
+    cd: []const u8,
+    refresh,
+    sessions: struct { out: []Session, buf: []u8 },
+    session_name: []u8,
+    session_save: []const u8,
+    session_restore: struct { id: []const u8, new_window: bool },
+    session_manage,
+};
+
+/// gtty's answer to a `Request`: `count` for `sessions` (how many of
+/// `out`), `text` (in the buffer given) for `session_name`.
+pub const Answer = union(enum) {
+    none,
+    count: usize,
+    text: []const u8,
 };
 
 pub const StorageKind = enum { ephemeral, stateful };
@@ -670,11 +715,51 @@ pub const Events = struct {
     }
 };
 
+/// The sessions connector: gtty's saved screens (shell windows and where
+/// they were), shared by every gtty.
+pub const Sessions = struct {
+    ctx: *anyopaque,
+    conn: *const Connection,
+
+    /// The sessions used last (up to `out.len`), the last used last;
+    /// names and ids are copied into `buf` (what doesn't fit is left out).
+    pub fn list(s: Sessions, buf: []u8, out: []Session) Error![]Session {
+        const a = try s.conn.request(s.ctx, .{ .sessions = .{ .out = out, .buf = buf } });
+        return out[0..a.count];
+    }
+
+    /// The name gtty would give the session now (the windows' folders and
+    /// commands), in `buf`. `NothingToSave`: no window a session keeps.
+    pub fn suggestName(s: Sessions, buf: []u8) Error![]const u8 {
+        return (try s.conn.request(s.ctx, .{ .session_name = buf })).text;
+    }
+
+    /// Save this gtty's windows as session `name`.
+    pub fn save(s: Sessions, name: []const u8) Error!void {
+        _ = try s.conn.request(s.ctx, .{ .session_save = name });
+    }
+
+    /// Restore session `id`: here, in place of this gtty's windows (asking
+    /// first when some still work), or `new_window`: in a new gtty. Only
+    /// while handling the user's click or key.
+    pub fn restore(s: Sessions, id: []const u8, new_window: bool) Error!void {
+        _ = try s.conn.request(s.ctx, .{ .session_restore = .{ .id = id, .new_window = new_window } });
+    }
+
+    /// Open the Session Manager. Only while handling the user's click or key.
+    pub fn manage(s: Sessions) Error!void {
+        _ = try s.conn.request(s.ctx, .session_manage);
+    }
+};
+
 /// The connection to one job window.
 pub const Window = struct {
     id: u32,
+    /// The number the user sees on the window (`#3`); gtty's commands take it.
+    number: u32 = 0,
     ui: Ui,
     events: Events,
+    sessions: Sessions,
     /// Files of this instance, deleted when it ends.
     ephemeral: Storage,
     /// Files of the extension, common to all its instances.
@@ -693,6 +778,36 @@ pub const Window = struct {
     /// next call.
     pub fn shell(w: *Window) Error![]const u8 {
         return w.ui.conn.shell(w.ui.ctx, &w.shell_buf);
+    }
+
+    /// A short notice in gtty's status bar (`ok` green, `err` red).
+    pub fn notice(w: *Window, text: []const u8, kind: NoticeKind) Error!void {
+        _ = try w.ui.conn.request(w.ui.ctx, .{ .notice = .{ .text = text, .kind = kind } });
+    }
+
+    /// gtty's error beep.
+    pub fn beep(w: *Window) Error!void {
+        _ = try w.ui.conn.request(w.ui.ctx, .beep);
+    }
+
+    /// Put `text` on the clipboard and in gtty's paste history; what was
+    /// clicked in the open peek flashes, the status bar says "copied".
+    /// Only while handling the user's click or key.
+    pub fn copy(w: *Window, text: []const u8) Error!void {
+        _ = try w.ui.conn.request(w.ui.ctx, .{ .copy = text });
+    }
+
+    /// Type `cd -- '<dir>'` and run it in this window's shell, as the
+    /// user would. `ShellBusy`: the shell isn't at its prompt (nothing
+    /// typed). Only while handling the user's click or key.
+    pub fn cd(w: *Window, dir: []const u8) Error!void {
+        _ = try w.ui.conn.request(w.ui.ctx, .{ .cd = dir });
+    }
+
+    /// Look at the window's folder and branch again now (they are looked
+    /// at once a second): `window_changed` follows if they changed.
+    pub fn refresh(w: *Window) Error!void {
+        _ = try w.ui.conn.request(w.ui.ctx, .refresh);
     }
 };
 
@@ -794,7 +909,25 @@ const Fake = struct {
         @memcpy(out[0..2], "a\n");
         return 2;
     }
-    const conn: Connection = .{ .setChip = setChip, .setPeek = setPeek, .setEpeek = setEpeek, .setDisplayMode = setMode, .registerEvent = none, .unregisterEvent = none, .setDialog = setDialog, .showDialog = noop, .closeDialog = noop, .shell = shell, .storageOpen = stOpen, .storageRead = stRead, .storageWrite = stWrite, .storageClose = stClose, .storageDelete = stDelete, .storageList = stList };
+    var asked: ?std.meta.Tag(Request) = null;
+    fn request(_: *anyopaque, req: Request) Error!Answer {
+        asked = std.meta.activeTag(req);
+        switch (req) {
+            .cd => |d| if (d.len == 0) return error.ShellBusy,
+            .sessions => |q| {
+                @memcpy(q.buf[0..4], "a1wk");
+                q.out[0] = .{ .id = q.buf[0..2], .name = q.buf[2..4] };
+                return .{ .count = 1 };
+            },
+            .session_name => |buf| {
+                @memcpy(buf[0..4], "gtty");
+                return .{ .text = buf[0..4] };
+            },
+            else => {},
+        }
+        return .none;
+    }
+    const conn: Connection = .{ .setChip = setChip, .setPeek = setPeek, .setEpeek = setEpeek, .setDisplayMode = setMode, .registerEvent = none, .unregisterEvent = none, .setDialog = setDialog, .showDialog = noop, .closeDialog = noop, .shell = shell, .storageOpen = stOpen, .storageRead = stRead, .storageWrite = stWrite, .storageClose = stClose, .storageDelete = stDelete, .storageList = stList, .request = request };
 };
 
 test {
@@ -903,6 +1036,7 @@ fn fakeWindow(f: *Fake) Window {
         .id = 1,
         .ui = .{ .ctx = f, .conn = &Fake.conn },
         .events = .{ .ctx = f, .conn = &Fake.conn },
+        .sessions = .{ .ctx = f, .conn = &Fake.conn },
         .ephemeral = .{ .ctx = f, .conn = &Fake.conn, .kind = .ephemeral },
         .stateful = .{ .ctx = f, .conn = &Fake.conn, .kind = .stateful },
         .logger = .{ .ctx = f, .write = Fake.logLine },
@@ -917,6 +1051,24 @@ test "the shell and the two storages" {
     try std.testing.expectEqual(@as(u32, 7), (try win.ephemeral.openRead("a", 7)).handle);
     var out: [8]u8 = undefined;
     try std.testing.expectEqualStrings("a\n", try win.stateful.list(&out));
+}
+
+test "requests: each call is one request, answers come back" {
+    var f: Fake = .{};
+    var win = fakeWindow(&f);
+    try win.notice("hi", .ok);
+    try std.testing.expectEqual(std.meta.Tag(Request).notice, Fake.asked.?);
+    try win.copy("x");
+    try std.testing.expectEqual(std.meta.Tag(Request).copy, Fake.asked.?);
+    try std.testing.expectError(error.ShellBusy, win.cd(""));
+    var buf: [64]u8 = undefined;
+    var out: [7]Session = undefined;
+    const got = try win.sessions.list(&buf, &out);
+    try std.testing.expectEqual(@as(usize, 1), got.len);
+    try std.testing.expectEqualStrings("wk", got[0].name);
+    try std.testing.expectEqualStrings("gtty", try win.sessions.suggestName(&buf));
+    try win.sessions.restore("a1", true);
+    try std.testing.expectEqual(std.meta.Tag(Request).session_restore, Fake.asked.?);
 }
 
 test "dispatch calls the function the click names" {

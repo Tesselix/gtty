@@ -6,7 +6,7 @@
 
 const std = @import("std");
 const sdk = @import("gtty");
-const hooks = @import("hooks.zig");
+const inproc = @import("inproc.zig");
 
 /// The theme's green and blue, for what a list marks.
 pub const green: u24 = 0x98c379;
@@ -20,7 +20,7 @@ pub fn PerWindow(comptime S: type) type {
         const Self = @This();
 
         pub fn of(m: *Self, uid: u32) !*S {
-            const gpa = hooks.gpa;
+            const gpa = inproc.gpa;
             if (m.map.get(uid)) |s| return s;
             const s = try gpa.create(S);
             errdefer gpa.destroy(s);
@@ -32,7 +32,7 @@ pub fn PerWindow(comptime S: type) type {
         pub fn drop(m: *Self, uid: u32) void {
             const kv = m.map.fetchRemove(uid) orelse return;
             kv.value.deinit();
-            hooks.gpa.destroy(kv.value);
+            inproc.gpa.destroy(kv.value);
         }
     };
 }
@@ -42,12 +42,12 @@ pub const Owned = struct {
     s: []u8 = &.{},
 
     pub fn set(o: *Owned, v: []const u8) void {
-        const copy = hooks.gpa.dupe(u8, v) catch return;
-        hooks.gpa.free(o.s);
+        const copy = inproc.gpa.dupe(u8, v) catch return;
+        inproc.gpa.free(o.s);
         o.s = copy;
     }
     pub fn deinit(o: *Owned) void {
-        hooks.gpa.free(o.s);
+        inproc.gpa.free(o.s);
         o.* = .{};
     }
 };

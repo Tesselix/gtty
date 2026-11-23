@@ -173,6 +173,7 @@ fn handle(line: []const u8) bool {
     } else if (eql(t, "windowStart")) {
         const w = gpa.create(Win) catch return true;
         w.* = .{ .win = window(w, id) };
+        w.win.number = num(o.get("number"));
         rt.windows.put(gpa, id, w) catch {
             gpa.destroy(w);
             return true;
@@ -226,6 +227,7 @@ fn window(w: *Win, id: u32) sdk.Window {
         .id = id,
         .ui = .{ .ctx = w, .conn = &connection },
         .events = .{ .ctx = w, .conn = &connection },
+        .sessions = .{ .ctx = w, .conn = &connection },
         .ephemeral = .{ .ctx = w, .conn = &connection, .kind = .ephemeral },
         .stateful = .{ .ctx = w, .conn = &connection, .kind = .stateful },
         .logger = .{ .ctx = w, .write = winLog },
@@ -358,6 +360,8 @@ fn call(ctx: *anyopaque, op: []const u8, fields: anytype) sdk.Error!Reply {
     m.begin("call", w.win.id) catch return error.StorageFailed;
     m.field("id", id) catch {};
     m.field("op", op) catch {};
+    // gtty checks which calls answer the user's click or key.
+    m.field("ev", rt.current_ev) catch {};
     inline for (@typeInfo(@TypeOf(fields)).@"struct".fields) |f| m.field(f.name, @field(fields, f.name)) catch {};
     m.send() catch return error.StorageFailed;
     while (true) {
@@ -464,4 +468,76 @@ fn stList(ctx: *anyopaque, kind: sdk.StorageKind, out: []u8) sdk.Error!usize {
     return n;
 }
 
-const connection: sdk.Connection = .{ .setChip = setChip, .setPeek = setPeek, .setEpeek = setEpeek, .setDisplayMode = setMode, .registerEvent = registerEvent, .unregisterEvent = unregisterEvent, .setDialog = setDialog, .showDialog = showDialog, .closeDialog = closeDialog, .shell = shell, .storageOpen = stOpen, .storageRead = stRead, .storageWrite = stWrite, .storageClose = stClose, .storageDelete = stDelete, .storageList = stList };
+fn request(ctx: *anyopaque, req: sdk.Request) sdk.Error!sdk.Answer {
+    switch (req) {
+        .notice => |n| {
+            var r = try call(ctx, "notice", .{ .text = n.text, .kind = n.kind });
+            r.deinit();
+        },
+        .beep => {
+            var r = try call(ctx, "beep", .{});
+            r.deinit();
+        },
+        .copy => |text| {
+            var r = try call(ctx, "copy", .{ .text = text });
+            r.deinit();
+        },
+        .cd => |dir| {
+            var r = try call(ctx, "cd", .{ .dir = dir });
+            r.deinit();
+        },
+        .refresh => {
+            var r = try call(ctx, "refresh", .{});
+            r.deinit();
+        },
+        .sessions => |q| {
+            var r = try call(ctx, "sessions", .{ .max = q.out.len });
+            defer r.deinit();
+            const items = switch (r.value) {
+                .array => |x| x.items,
+                else => return .{ .count = 0 },
+            };
+            var n: usize = 0;
+            var at: usize = 0;
+            for (items) |it| {
+                if (n == q.out.len) break;
+                const o = switch (it) {
+                    .object => |o| o,
+                    else => continue,
+                };
+                const id = str(o.get("id")) orelse continue;
+                const name = str(o.get("name")) orelse "";
+                if (at + id.len + name.len > q.buf.len) break;
+                @memcpy(q.buf[at..][0..id.len], id);
+                @memcpy(q.buf[at + id.len ..][0..name.len], name);
+                q.out[n] = .{ .id = q.buf[at..][0..id.len], .name = q.buf[at + id.len ..][0..name.len] };
+                at += id.len + name.len;
+                n += 1;
+            }
+            return .{ .count = n };
+        },
+        .session_name => |buf| {
+            var r = try call(ctx, "sessionName", .{});
+            defer r.deinit();
+            const s = str(r.value) orelse "";
+            const n = @min(s.len, buf.len);
+            @memcpy(buf[0..n], s[0..n]);
+            return .{ .text = buf[0..n] };
+        },
+        .session_save => |name| {
+            var r = try call(ctx, "sessionSave", .{ .name = name });
+            r.deinit();
+        },
+        .session_restore => |x| {
+            var r = try call(ctx, "sessionRestore", .{ .id = x.id, .newWindow = x.new_window });
+            r.deinit();
+        },
+        .session_manage => {
+            var r = try call(ctx, "sessionManage", .{});
+            r.deinit();
+        },
+    }
+    return .none;
+}
+
+const connection: sdk.Connection = .{ .setChip = setChip, .setPeek = setPeek, .setEpeek = setEpeek, .setDisplayMode = setMode, .registerEvent = registerEvent, .unregisterEvent = unregisterEvent, .setDialog = setDialog, .showDialog = showDialog, .closeDialog = closeDialog, .shell = shell, .storageOpen = stOpen, .storageRead = stRead, .storageWrite = stWrite, .storageClose = stClose, .storageDelete = stDelete, .storageList = stList, .request = request };

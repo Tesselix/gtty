@@ -11,11 +11,13 @@ guide for people is [extensions.md](extensions.md).
 standard chips in `src/chips/`, the four lifecycle functions, `onEvent`,
 `registerEvent`, `unregisterEvent`, `dispatch`, `newText`, `win.ui.set` for
 chips, peeks, epeeks and dialogs, `setDisplayMode`, `showDialog`,
-`closeDialog`, `win.shell()`, `win.ephemeral`, `win.stateful`, `win.log`,
+`closeDialog`, `win.shell()`, the requests (`win.notice`, `beep`, `copy`,
+`cd`, `refresh`, `win.sessions`, `win.number`, 2026-11-22), `win.ephemeral`, `win.stateful`, `win.log`,
 `ext.log`, installed extensions as child processes (`src/chips/Proc.zig`,
 `src/core/Extensions.zig`), the four SDKs, `gtty ext`, the extension
 manager (`src/ui/ExtensionsWindow.zig`), and the
-events `window_changed`, `command_started`, `key` and `button_click`. Everything
+events `window_changed`, `command_started`, `key` and `button_click`. `window_changed` carries `host` in an ssh /
+mosh session (2026-11-22, for the git chip's note; reusing the event). Everything
 else here (icon files, `windowText`, labels) is design
 only: don't tell a user it works, and check
 the code before relying on a name. `test/dialog.gt` and `test/peek.gt` with
@@ -33,11 +35,22 @@ them, but say so, and don't present them as settled.
 4. Standard chips (extensions, folder, git, focus, session) use the Zig
    SDK, with no private access to `App`, but run inside the gtty process.
    They can't be disabled. They are the first test of registration and
-   event handling.
+   event handling. What they need of gtty is a request on the SDK
+   (`sdk.Request`, `Host.Sink.request` → `App.chipRequest`), the same one an
+   installed extension makes; `src/chips/inproc.zig` gives them only what
+   running inside gtty means (allocator, reaper, `keep_files`), never a
+   call into App. A chip needing something new: add a request (all four
+   SDKs, protocol.md, the conformance check), not a side door.
 5. The prompt fires no events.
 6. Add no Zig packages to gtty for this. Use the standard library and
    existing dependencies; `.github/deps.toml` must stay unchanged.
 7. In user-facing text, write "window", not "job window".
+8. The architecture (2026-11-22, the user's): gtty is the core (job
+   windows, running them, their input and output facts, drawing); the
+   extensions sit on a bus of events (core → extensions) and requests
+   (extensions → core, `call` ops). Requests that change the user's
+   clipboard, shell or screen (`copy`, `cd`, `sessionRestore`,
+   `sessionManage`) need the user's click or key (`NotFromUser`).
 
 ## Lifecycle
 
@@ -101,6 +114,16 @@ event {
 - The text is as of the event. It's kept 15 s after the last listener was
   told, and a window's latest event is always kept. After that a read
   returns an error: handle it, and don't treat it as empty text.
+
+## Requests
+
+`win.notice(text, kind)`, `win.beep()`, `win.copy(text)` (user),
+`win.cd(dir)` (user; `ShellBusy`), `win.refresh()`,
+`win.sessions.list / suggestName / save / restore (user) / manage (user)`;
+`win.number`. Wire: docs/protocol.md "Requests". Inside gtty
+`Host.request` passes `from_user` (handing out a click or key); for a
+program `Proc.fromUser(ev)` (the call's `ev`). `copy` flashes what was
+clicked (`Peek.clicked_row` → `flashClicked`).
 
 ## Commands
 

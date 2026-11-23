@@ -230,6 +230,15 @@ pub fn sendSimple(p: *Proc, t: []const u8, win: ?u32) void {
     o.end(false);
 }
 
+/// A window started: its id and the number the user sees on it.
+pub fn sendWindowStart(p: *Proc, win: u32, number: u32) void {
+    var o: Out = undefined;
+    p.begin(&o, "windowStart");
+    o.field("win", win);
+    o.field("number", number);
+    o.end(false);
+}
+
 pub fn sendEvent(p: *Proc, win: u32, ev: sdk.Event, user: bool) void {
     if (user and (ev.kind == .button_click or ev.kind == .key)) {
         p.user_clicks[p.user_at % p.user_clicks.len] = .{ .id = ev.eventId, .ms = c.SDL_GetTicks() };

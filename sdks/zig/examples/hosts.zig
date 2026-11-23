@@ -133,8 +133,11 @@ const Actions = struct {
         try setList(win);
     }
 
+    /// The host on the chip, and on the clipboard (the user's click: gtty
+    /// allows the copy).
     pub fn pick(win: *gtty.Window, b: gtty.ButtonClick) !void {
         try win.ui.set(.{ .chip = .{ .text = b.data } });
+        try win.copy(b.data);
         try win.ui.setDisplayMode(.chip); // gtty only reports: close it here
     }
 
@@ -145,7 +148,7 @@ const Actions = struct {
 
     pub fn about(win: *gtty.Window, _: gtty.ButtonClick) !void {
         var buf: [80]u8 = undefined;
-        const line = try std.fmt.bufPrint(&buf, "running under {s}", .{try win.shell()});
+        const line = try std.fmt.bufPrint(&buf, "window #{d}, running under {s}", .{ win.number, try win.shell() });
         try win.ui.set(.{ .dialog = .{
             .title = "About hosts",
             .layout = "form",

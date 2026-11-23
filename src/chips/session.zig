@@ -4,15 +4,13 @@
 //! The session chip: always there, also with no session saved. Hovering
 //! or clicking opens its epeek: the sessions used last, the last used at
 //! the bottom by the chip; a pick restores it here, with ⌘ (Linux Ctrl) in
-//! a new gtty. Its save button asks for a name in a dialog (`askName`, the
-//! name suggested in the click's `data`). It listens for no event: the
-//! sessions file is watched by App for all of gtty, whatever windows there
-//! are.
+//! a new gtty. Its save button asks for a name in a dialog, the name gtty
+//! suggests filled in. It listens for no event: the sessions file is
+//! gtty's (`win.sessions`), shared by every gtty.
 
 const std = @import("std");
 const builtin = @import("builtin");
 const sdk = @import("gtty");
-const hooks = @import("hooks.zig");
 const list = @import("list.zig");
 
 const shown_max = 7;
@@ -46,8 +44,10 @@ pub fn onEvent(win: *sdk.Window, ev: *const sdk.Event) !void {
 }
 
 fn setList(win: *sdk.Window, s: *const State) !void {
-    var all: [shown_max]hooks.SessionRow = undefined;
-    const n = if (hooks.recentSessions) |f| f(hooks.ctx, &all) else 0;
+    var all: [shown_max]sdk.Session = undefined;
+    var buf: [shown_max * 320]u8 = undefined;
+    const got = try win.sessions.list(&buf, &all);
+    const n = got.len;
     var rows: [shown_max]sdk.Line = undefined;
     var k: usize = 0;
     for (all[0..n]) |x| {
@@ -84,19 +84,23 @@ pub const Actions = struct {
         try setList(win, s);
     }
 
-    pub fn pick(_: *sdk.Window, b: sdk.ButtonClick) !void {
-        if (hooks.restore) |f| f(hooks.ctx, b.data, b.command);
+    pub fn pick(win: *sdk.Window, b: sdk.ButtonClick) !void {
+        try win.sessions.restore(b.data, b.command);
     }
 
+    pub fn manage(win: *sdk.Window, _: sdk.ButtonClick) !void {
+        try win.sessions.manage();
+    }
+
+    /// Asks for a name, gtty's suggestion filled in.
     pub fn save(win: *sdk.Window, _: sdk.ButtonClick) !void {
-        if (hooks.askSave) |f| f(hooks.ctx, win.id);
-    }
-
-    pub fn manage(_: *sdk.Window, _: sdk.ButtonClick) !void {
-        if (hooks.manage) |f| f(hooks.ctx);
-    }
-
-    pub fn askName(win: *sdk.Window, b: sdk.ButtonClick) !void {
+        var buf: [200]u8 = undefined;
+        const name = win.sessions.suggestName(&buf) catch |e| {
+            if (e != error.NothingToSave) return e;
+            try win.beep();
+            return win.notice("snapshot: no shell window to save", .err);
+        };
+        try win.ui.setDisplayMode(.chip);
         try win.ui.set(.{ .dialog = .{
             .title = "Save the current session",
             .layout = "form",
@@ -105,19 +109,19 @@ pub const Actions = struct {
             .onclick = "saveSession",
             .fields = .{
                 .{ .id = "hint", .type = "label", .label = "Type a name, or keep this one · Esc leaves it unsaved" },
-                .{ .id = "name", .type = "text", .label = "Name", .value = b.data },
+                .{ .id = "name", .type = "text", .label = "Name", .value = name },
             },
         } });
         try win.ui.showDialog();
     }
 
     pub fn saveSession(win: *sdk.Window, b: sdk.ButtonClick) !void {
-        if (b.is("kill") or b.is("timeout")) return hooks.say(if (b.is("timeout")) "no answer: session not saved" else "session not saved");
+        if (b.is("kill") or b.is("timeout")) return win.notice(if (b.is("timeout")) "no answer: session not saved" else "session not saved", .plain);
         if (b.is("ok")) {
             const name = std.mem.trim(u8, b.field("name") orelse "", " \t");
             if (name.len == 0) return win.ui.set(.{ .dialog = .{ .@"error" = "a session needs a name" } });
-            if (hooks.saveSession) |f| f(hooks.ctx, name);
-        } else hooks.say("session not saved");
+            try win.sessions.save(name);
+        } else try win.notice("session not saved", .plain);
         try win.ui.closeDialog();
     }
 };

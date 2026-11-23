@@ -45,7 +45,13 @@ pub const Sink = struct {
     setEpeek: *const fn (ctx: *anyopaque, uid: u32, chip: usize, update: ?sdk.EpeekUpdate) sdk.Error!void,
     setDisplayMode: *const fn (ctx: *anyopaque, uid: u32, chip: usize, mode: sdk.DisplayMode, from_user: bool) sdk.Error!void,
     shell: *const fn (ctx: *anyopaque, uid: u32, buf: []u8) sdk.Error![]const u8,
+    /// The bus's requests (`sdk.Request`): gtty does them, or refuses
+    /// (`NotFromUser` for those only the user's click or key may cause).
+    request: *const fn (ctx: *anyopaque, uid: u32, chip: usize, req: sdk.Request, from_user: bool) sdk.Error!sdk.Answer,
 };
+
+/// A window open now, and the number the user sees on it.
+pub const OpenWindow = struct { uid: u32, number: u32 };
 
 const Conn = struct {
     host: *Host,
@@ -78,7 +84,7 @@ conns: std.ArrayList(*Conn) = .empty,
 /// and ended ones stay until `syncInstalled` drops them.
 procs: std.ArrayList(*Proc) = .empty,
 /// The windows open now, oldest first: a starting extension hears of each.
-windows: std.ArrayList(u32) = .empty,
+windows: std.ArrayList(OpenWindow) = .empty,
 /// Storage calls of extensions waiting for a file.
 waiting: std.ArrayList(Waiting) = .empty,
 /// The developer socket (`listen`): extensions an IDE started.
@@ -141,15 +147,18 @@ pub fn stop(h: *Host) void {
 
 /// A job window started: a connection for each chip, and its
 /// `onWindowStart`, where it registers.
-pub fn windowStarted(h: *Host, uid: u32) void {
-    h.windows.append(h.gpa, uid) catch {};
-    for (h.procs.items) |p| if (p.state == .running) p.sendSimple("windowStart", uid);
+pub fn windowStarted(h: *Host, uid: u32, number: u32) void {
+    const ow: OpenWindow = .{ .uid = uid, .number = number };
+    h.windows.append(h.gpa, ow) catch {};
+    for (h.procs.items) |p| if (p.state == .running) p.sendWindowStart(ow.uid, ow.number);
     for (h.defs, 0..) |d, i| {
         const k = h.gpa.create(Conn) catch continue;
         k.* = .{ .host = h, .chip = i, .win = .{
             .id = uid,
+            .number = number,
             .ui = .{ .ctx = k, .conn = &connection },
             .events = .{ .ctx = k, .conn = &connection },
+            .sessions = .{ .ctx = k, .conn = &connection },
             .ephemeral = .{ .ctx = k, .conn = &connection, .kind = .ephemeral },
             .stateful = .{ .ctx = k, .conn = &connection, .kind = .stateful },
             .logger = .{ .ctx = k, .write = winLog },
@@ -168,7 +177,10 @@ pub fn windowClosed(h: *Host, uid: u32) void {
     for (h.conns.items) |k| if (k.win.id == uid) {
         k.closed = true;
     };
-    if (std.mem.indexOfScalar(u32, h.windows.items, uid)) |i| _ = h.windows.orderedRemove(i);
+    for (h.windows.items, 0..) |ow, i| if (ow.uid == uid) {
+        _ = h.windows.orderedRemove(i);
+        break;
+    };
     for (h.procs.items) |p| {
         _ = p.masks.remove(uid);
         if (p.state == .running) p.sendSimple("windowClose", uid);
@@ -381,7 +393,14 @@ fn connOf(ctx: *anyopaque) *Conn {
     return @ptrCast(@alignCast(ctx));
 }
 
-const connection: sdk.Connection = .{ .setChip = setChip, .setPeek = setPeek, .setEpeek = setEpeek, .setDisplayMode = setDisplayMode, .registerEvent = registerEvent, .unregisterEvent = unregisterEvent, .setDialog = setDialog, .showDialog = showDialog, .closeDialog = closeDialog, .shell = shell, .storageOpen = storageOpen, .storageRead = storageRead, .storageWrite = storageWrite, .storageClose = storageClose, .storageDelete = storageDelete, .storageList = storageList };
+const connection: sdk.Connection = .{ .setChip = setChip, .setPeek = setPeek, .setEpeek = setEpeek, .setDisplayMode = setDisplayMode, .registerEvent = registerEvent, .unregisterEvent = unregisterEvent, .setDialog = setDialog, .showDialog = showDialog, .closeDialog = closeDialog, .shell = shell, .storageOpen = storageOpen, .storageRead = storageRead, .storageWrite = storageWrite, .storageClose = storageClose, .storageDelete = storageDelete, .storageList = storageList, .request = request };
+
+fn request(ctx: *anyopaque, req: sdk.Request) sdk.Error!sdk.Answer {
+    const k = connOf(ctx);
+    if (k.closed) return error.WindowClosed;
+    const s = k.host.sink orelse return error.WindowClosed;
+    return s.request(s.ctx, k.win.id, k.chip, req, k.host.from_user);
+}
 
 fn shell(ctx: *anyopaque, buf: []u8) sdk.Error![]const u8 {
     const k = connOf(ctx);
@@ -660,7 +679,7 @@ fn greet(h: *Host, p: *Proc) void {
     o.field("name", p.name);
     o.end(false);
     p.sendSimple("gttyStart", null);
-    for (h.windows.items) |uid| p.sendSimple("windowStart", uid);
+    for (h.windows.items) |ow| p.sendWindowStart(ow.uid, ow.number);
 }
 
 /// New connections on the developer socket.
@@ -747,7 +766,8 @@ fn stopProc(h: *Host, p: *Proc) void {
 /// Its chips, peeks, epeeks and dialogs go, and its open files.
 fn clearUi(h: *Host, p: *Proc) void {
     const s = h.sink orelse return;
-    for (h.windows.items) |uid| {
+    for (h.windows.items) |ow| {
+        const uid = ow.uid;
         s.setChip(s.ctx, uid, p.chip, .{ .text = .clear });
         s.setPeek(s.ctx, uid, p.chip, null) catch {};
         s.setEpeek(s.ctx, uid, p.chip, null) catch {};
@@ -787,7 +807,8 @@ fn pumpProcs(h: *Host) void {
 }
 
 fn hasWindow(h: *const Host, uid: u32) bool {
-    return std.mem.indexOfScalar(u32, h.windows.items, uid) != null;
+    for (h.windows.items) |ow| if (ow.uid == uid) return true;
+    return false;
 }
 
 fn num(v: ?sdk.wire.Value) u32 {
@@ -864,6 +885,7 @@ fn procLine(h: *Host, p: *Proc, line: []const u8) void {
 fn procCall(h: *Host, p: *Proc, uid: u32, o: std.json.ObjectMap, a: std.mem.Allocator) void {
     const id = num(o.get("id"));
     const op = str(o.get("op")) orelse return p.sendError(id, error.BadMessage);
+    if (h.procRequest(p, uid, id, op, o, a)) return;
     if (eql(op, "shell")) {
         const s = h.sink orelse return p.sendError(id, error.WindowClosed);
         var buf: [64]u8 = undefined;
@@ -917,6 +939,56 @@ fn procCall(h: *Host, p: *Proc, uid: u32, o: std.json.ObjectMap, a: std.mem.Allo
     }
     p.sendError(id, error.UnknownCall);
 }
+
+/// The bus's requests (`sdk.Request`) from an extension's program; false:
+/// `op` isn't one. Its `ev` says whether it answers the user's click or key.
+fn procRequest(h: *Host, p: *Proc, uid: u32, id: u32, op: []const u8, o: std.json.ObjectMap, a: std.mem.Allocator) bool {
+    const s = h.sink orelse {
+        p.sendError(id, error.WindowClosed);
+        return true;
+    };
+    const user = p.fromUser(num(o.get("ev")));
+    var out: [sessions_max]sdk.Session = undefined;
+    var buf: [sessions_max * 320]u8 = undefined;
+    const req: sdk.Request = if (eql(op, "notice"))
+        .{ .notice = .{ .text = str(o.get("text")) orelse "", .kind = sdk.wire.decode(sdk.NoticeKind, a, o.get("kind") orelse .null) catch .plain } }
+    else if (eql(op, "beep"))
+        .beep
+    else if (eql(op, "copy"))
+        .{ .copy = str(o.get("text")) orelse "" }
+    else if (eql(op, "cd"))
+        .{ .cd = str(o.get("dir")) orelse "" }
+    else if (eql(op, "refresh"))
+        .refresh
+    else if (eql(op, "sessions"))
+        .{ .sessions = .{ .out = out[0..@min(@max(num(o.get("max")), 1), out.len)], .buf = &buf } }
+    else if (eql(op, "sessionName"))
+        .{ .session_name = &buf }
+    else if (eql(op, "sessionSave"))
+        .{ .session_save = str(o.get("name")) orelse "" }
+    else if (eql(op, "sessionRestore"))
+        .{ .session_restore = .{ .id = str(o.get("id")) orelse "", .new_window = switch (o.get("newWindow") orelse .null) {
+            .bool => |b| b,
+            else => false,
+        } } }
+    else if (eql(op, "sessionManage"))
+        .session_manage
+    else
+        return false;
+    const answer = s.request(s.ctx, uid, p.chip, req, user) catch |e| {
+        p.sendError(id, e);
+        return true;
+    };
+    switch (answer) {
+        .none => p.sendReply(id, true),
+        .text => |t| p.sendReply(id, t),
+        .count => |n| p.sendReply(id, out[0..n]),
+    }
+    return true;
+}
+
+/// The most sessions `sessions` hands out.
+const sessions_max = 32;
 
 /// One try at a waiting open / delete; true: answered.
 fn tryWaiting(h: *Host, st: *ExtStorage, wt: Waiting) bool {
@@ -987,7 +1059,7 @@ test "an event reaches only what registered for it, at the pump" {
     Probe.reset();
     var h = Host.init(std.testing.allocator, &probe_defs);
     defer h.stop();
-    h.windowStarted(7);
+    h.windowStarted(7, 1);
     h.fire(7, .{ .kind = .command_started });
     try std.testing.expectEqual(@as(usize, 0), h.queue.items.len); // nobody listens
     h.fire(8, .{ .kind = .window_changed }); // another window
@@ -1006,7 +1078,7 @@ test "a burst is dropped past the limit and spread over frames" {
     Probe.reset();
     var h = Host.init(std.testing.allocator, &probe_defs);
     defer h.stop();
-    h.windowStarted(1);
+    h.windowStarted(1, 1);
     for (0..max_queued + 10) |_| h.fire(1, .{ .kind = .window_changed });
     try std.testing.expectEqual(@as(u64, 10), h.dropped);
     h.pump();
@@ -1019,7 +1091,7 @@ test "a closed window: closed at once, notice at the pump, no more events" {
     Probe.reset();
     var h = Host.init(std.testing.allocator, &probe_defs);
     defer h.stop();
-    h.windowStarted(3);
+    h.windowStarted(3, 1);
     h.fire(3, .{ .kind = .window_changed });
     h.windowClosed(3);
     try std.testing.expectEqual(@as(u32, 0), Probe.closes);
@@ -1034,7 +1106,7 @@ const Opener = struct {
     var opened: u32 = 0;
     pub fn onEvent(_: *sdk.Window, _: *const sdk.Event) anyerror!void {
         // Enough windows that the list of connections moves.
-        for (0..64) |i| host.windowStarted(100 + @as(u32, @intCast(i)));
+        for (0..64) |i| host.windowStarted(100 + @as(u32, @intCast(i)), 1);
         opened += 1;
     }
 };
@@ -1045,7 +1117,7 @@ test "a handler can open windows while its click is handed out" {
     defer h.stop();
     Opener.host = &h;
     Opener.opened = 0;
-    h.windowStarted(1);
+    h.windowStarted(1, 1);
     h.click(1, 0, .{}, true);
     h.pump();
     try std.testing.expectEqual(@as(u32, 1), Opener.opened);
@@ -1056,7 +1128,7 @@ test "filter changes still waiting merge into the latest" {
     Probe.reset();
     var h = Host.init(std.testing.allocator, &probe_defs);
     defer h.stop();
-    h.windowStarted(9);
+    h.windowStarted(9, 1);
     h.filterChanged(9, 0, .{ .id = "filter", .text = "a", .data = "a" });
     h.filterChanged(9, 0, .{ .id = "filter", .text = "ab" });
     try std.testing.expectEqual(@as(usize, 1), h.queue.items.len);
@@ -1072,7 +1144,7 @@ test "a click reaches its owner without registering, even after its window close
     Probe.reset();
     var h = Host.init(std.testing.allocator, &probe_defs);
     defer h.stop();
-    h.windowStarted(5);
+    h.windowStarted(5, 1);
     var data = "abc".*;
     h.click(5, 0, .{ .data = &data }, false);
     h.windowClosed(5);

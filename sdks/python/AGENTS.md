@@ -32,8 +32,9 @@ copy `gtty.py` into your extension's folder.
    your extension gets nothing else, and gtty drops events it can't send
    you (logged). For slow work (network, big files) use a thread and keep
    its results for the next event.
-3. Call `win.ui`, `win.events`, storage and `win.shell()` only from a
-   callback, not from your own thread. `log` works anywhere.
+3. Call `win.ui`, `win.events`, storage, `win.shell()` and the requests
+   (`win.notice`, `copy`, `cd`, …, `win.sessions`) only from a callback,
+   not from your own thread. `log` works anywhere.
 4. Don't invent events, keys or values. If it isn't here, it doesn't exist.
    Say so to the user. A wrong key is a line in `gtty ext logs`, not an
    exception.
@@ -157,7 +158,7 @@ win.events.unregister("window_changed")
 
 | `ev.kind` | When | Fields |
 |---|---|---|
-| `"window_changed"` | At the start, then when something changed | `folder`, `branch`, `remote` |
+| `"window_changed"` | At the start, then when something changed | `folder`, `branch`, `remote`, `host` (the ssh / mosh destination) |
 | `"command_started"` | A command starts in the window's shell | `command`, `folder`, `remote` |
 | `"key"` | A key pressed while the window has the keyboard | `key`, `text`, `ctrl`, `shift`, `alt`, `cmd` |
 | `"button_click"` | Your click, hover or filter; never register it | `button` |
@@ -293,6 +294,44 @@ names = win.stateful.list()
 name = win.shell()   # "bash" inside zsh; what's in front isn't a shell: the window's own
 ```
 
+## Asking gtty
+
+gtty is the core: it runs the windows and their shells. Besides your own
+UI and files you can ask it for a few things; each waits for gtty's answer
+(call them from a callback). Those marked **user** work only while you
+handle the user's click or key (an event they caused, still recent);
+otherwise they fail with `NotFromUser`, and that is on purpose: an
+extension must not change the clipboard, type in the shell or replace the
+user's windows by itself.
+
+```python
+win.notice("3 hosts found", "ok")     # "plain", "ok" (green), "err" (red)
+win.beep()
+win.copy(b.data)                      # user
+try:
+    win.cd(folder)                    # user
+except gtty.ShellBusy:
+    win.notice("the shell is busy", "err")
+win.refresh()                         # folder and branch looked at now
+n = win.number                        # the #3 the user sees
+
+recent = win.sessions.list(7)         # [Session(id, name)], the last used last
+name = win.sessions.suggest_name()    # gtty.NothingToSave
+win.sessions.save(name)
+win.sessions.restore(recent[0].id, new_window=False)  # user
+win.sessions.manage()                 # user
+```
+
+- `cd` is the only thing an extension can make the shell do, and only at its
+  prompt with nothing typed; it can't type anything else, nor read the
+  window's text.
+- `copy` flashes what was clicked in your open peek (the row picked, else
+  the top text) and says "copied …" in the status bar: don't add your own
+  notice for it.
+- Sessions are gtty's saved screens (shell windows and where they were),
+  shared by every gtty. `restore` here replaces this gtty's windows (gtty
+  asks first when some still work); with `new_window` a new gtty opens.
+
 ## Logs
 
 ```python
@@ -316,13 +355,16 @@ something doesn't work, read these first.
 ## Errors
 
 `gtty.GttyError` and its subclasses `WindowClosed`, `NoChip`, `BadName`,
-`NoFile`, `FileInUse`, `FileClosed`, `StorageFull`, `StorageFailed`
-(`e.name` is the name).
+`NoFile`, `FileInUse`, `FileClosed`, `StorageFull`, `StorageFailed`,
+`ShellBusy` (`cd`: the shell isn't at its prompt), `NotFromUser` (a
+**user** request outside the user's click or key), `NothingToSave`
+(`sessions.suggest_name`) (`e.name` is the name).
 
 - `win.ui.*` and `win.events.*` don't wait for gtty: a mistake gtty finds is
   a line in `gtty ext logs`. A wrong argument here (`set_display_mode("x")`)
   raises `ValueError` / `TypeError`.
-- Storage and `win.shell()` wait for gtty's answer and raise its error.
+- Storage, `win.shell()` and the requests wait for gtty's answer and raise
+  its error.
 
 ## Package and run
 
@@ -444,6 +486,31 @@ An exception raised in any callback becomes a line in `gtty ext logs`; the
 extension keeps running and the user sees nothing.
 
 ### `win` and `ext`
+
+**`win.number`** — the number the user sees on the window (`#3`), for text
+the user reads.
+
+**`win.notice(text, kind="plain")`** — a short notice in the status bar;
+`kind` `"plain"`, `"ok"` (green), `"err"` (red).
+
+**`win.beep()`** — gtty's error beep.
+
+**`win.copy(text)`** — **user**. The clipboard and gtty's paste history;
+"copied …" in the status bar; what was clicked in your open peek flashes.
+`NotFromUser` outside the user's click or key.
+
+**`win.cd(folder)`** — **user**. `cd -- '<folder>'` typed and run in the
+window's shell; `ShellBusy` when it isn't waiting at its prompt with
+nothing typed.
+
+**`win.refresh()`** — gtty looks at the folder and branch now;
+`window_changed` follows if they changed (after your own `git switch`).
+
+**`win.sessions.list(max=7)`** → `[Session]` (`.id`, `.name`), the last used
+last. **`suggest_name()`** → the name gtty gives a session now;
+`NothingToSave` when no window would be kept. **`save(name)`**.
+**`restore(id, new_window=False)`** — **user**; here (gtty may ask first)
+or in a new gtty. **`manage()`** — **user**; opens the Session Manager.
 
 **`win.id`** — the window's id (int), the same in every call for that
 window and unique in this gtty. Key your state by it.

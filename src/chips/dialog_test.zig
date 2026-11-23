@@ -8,7 +8,6 @@
 
 const std = @import("std");
 const sdk = @import("gtty");
-const hooks = @import("hooks.zig");
 
 const hosts: []const []const u8 = &.{ "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota", "kappa" };
 
@@ -82,7 +81,7 @@ pub const Actions = struct {
 
     pub fn shellName(win: *sdk.Window, _: sdk.ButtonClick) !void {
         var buf: [100]u8 = undefined;
-        hooks.say(std.fmt.bufPrint(&buf, "shell: {s}", .{try win.shell()}) catch "shell");
+        try win.notice(std.fmt.bufPrint(&buf, "shell: {s}", .{try win.shell()}) catch "shell", .plain);
     }
 
     /// Writes `note` and reads it back, in both storages.
@@ -99,7 +98,7 @@ pub const Actions = struct {
         try r.close();
         var out: [200]u8 = undefined;
         var names: [64]u8 = undefined;
-        hooks.say(std.fmt.bufPrint(&out, "storage: read '{s}', files: {s}", .{ buf[0..n], std.mem.trim(u8, try win.stateful.list(&names), "\n") }) catch "storage");
+        try win.notice(std.fmt.bufPrint(&out, "storage: read '{s}', files: {s}", .{ buf[0..n], std.mem.trim(u8, try win.stateful.list(&names), "\n") }) catch "storage", .plain);
     }
 
     /// Reads what another window wrote; ephemeral is this window's own.
@@ -113,29 +112,29 @@ pub const Actions = struct {
             break :blk "yes";
         } else |_| "no";
         var out: [200]u8 = undefined;
-        hooks.say(std.fmt.bufPrint(&out, "stateful: '{s}', ephemeral here: {s}", .{ buf[0..n], own }) catch "storage");
+        try win.notice(std.fmt.bufPrint(&out, "stateful: '{s}', ephemeral here: {s}", .{ buf[0..n], own }) catch "storage", .plain);
     }
 
     /// Opens a file and leaves it open: others get "in use".
     pub fn storageHold(win: *sdk.Window, _: sdk.ButtonClick) !void {
         _ = try win.stateful.openWrite("held", 0);
-        hooks.say("storage: held open");
+        try win.notice("storage: held open", .plain);
     }
 
     pub fn storageTry(win: *sdk.Window, _: sdk.ButtonClick) !void {
         if (win.stateful.openRead("held", 0)) |f| {
             try f.close();
-            hooks.say("storage: free");
+            try win.notice("storage: free", .plain);
         } else |e| {
             var out: [100]u8 = undefined;
-            hooks.say(std.fmt.bufPrint(&out, "storage: {s}", .{@errorName(e)}) catch "storage");
+            try win.notice(std.fmt.bufPrint(&out, "storage: {s}", .{@errorName(e)}) catch "storage", .plain);
         }
     }
 
     /// What reached the extension, in the status bar.
-    pub fn said(_: *sdk.Window, b: sdk.ButtonClick) !void {
+    pub fn said(win: *sdk.Window, b: sdk.ButtonClick) !void {
         var buf: [200]u8 = undefined;
-        hooks.say(std.fmt.bufPrint(&buf, "said: id={s} text={s} data={s} command={}", .{ b.id, b.text, b.data, b.command }) catch "said");
+        try win.notice(std.fmt.bufPrint(&buf, "said: id={s} text={s} data={s} command={}", .{ b.id, b.text, b.data, b.command }) catch "said", .plain);
     }
 
     pub fn filterHosts(win: *sdk.Window, b: sdk.ButtonClick) !void {
@@ -230,7 +229,7 @@ pub const Actions = struct {
 
     pub fn report(win: *sdk.Window, b: sdk.ButtonClick) !void {
         var buf: [200]u8 = undefined;
-        hooks.say(std.fmt.bufPrint(&buf, "dialog: {s} name={s} port={s} keep={} host={s}", .{ b.id, b.field("name") orelse "-", b.field("port") orelse "-", b.checked("keep"), b.field("host") orelse "-" }) catch "dialog");
+        try win.notice(std.fmt.bufPrint(&buf, "dialog: {s} name={s} port={s} keep={} host={s}", .{ b.id, b.field("name") orelse "-", b.field("port") orelse "-", b.checked("keep"), b.field("host") orelse "-" }) catch "dialog", .plain);
         // A name of "bad": rejected, the dialog stays.
         if (b.is("ok") and std.mem.eql(u8, b.field("name") orelse "", "bad")) {
             return win.ui.set(.{ .dialog = .{ .@"error" = "that name is not allowed" } });

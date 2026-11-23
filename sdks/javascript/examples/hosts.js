@@ -72,8 +72,11 @@ const actions = {
     filters.set(win.id, b.text);
     return setList(win);
   },
-  pick(win, b) {
+  // The host on the chip, and on the clipboard (the user's click: gtty
+  // allows the copy).
+  async pick(win, b) {
     win.ui.set({ chip: { text: b.data } });
+    await win.copy(b.data);
     win.ui.setDisplayMode("chip"); // gtty only reports: close it here
   },
   // A ⋮ pick: b.id is the item's.
@@ -84,7 +87,7 @@ const actions = {
     win.ui.set({
       dialog: {
         title: "About hosts", layout: "form", timeout: 20, buttons: "ok", onclick: "closeIt",
-        fields: [{ id: "info", type: "label", label: "running under " + (await win.shell()) }],
+        fields: [{ id: "info", type: "label", label: `window #${win.number}, running under ${await win.shell()}` }],
       },
     });
     win.ui.showDialog();

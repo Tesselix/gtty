@@ -63,7 +63,13 @@ clicks back to you.
   git branch and ssh state changing, a command starting (its command line
   and folder), a key pressed, and clicks on your own chip, peek, epeek or
   dialog. Nothing else: it can't read the window's text or output, can't
-  type into the shell, can't draw, and can't see other extensions.
+  draw, and can't see other extensions.
+- **It can ask gtty** (gtty is the core, extensions sit on its bus of
+  events and requests): a notice in the status bar, a beep, the window's
+  number, gtty's saved sessions, a refresh of the folder and branch. In
+  answer to the user's own click or key only: copy to the clipboard, `cd`
+  in the window's shell (only at its prompt; nothing else can be typed),
+  restore a session, open the Session Manager.
 - **It can keep files:** per instance (gone with the window) or shared by
   all its instances in every gtty, through the SDK's storage, not the file
   system paths of its own choosing.

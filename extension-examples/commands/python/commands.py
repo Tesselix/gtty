@@ -4,7 +4,6 @@
 very common ones: cd, ls, pwd, …). A click on one copies it. See ../README.md."""
 
 import os
-import subprocess
 import sys
 import time
 
@@ -187,27 +186,7 @@ def save(win, entries):
         f.write(format_entries(entries))
 
 
-# ---- the clipboard: the SDK can't type into a window ----
-
-def copy(text):
-    """None when copied, else why not."""
-    if sys.platform == "darwin":
-        tools = [["pbcopy"]]
-    else:
-        tools = []
-        if os.environ.get("WAYLAND_DISPLAY"):
-            tools.append(["wl-copy"])
-        tools += [["xclip", "-selection", "clipboard"], ["xsel", "--clipboard", "--input"]]
-    for argv in tools:
-        try:
-            r = subprocess.run(argv, input=text.encode(), stdout=subprocess.DEVNULL,
-                               stderr=subprocess.DEVNULL, timeout=2)
-        except (OSError, subprocess.SubprocessError):
-            continue
-        if r.returncode == 0:
-            return None
-    return "no clipboard tool (pbcopy, wl-copy, xclip, xsel)"
-
+# ---- the clipboard: gtty copies, in answer to the user's click ----
 
 PASTE = "⌘V" if sys.platform == "darwin" else "Ctrl+Shift+V"
 
@@ -280,12 +259,13 @@ def set_list(win, entries):
 
 
 def copy_it(win, cmd):
-    why = copy(cmd)
-    if why:
-        win.log("warn", why)
-        win.ui.set(epeek={"state": "err", "message": [why]})
-    else:
-        win.ui.set(epeek={"state": "ok", "message": ["copied: %s pastes it" % PASTE]})
+    try:
+        win.copy(cmd)
+    except gtty.GttyError as e:
+        win.log("warn", "copy: %s" % e)
+        win.ui.set(epeek={"state": "err", "message": ["not copied"]})
+        return
+    win.ui.set(epeek={"state": "ok", "message": ["copied: %s pastes it" % PASTE]})
 
 
 class Actions:
