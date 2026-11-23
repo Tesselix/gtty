@@ -4,8 +4,8 @@
 # Installable packages from the self-contained binaries of build-bin.sh
 # (SDL3, SDL3_ttf, freetype linked in), into dist/:
 # - gtty-<v>-macos.dmg        gtty.app (icon src/assets/AppIcon.icns), arm64, macOS 13+
-# - gtty_<v>_amd64.deb        Ubuntu / Debian      } /usr/bin/gtty, a launcher and
-# - gtty-<v>-1.x86_64.rpm     Fedora               } icons (src/assets/gtty-icon.png)
+# - gtty-<v>-amd64.deb        Ubuntu / Debian      } /usr/bin/gtty, a launcher and
+# - gtty-<v>-x86_64.rpm       Fedora               } icons (src/assets/gtty-icon.png)
 # - gtty-<v>-linux-x86_64.tar.gz  the same files, for any other distro
 # - gtty-sdk-<language>-<v>.tar.gz  what extensions import (package-sdks.sh)
 # The version is build.zig.zon's .version (0.0.0-dev in git; releases
@@ -148,8 +148,10 @@ for n in 16 24 32 48 64 128 256 512; do
 done
 
 export VERSION ARCH=amd64 # files: $LROOT (path fixed in nfpm.yaml)
-nfpm package --config packaging/linux/nfpm.yaml --packager deb --target dist/
-nfpm package --config packaging/linux/nfpm.yaml --packager rpm --target dist/
+# Hyphens in the names, as the other packages (nfpm's defaults are
+# gtty_<v>_amd64.deb and gtty-<v>-1.x86_64.rpm).
+nfpm package --config packaging/linux/nfpm.yaml --packager deb --target "dist/gtty-$VERSION-amd64.deb"
+nfpm package --config packaging/linux/nfpm.yaml --packager rpm --target "dist/gtty-$VERSION-x86_64.rpm"
 
 # Same layout as the packages, under a prefix: install.sh copies it to
 # /usr/local (or PREFIX).
