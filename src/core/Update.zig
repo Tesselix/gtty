@@ -124,9 +124,9 @@ pub fn installCommand(buf: []u8, inst: Installer, r: *const Release) ?[]const u8
     const t = r.tag();
     return switch (inst) {
         .none => null,
-        .apt => std.fmt.bufPrint(buf, "curl -fL -o /tmp/gtty_{0s}_amd64.deb " ++ download_url ++ "{1s}/gtty_{0s}_amd64.deb && sudo apt install /tmp/gtty_{0s}_amd64.deb", .{ v, t }) catch null,
-        .dnf, .yum, .zypper => std.fmt.bufPrint(buf, "sudo {s} install " ++ download_url ++ "{s}/gtty-{s}-1.x86_64.rpm", .{ @tagName(inst), t, v }) catch null,
-        .rpm => std.fmt.bufPrint(buf, "sudo rpm -U " ++ download_url ++ "{s}/gtty-{s}-1.x86_64.rpm", .{ t, v }) catch null,
+        .apt => std.fmt.bufPrint(buf, "curl -fL -o /tmp/gtty-{0s}-amd64.deb " ++ download_url ++ "{1s}/gtty-{0s}-amd64.deb && sudo apt install /tmp/gtty-{0s}-amd64.deb", .{ v, t }) catch null,
+        .dnf, .yum, .zypper => std.fmt.bufPrint(buf, "sudo {s} install " ++ download_url ++ "{s}/gtty-{s}-x86_64.rpm", .{ @tagName(inst), t, v }) catch null,
+        .rpm => std.fmt.bufPrint(buf, "sudo rpm -U " ++ download_url ++ "{s}/gtty-{s}-x86_64.rpm", .{ t, v }) catch null,
     };
 }
 
@@ -228,9 +228,9 @@ test "install commands" {
     const t = std.testing;
     const r = parseResponse(t.allocator, "{\"tag_name\":\"v0.4.0\"}\n200").release;
     var buf: [512]u8 = undefined;
-    try t.expectEqualStrings("curl -fL -o /tmp/gtty_0.4.0_amd64.deb https://github.com/Tesselix/gtty/releases/download/v0.4.0/gtty_0.4.0_amd64.deb && sudo apt install /tmp/gtty_0.4.0_amd64.deb", installCommand(&buf, .apt, &r).?);
-    try t.expectEqualStrings("sudo dnf install https://github.com/Tesselix/gtty/releases/download/v0.4.0/gtty-0.4.0-1.x86_64.rpm", installCommand(&buf, .dnf, &r).?);
-    try t.expectEqualStrings("sudo rpm -U https://github.com/Tesselix/gtty/releases/download/v0.4.0/gtty-0.4.0-1.x86_64.rpm", installCommand(&buf, .rpm, &r).?);
+    try t.expectEqualStrings("curl -fL -o /tmp/gtty-0.4.0-amd64.deb https://github.com/Tesselix/gtty/releases/download/v0.4.0/gtty-0.4.0-amd64.deb && sudo apt install /tmp/gtty-0.4.0-amd64.deb", installCommand(&buf, .apt, &r).?);
+    try t.expectEqualStrings("sudo dnf install https://github.com/Tesselix/gtty/releases/download/v0.4.0/gtty-0.4.0-x86_64.rpm", installCommand(&buf, .dnf, &r).?);
+    try t.expectEqualStrings("sudo rpm -U https://github.com/Tesselix/gtty/releases/download/v0.4.0/gtty-0.4.0-x86_64.rpm", installCommand(&buf, .rpm, &r).?);
     try t.expect(installCommand(&buf, .none, &r) == null);
     try t.expectEqual(Installer.zypper, Installer.fromName("zypper"));
     try t.expectEqual(Installer.none, Installer.fromName("pacman"));

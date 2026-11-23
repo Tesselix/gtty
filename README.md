@@ -40,25 +40,25 @@ x86_64, glibc 2.31 or later. The latest stable release in one line.
 Debian / Ubuntu:
 
 ```sh
-curl -fLO https://github.com/Tesselix/gtty/releases/latest/download/gtty_amd64.deb && sudo apt install ./gtty_amd64.deb
+curl -fLO https://github.com/Tesselix/gtty/releases/latest/download/gtty-amd64.deb && sudo apt install ./gtty-amd64.deb
 ```
 
 Fedora / RHEL (older systems: `yum` instead of `dnf`):
 
 ```sh
-sudo dnf install https://github.com/Tesselix/gtty/releases/latest/download/gtty.x86_64.rpm
+sudo dnf install https://github.com/Tesselix/gtty/releases/latest/download/gtty-x86_64.rpm
 ```
 
 openSUSE:
 
 ```sh
-sudo zypper install https://github.com/Tesselix/gtty/releases/latest/download/gtty.x86_64.rpm
+sudo zypper install https://github.com/Tesselix/gtty/releases/latest/download/gtty-x86_64.rpm
 ```
 
 Any other rpm-based distro:
 
 ```sh
-sudo rpm -U https://github.com/Tesselix/gtty/releases/latest/download/gtty.x86_64.rpm
+sudo rpm -U https://github.com/Tesselix/gtty/releases/latest/download/gtty-x86_64.rpm
 ```
 
 Run the same line again to update.
@@ -70,10 +70,10 @@ Or download from the **[latest release](https://github.com/Tesselix/gtty/release
 
 - **macOS** (Apple Silicon, 13+): `gtty-<version>-macos.dmg`; open it and
   drag gtty to Applications.
-- **Debian / Ubuntu** (x86_64): `gtty_<version>_amd64.deb`, then
-  `sudo apt install ./gtty_*_amd64.deb`
-- **Fedora / RHEL / openSUSE** (x86_64): `gtty-<version>-1.x86_64.rpm`, then
-  `sudo dnf install ./gtty-*.x86_64.rpm` (openSUSE: `sudo zypper install …`)
+- **Debian / Ubuntu** (x86_64): `gtty-<version>-amd64.deb`, then
+  `sudo apt install ./gtty-*-amd64.deb`
+- **Fedora / RHEL / openSUSE** (x86_64): `gtty-<version>-x86_64.rpm`, then
+  `sudo dnf install ./gtty-*-x86_64.rpm` (openSUSE: `sudo zypper install …`)
 - **Other Linux:** `gtty-<version>-linux-x86_64.tar.gz`, then `./install.sh`
   inside it.
 - **From source:** see [HACKING.md](HACKING.md) (Zig 0.16 + SDL3).
