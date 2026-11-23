@@ -66,6 +66,9 @@ state_ms: u64 = 0,
 flash_ms: u64 = 0,
 /// The list row that flashes instead of the top row's text.
 flash_row: ?usize = null,
+/// The last click or Enter picked a list row: a copy it causes flashes
+/// that row (`flashClicked`), else the top row's text.
+clicked_row: bool = false,
 /// When the mouse left the peek (the countdown runs); 0 while it is over it.
 leave_ms: u64 = 0,
 /// `hoverExpand`: since when the mouse rests on it, folded (each move
@@ -246,6 +249,11 @@ pub fn setMode(p: *Peek, mode: Mode, keys: bool) void {
 }
 
 /// Something was copied: the top row's text, or the selected row, flashes.
+/// Something was copied for the last click: flash what was clicked.
+pub fn flashClicked(p: *Peek) void {
+    p.flashText(p.clicked_row);
+}
+
 pub fn flashText(p: *Peek, row: bool) void {
     p.flash_ms = @max(c.SDL_GetTicks(), 1);
     p.flash_row = if (row) p.sel else null;
@@ -264,6 +272,7 @@ fn toggleExpand(p: *Peek) Action {
 
 fn fireLine(p: *Peek, l: *const sdk.Line) Action {
     if (l.onclick.len == 0) return .none;
+    p.clicked_row = true;
     return .{ .fire = .{ .id = l.id, .text = l.text.plain(&p.text_buf), .data = l.data, .function = l.onclick } };
 }
 
@@ -417,6 +426,7 @@ fn rowAt(p: *const Peek, x: f32, y: f32) ?usize {
 
 /// A left click inside the peek.
 pub fn click(p: *Peek, x: f32, y: f32) Action {
+    p.clicked_row = false;
     if (p.mode == .epeek) p.keys = true;
     switch (p.partAt(x, y)) {
         .close => return .close,
@@ -462,6 +472,7 @@ pub fn wheel(p: *Peek, dy: f32) void {
 /// picks, Esc closes, Tab takes the first option, Backspace edits the
 /// filter. Typing keeps it open (the countdown starts over).
 pub fn key(p: *Peek, k: c.SDL_Keycode) Action {
+    p.clicked_row = false;
     if (p.leave_ms != 0) p.leave_ms = c.SDL_GetTicks();
     switch (k) {
         c.SDLK_ESCAPE => return .close,

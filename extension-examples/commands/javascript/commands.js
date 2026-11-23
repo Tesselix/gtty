@@ -8,7 +8,6 @@
 
 const fs = require("fs");
 const path = require("path");
-const { spawnSync } = require("child_process");
 // gtty.js beside this file in a package; the SDK's own in this repository.
 const gtty = require(fs.existsSync(path.join(__dirname, "gtty.js")) ? "./gtty.js" : "../../../sdks/javascript/gtty.js");
 
@@ -162,22 +161,7 @@ async function save(win, entries) {
   await f.close();
 }
 
-// ---- the clipboard: the SDK can't type into a window ----
-
-/** null when copied, else why not. */
-function copy(text) {
-  const tools = [];
-  if (process.platform === "darwin") tools.push(["pbcopy"]);
-  else {
-    if (process.env.WAYLAND_DISPLAY) tools.push(["wl-copy"]);
-    tools.push(["xclip", "-selection", "clipboard"], ["xsel", "--clipboard", "--input"]);
-  }
-  for (const [cmd, ...args] of tools) {
-    const r = spawnSync(cmd, args, { input: text, stdio: ["pipe", "ignore", "ignore"], timeout: 2000 });
-    if (!r.error && r.status === 0) return null;
-  }
-  return "no clipboard tool (pbcopy, wl-copy, xclip, xsel)";
-}
+// ---- the clipboard: gtty copies, in answer to the user's click ----
 
 const PASTE = process.platform === "darwin" ? "⌘V" : "Ctrl+Shift+V";
 
@@ -227,12 +211,15 @@ function setList(win, entries) {
   });
 }
 
-function copyIt(win, cmd) {
-  const why = copy(cmd);
-  if (why) {
-    win.log("warn", why);
-    win.ui.set({ epeek: { state: "err", message: [why] } });
-  } else win.ui.set({ epeek: { state: "ok", message: [`copied: ${PASTE} pastes it`] } });
+async function copyIt(win, cmd) {
+  try {
+    await win.copy(cmd);
+  } catch (e) {
+    win.log("warn", `copy: ${e.message}`);
+    win.ui.set({ epeek: { state: "err", message: ["not copied"] } });
+    return;
+  }
+  win.ui.set({ epeek: { state: "ok", message: [`copied: ${PASTE} pastes it`] } });
 }
 
 // Every onclick / onhover name is a function here.
@@ -245,11 +232,11 @@ const actions = {
     filters.set(win.id, b.text);
     setList(win, await load(win));
   },
-  pick(win, b) {
-    copyIt(win, b.data);
+  async pick(win, b) {
+    await copyIt(win, b.data);
   },
   async rowMenu(win, b) {
-    if (b.id === "copy") copyIt(win, b.data);
+    if (b.id === "copy") await copyIt(win, b.data);
     else if (b.id === "forget") {
       const entries = (await load(win)).filter((e) => e[2] !== b.data);
       await save(win, entries);

@@ -3,8 +3,9 @@
 # An extension's chip, peek and epeek (src/chips/dialog_test.zig): styled
 # text, both dots, buttons, the filter and its help list, hover events,
 # and opening by itself without the keyboard. Run from a window 1100 wide
-# with four standard chips (the extension's chip about x 470, y 618):
-#   gtty --script test/peek.gt
+# with four standard chips, in a folder named "peek" (the chips move with
+# the folder's name; the extension's chip about x 450, y 618):
+#   mkdir -p peek && cd peek && gtty --script $REPO/test/peek.gt
 # Expected: pk1 a bold + yellow chip; pk2 a peek, its "line" struck through,
 # ⋯ and ×; status "said: … data=chip". pk3 status data=horizontal. pk4 the
 # list: add / hosts / save, ⋮ on beta, ⋯ on gamma, save on delta. pk5
@@ -20,10 +21,10 @@
 /click 470 618
 /wait 400
 /shot pk2-peek.bmp
-/click 544 612
+/click 528 612
 /wait 300
 /shot pk3-dots.bmp
-/click 436 612
+/click 419 612
 /wait 500
 /shot pk4-epeek.bmp
 /text al
@@ -38,7 +39,7 @@
 /key backspace
 /key backspace
 /wait 300
-/click 641 433
+/click 625 433
 /wait 400
 /shot pk7-menu.bmp
 /key down

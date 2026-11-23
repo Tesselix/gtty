@@ -34,8 +34,9 @@ older examples.
    your extension gets nothing else, and gtty drops events it can't send
    you (logged). gtty itself never waits for you. For slow work (network,
    big files) use your own thread and keep its results for the next event.
-3. Call `win.ui`, `win.events`, storage and `win.shell()` only from a
-   callback, not from your own thread. `log` works anywhere.
+3. Call `win.ui`, `win.events`, storage, `win.shell()` and the requests
+   (`win.notice`, `copy`, `cd`, …, `win.sessions`) only from a callback,
+   not from your own thread. `log` works anywhere.
 4. Don't invent events or fields. If it isn't here, it doesn't exist. Say
    so to the user.
 5. In text the user reads, write "window", never "job window".
@@ -170,14 +171,19 @@ try win.events.unregisterEvent(.window_changed);
 
 | `ev.kind` | When | Fields |
 |---|---|---|
-| `.window_changed` | At the start, then when something changed | `folder`, `branch`, `remote` |
+| `.window_changed` | At the start, then when something changed or a command ended | `folder`, `branch`, `remote`, `host`, `busy`, `status` |
 | `.command_started` | A command starts in the window's shell | `command`, `folder`, `remote` |
 | `.key` | A key pressed while the window has the keyboard | `key`, `text`, `ctrl`, `shift`, `alt`, `cmd` |
 | `.button_click` | Your click, hover or filter; never register it | `button` |
 
 Also `ev.eventId`. Strings last until the handler returns: copy what you
 keep. `branch` is empty outside a repo. With `remote` true, `folder` is the
-local one.
+local one and `host` the ssh / mosh destination as typed.
+`busy` is true while a command runs in the window's shell (from its
+`command_started`); when it ends, `window_changed` comes with `busy` false
+and `status`, its exit status (0 = success, 130 = Ctrl+C; null before the
+first command or when the shell didn't say). Only zsh and bash windows
+report commands; in an ssh session the command running is ssh itself.
 
 ### Keys
 
@@ -319,6 +325,46 @@ The name of the shell in front, such as `bash` inside `zsh`, or any shell the
 system lists. If something else is in front, such as `vim`, it's the window's
 own shell.
 
+## Asking gtty
+
+gtty is the core: it runs the windows and their shells. Besides your own
+UI and files you can ask it for a few things; each waits for gtty's answer
+(call them from a callback). Those marked **user** work only while you
+handle the user's click or key (an event they caused, still recent);
+otherwise they fail with `NotFromUser`, and that is on purpose: an
+extension must not change the clipboard, type in the shell or replace the
+user's windows by itself.
+
+```zig
+try win.notice("3 hosts found", .ok);   // .plain, .ok (green), .err (red)
+try win.beep();
+try win.copy(b.data);                   // user
+win.cd(dir) catch |e| switch (e) {      // user
+    error.ShellBusy => try win.notice("the shell is busy", .err),
+    else => return e,
+};
+try win.refresh();                      // folder and branch looked at now
+const n = win.number;                   // the #3 the user sees
+
+var buf: [2048]u8 = undefined;
+var rows: [7]gtty.Session = undefined;
+const recent = try win.sessions.list(&buf, &rows); // the last used last
+const name = try win.sessions.suggestName(&buf);   // error.NothingToSave
+try win.sessions.save(name);
+try win.sessions.restore(recent[0].id, false);     // user; true: a new gtty
+try win.sessions.manage();                          // user
+```
+
+- `cd` is the only thing an extension can make the shell do, and only at its
+  prompt with nothing typed; it can't type anything else, nor read the
+  window's text.
+- `copy` flashes what was clicked in your open peek (the row picked, else
+  the top text) and says "copied …" in the status bar: don't add your own
+  notice for it.
+- Sessions are gtty's saved screens (shell windows and where they were),
+  shared by every gtty. `restore` here replaces this gtty's windows (gtty
+  asks first when some still work); with `new_window` a new gtty opens.
+
 ## Logs
 
 ```zig
@@ -348,12 +394,16 @@ first. Line breaks and control characters in a message are shown escaped
 ## Errors
 
 `gtty.Error`: `WindowClosed`, `NoDialog`, `BadDialog`, `NoChip`, `BadName`,
-`NoFile`, `FileInUse`, `FileClosed`, `StorageFull`, `StorageFailed`.
+`NoFile`, `FileInUse`, `FileClosed`, `StorageFull`, `StorageFailed`,
+`ShellBusy` (`cd`: the shell isn't at its prompt), `NotFromUser` (a
+**user** request outside the user's click or key), `NothingToSave`
+(`sessions.suggestName`).
 
 - `win.ui.*` and `win.events.*` don't wait for gtty: a mistake gtty finds
   (a peek with no chip: `set: NoChip`) is a line in `gtty ext logs`, not an
   error here. `BadDialog` for a wrong name is still returned.
-- Storage and `win.shell()` wait for gtty's answer and return its error.
+- Storage, `win.shell()` and the requests wait for gtty's answer and
+  return its error.
 - An error returned from a callback goes to `gtty ext logs`, and the user
   sees nothing: report what matters in the UI.
 
@@ -481,6 +531,34 @@ An error you return from any callback becomes a line in `gtty ext logs`;
 the extension keeps running and the user sees nothing.
 
 ### `win` and `ext`
+
+**`win.number: u32`** — the number the user sees on the window (`#3`),
+for text the user reads; gtty's commands (`focus 3`) take it.
+
+**`win.notice(text, kind) !void`** — a short notice in gtty's status bar;
+`kind` `.plain`, `.ok` (green), `.err` (red).
+
+**`win.beep() !void`** — gtty's error beep (with a red notice, say).
+
+**`win.copy(text) !void`** — **user**. The clipboard and gtty's paste
+history; "copied …" in the status bar; what was clicked in your open peek
+flashes. `error.NotFromUser` outside the user's click or key.
+
+**`win.cd(dir) !void`** — **user**. `cd -- '<dir>'` typed and run in the
+window's shell. `error.ShellBusy` when the shell isn't waiting at its
+prompt with nothing typed: tell the user (an epeek `state = .err`).
+
+**`win.refresh() !void`** — gtty looks at the folder and branch now (it
+does once a second anyway); `window_changed` follows if they changed. Use
+it after your own `git switch`.
+
+**`win.sessions.list(buf, out) ![]Session`** — up to `out.len` sessions
+used last, the last used last; `id` and `name` point into `buf` (what
+doesn't fit is left out). **`suggestName(buf) ![]const u8`** — the name
+gtty gives a session now; `error.NothingToSave` when no window would be
+kept. **`save(name) !void`**. **`restore(id, new_window) !void`** —
+**user**; here (gtty may ask first) or in a new gtty. **`manage() !void`**
+— **user**; opens the Session Manager.
 
 **`win.id: u32`** — the window's id, the same in every call for that window
 and unique in this gtty. Key your state by it.

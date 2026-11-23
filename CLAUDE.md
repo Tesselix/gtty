@@ -245,8 +245,11 @@ the shell. Users expect it to behave like a shell in a terminal.
     `~/.local/state/gtty/focus-folders` (0600, lines `uses\tlast\tpath`;
     an old `recent-folders` there is renamed to it, `migrate`);
     `FocusFolders.sync` re-reads it and adds only this process's new
-    uses (`Entry.added`), at start, on opening the list, ≤ every 10 s
-    while dirty, at exit; script runs only with `GTTY_FOCUS`. Test:
+    uses (`Entry.added`), at start, on opening the list, after a use
+    when the last sync is > 10 s old, at exit (`onGttyClose`); the list
+    and file are the focus chip's own (`src/chips/focus.zig`, 2026-11-22;
+    App has none); script runs only with `GTTY_FOCUS`
+    (`inproc.keep_files`). Test:
     `test/focus.gt`.
   - **Session chip** (2026-10-28; `session_chip_r`, two-windows icon +
     `session`, after the focus chip, also in a remote session, also
@@ -267,10 +270,11 @@ the shell. Users expect it to behave like a shell in a terminal.
     only way in (the Session menu is gone, 2026-11-04, the user's
     rule). Its header's
     **save** button (2026-10-31; floppy + "save" left of ×, `save_r`,
-    `Action.save`) → `App.askSnapshot` → a click to the session chip
-    (`src/chips/session.zig`, `data` = `snapshotName`): a dialog, "Save the
-    current session", the name all selected (typing replaces it), 30 s
-    (empty name: red line, stays open) → `takeSnapshot(name)`. Test:
+    `Action.save`) → the session chip (`src/chips/session.zig`) asks
+    `win.sessions.suggestName` (`snapshotName`; no window: beep + red
+    notice) and opens its dialog, "Save the current session", the name
+    all selected (typing replaces it), 30 s (empty name: red line, stays
+    open) → `win.sessions.save` → `takeSnapshot(name)`. Test:
     `test/session-save.gt`.
     Left of save, **manage** (2026-11-02; a list icon + "manage",
     `manage_r`, `Action.manage`, `Peek.headButton` draws both): the
@@ -1275,16 +1279,30 @@ decisions; items marked *open* are undecided.
   and sets its own text (`win.ui.set` → `App.chipChanged` →
   `JobWindow.setChip`; no text = not shown). Events (`App.fireChipEvents`):
   `window_changed` (at start, then only on a change: `changed_seq`, set in
-  `tickRest`), `command_started` (`started_seq`, in `pump`) and `key`
+  `tickRest`, and at a command's end, the D mark: `busy` false + `status`
+  from `JobWindow.cmd_busy` / `cmd_status`, 2026-11-23; a field on the
+  event, not a new one), `command_started` (`started_seq`, in `pump`;
+  fired before `window_changed` in the same frame) and `key`
   (2026-11-11; `App.keyPressed` / `textTyped` / `flushKey`: a key and its
   text as one event, the key's name from `keyName`, the modifier flags;
   not at a password prompt, `gtty_pty_secret`: ICANON on, ECHO off; a
   key is the user's, like a click). Still in
   the window / App, as before: reading the folder and branch
-  (`refreshChips`), peeks, drawing, the sessions file (`tickSessions`), the
-  focus file's sync (`tickFocus`). `GTTY_TRACE` ends with the totals
-  (events, handler calls, dropped, time in handlers). `src/chips/hooks.zig`:
-  what chips ask of App beyond the SDK.
+  (`refreshChips`), peeks, drawing, the sessions file (`tickSessions`).
+  `GTTY_TRACE` ends with the totals (events, handler calls, dropped, time
+  in handlers).
+  **The bus** (2026-11-22, the user's architecture: gtty is the core, job
+  windows and running them; extensions sit on events out and requests in):
+  what a chip asks of gtty is an SDK request (`sdk.Request`: notice, beep,
+  copy, cd, refresh, sessions / session_name / save / restore / manage;
+  `win.number`; `window_changed`'s `host`) → `Host.Sink.request` →
+  `App.chipRequest`, one switch for the standard chips and for installed
+  extensions (`Host.procRequest`, the `call` ops in docs/protocol.md).
+  `copy`, `cd`, `session_restore`, `session_manage` need the user's click
+  or key (`from_user`; else `NotFromUser`). `copy` flashes what was
+  clicked (`Peek.clicked_row`, `flashClicked`). `src/chips/inproc.zig`:
+  only what running inside gtty gives (allocator, reaper, `keep_files`);
+  there is no side door into App any more (`hooks.zig` is gone).
 - **Peeks and text** (2026-11-05; `src/ui/Peek.zig`, `ChipUi.zig`,
   `text.zig`, `src/chips/list.zig`, the design in `docs/extensions.md`):
   `Peek.zig` knows no chip: it draws what the extension described
@@ -1293,7 +1311,8 @@ decisions; items marked *open* are undecided.
   (click, shortcut), `showChipPeek`, `displayModeSet`, `peekAction`;
   `chip_hover` fires the chip's `onhover`. What the folder, git, focus and
   session peeks do lives in `src/chips/` (git's two runs polled by
-  `git.tick`, from `tickPeek`); what they need of gtty is in `hooks.zig`.
+  `git.tick`, from `tickPeek`); what they need of gtty is a request (see
+  "The bus" above).
   Where the sections above name `Peek.openFolder`, `Action.cd` and the
   like, read the chip's file. Every text is `sdk.Text` (`newText`), drawn by
   `text.draw` (bold: struck twice, one face; `size` 50–200 %). Standard
@@ -1630,9 +1649,10 @@ decisions; items marked *open* are undecided.
   relative path (`package.sh` copies it in). `commands`: a chip listing
   the commands run before (`command_started`; a line is dropped only
   when every part is a very common one, cd / ls / pwd / clear / exit;
-  failed ones are kept too: no exit status reaches an extension; the rules in `commands/README.md` and `commands/cases.tsv`,
-  which every language's tests read); a pick copies through pbcopy /
-  wl-copy / xclip / xsel (the SDK can't type into a window). Each
+  failed ones are kept too (the exit status reaches extensions since
+  2026-11-23, `window_changed`'s `status`; the example doesn't use it); the rules in `commands/README.md` and `commands/cases.tsv`,
+  which every language's tests read); a pick copies through `win.copy`
+  (2026-11-23; before: pbcopy / wl-copy / xclip / xsel). Each
   language's has its own name (`commands-python`, …: all four install
   side by side); `package.sh` leaves one file,
   `build/<name>-<version>.tar.gz` (name / version from manifest.json),

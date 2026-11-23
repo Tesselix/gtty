@@ -5,20 +5,46 @@
 //! (`FocusFolders.countsAsUse`), not in a remote session, where the chip
 //! isn't shown either. A click opens its epeek: the folders under home
 //! used lately, the newest at the bottom by the chip, the current one
-//! marked; a pick cds there.
+//! marked; a pick cds there. The list and its file, shared by every gtty
+//! (`FocusFolders.sync`), are the chip's own: read at start, synced at
+//! most every 10 s after a use, on opening the list and when gtty closes.
+//! A test script run keeps them in memory unless `GTTY_FOCUS` says where.
 
 const std = @import("std");
 const sdk = @import("gtty");
 const c = @import("../c.zig").c;
 const FocusFolders = @import("../core/FocusFolders.zig");
-const hooks = @import("hooks.zig");
+const inproc = @import("inproc.zig");
 const list = @import("list.zig");
 const folder_chip = @import("folder.zig");
 
 const focus_label = "focus";
 
-/// App's list; set before the first window starts.
-pub var folders: ?*FocusFolders = null;
+var folders: ?FocusFolders = null;
+/// The file is read and written (`inproc.keep_files` or `GTTY_FOCUS`).
+var file_on = false;
+var synced_ms: u64 = 0;
+const sync_every_ms = 10_000;
+
+pub fn onGttyStart(_: *sdk.Extension) !void {
+    folders = .init(inproc.gpa);
+    file_on = inproc.keep_files or c.getenv("GTTY_FOCUS") != null;
+    if (file_on) sync();
+}
+
+pub fn onGttyClose(_: *sdk.Extension) !void {
+    if (folders) |*f| {
+        if (file_on and f.dirty) f.sync();
+        f.deinit();
+    }
+    folders = null;
+}
+
+fn sync() void {
+    const f = if (folders) |*x| x else return;
+    f.sync();
+    synced_ms = c.SDL_GetTicks();
+}
 
 const State = struct {
     dir: list.Owned = .{},
@@ -55,14 +81,14 @@ fn homeRel(name: []const u8, home_in: []const u8) ?[]const u8 {
 }
 
 fn setList(win: *sdk.Window, s: *const State) !void {
-    const f = folders orelse return;
-    var arena: std.heap.ArenaAllocator = .init(hooks.gpa);
+    const f = if (folders) |*x| x else return;
+    var arena: std.heap.ArenaAllocator = .init(inproc.gpa);
     defer arena.deinit();
     const a = arena.allocator();
     const home = homeDir();
     var buf: [FocusFolders.shown_max][]const u8 = undefined;
     const all = f.top(home, &buf);
-    const cur = if (hooks.cwd) |g| g(hooks.ctx, win.id) else "";
+    const cur = s.dir.s;
     var rows: std.ArrayList(sdk.Line) = .empty;
     var last_other: usize = 0;
     for (all) |d| {
@@ -104,7 +130,9 @@ pub fn onEvent(win: *sdk.Window, ev: *const sdk.Event) !void {
         },
         .command_started => {
             if (ev.remote or ev.folder.len == 0 or !FocusFolders.countsAsUse(ev.command)) return;
-            if (folders) |f| f.use(ev.folder, homeDir());
+            const f = if (folders) |*x| x else return;
+            f.use(ev.folder, homeDir());
+            if (file_on and c.SDL_GetTicks() -| synced_ms > sync_every_ms) sync();
         },
         .key => {},
         .button_click => try sdk.dispatch(Actions, win, ev),
@@ -115,7 +143,9 @@ pub const Actions = struct {
     /// Set right before opening: other gttys' uses come in with the sync.
     pub fn open(win: *sdk.Window, _: sdk.ButtonClick) !void {
         const s = try windows.of(win.id);
-        if (hooks.syncFocus) |f| f(hooks.ctx);
+        // A quick look first: folders removed since are forgotten (`sync`
+        // takes them out of the file too).
+        if (file_on) sync() else if (folders) |*f| _ = f.dropMissing();
         try setList(win, s);
         try win.ui.setDisplayMode(.epeek);
     }
@@ -128,8 +158,7 @@ pub const Actions = struct {
 
     pub fn pick(win: *sdk.Window, b: sdk.ButtonClick) !void {
         const s = try windows.of(win.id);
-        const cur = if (hooks.cwd) |g| g(hooks.ctx, win.id) else "";
-        if (std.mem.eql(u8, b.data, cur)) {
+        if (std.mem.eql(u8, b.data, s.dir.s)) {
             var row: [1]sdk.Text = undefined;
             return win.ui.set(.{ .epeek = sdk.EpeekUpdate{ .state = .{ .set = .ok }, .message = .{ .set = list.oneRow(&row, "already here") } } });
         }

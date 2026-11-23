@@ -36,7 +36,7 @@ class GttyError extends Error {
   }
 }
 
-const ERRORS = ["WindowClosed", "NoChip", "BadName", "NoFile", "FileInUse", "FileClosed", "StorageFull", "StorageFailed"];
+const ERRORS = ["WindowClosed", "NoChip", "BadName", "NoFile", "FileInUse", "FileClosed", "StorageFull", "StorageFailed", "ShellBusy", "NotFromUser", "NothingToSave"];
 
 function color(v) {
   return typeof v === "number" ? "#" + (v & 0xffffff).toString(16).padStart(6, "0") : v;
@@ -95,6 +95,12 @@ class Event {
     this.folder = d.folder || "";
     this.branch = d.branch || "";
     this.remote = !!d.remote;
+    // window_changed in an ssh / mosh session: the host
+    this.host = d.host || "";
+    // window_changed: a command runs in the shell; the exit status of the
+    // last one that ended (null: none yet, or not said)
+    this.busy = !!d.busy;
+    this.status = d.status ?? null;
     this.command = d.command || "";
     // key: its name, what it typed, the modifier keys (cmd: ⌘ / Super)
     this.key = d.key || "";
@@ -183,7 +189,8 @@ class Conn {
     const id = ++this.nextId;
     return new Promise((resolve, reject) => {
       this.waiting.set(id, { resolve, reject });
-      this.send({ t: "call", id, win, op, ...fields });
+      // ev: gtty checks which calls answer the user's click or key.
+      this.send({ t: "call", id, win, op, ev: this.currentEv, ...fields });
     });
   }
 }
@@ -298,11 +305,42 @@ class Storage {
   }
 }
 
+class Sessions {
+  constructor(win) {
+    this.win = win;
+  }
+  /** The sessions used last (up to max), the last used last: [{ id, name }]. */
+  async list(max = 7) {
+    const v = await conn.call(this.win.id, "sessions", { max });
+    return (Array.isArray(v) ? v : []).map((d) => ({ id: d.id || "", name: d.name || "" }));
+  }
+  /** The name gtty would give the session now. No window to keep: NothingToSave. */
+  suggestName() {
+    return conn.call(this.win.id, "sessionName", {});
+  }
+  /** Save this gtty's windows as session `name`. */
+  async save(name) {
+    await conn.call(this.win.id, "sessionSave", { name: String(name) });
+  }
+  /** Restore session `id` here, or in a new gtty. Only while handling the user's click or key. */
+  async restore(id, newWindow = false) {
+    await conn.call(this.win.id, "sessionRestore", { id: String(id), newWindow: !!newWindow });
+  }
+  /** Open the Session Manager. Only while handling the user's click or key. */
+  async manage() {
+    await conn.call(this.win.id, "sessionManage", {});
+  }
+}
+
 class Window {
-  constructor(id) {
+  constructor(id, number = 0) {
     this.id = id;
+    /** The number the user sees on the window (#3). */
+    this.number = number;
     this.ui = new Ui(this);
     this.events = new Events(this);
+    /** gtty's saved screens, shared by every gtty. */
+    this.sessions = new Sessions(this);
     /** This instance's files, gone with the window. */
     this.ephemeral = new Storage(this, "ephemeral");
     /** The extension's files, shared by all its instances. */
@@ -320,6 +358,27 @@ class Window {
   /** A line in `gtty ext logs`, with this window's id. */
   log(level, message) {
     log(this.id, level, message);
+  }
+  /** A short notice in gtty's status bar: kind "plain", "ok" (green) or "err" (red). */
+  async notice(text, kind = "plain") {
+    if (!["plain", "ok", "err"].includes(kind)) throw new TypeError("kind: plain, ok or err");
+    await conn.call(this.id, "notice", { text: String(text), kind });
+  }
+  /** gtty's error beep. */
+  async beep() {
+    await conn.call(this.id, "beep", {});
+  }
+  /** Clipboard + gtty's paste history; what was clicked flashes. Only while handling the user's click or key. */
+  async copy(text) {
+    await conn.call(this.id, "copy", { text: String(text) });
+  }
+  /** cd in this window's shell. Not at its prompt: ShellBusy. Only while handling the user's click or key. */
+  async cd(folder) {
+    await conn.call(this.id, "cd", { dir: String(folder) });
+  }
+  /** Look at the folder and branch again now: window_changed follows if they changed. */
+  async refresh() {
+    await conn.call(this.id, "refresh", {});
   }
 }
 
@@ -410,7 +469,7 @@ function run(ext) {
           await call(0, "onGttyClose", new Extension(name));
           return finish();
         case "windowStart": {
-          const w = new Window(win);
+          const w = new Window(win, m.number || 0);
           windows.set(win, w);
           return call(win, "onWindowStart", w);
         }

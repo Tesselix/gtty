@@ -44,7 +44,6 @@ const commands = @import("ui/commands.zig");
 const tiling = @import("ui/tiling.zig");
 const Ai = @import("ai/Ai.zig");
 const Memory = @import("ai/Memory.zig");
-const FocusFolders = @import("core/FocusFolders.zig");
 const Sessions = @import("core/Sessions.zig");
 const Update = @import("core/Update.zig");
 const SessionsWindow = @import("ui/SessionsWindow.zig");
@@ -464,13 +463,6 @@ memory_file: bool = false,
 memory_saved_ms: u64 = 0,
 /// The standard chips (src/chips/), on the extension SDK.
 chips: ChipHost,
-/// The folders used lately (the focus chip counts the commands here);
-/// merged with the file shared by
-/// all gtty processes (`FocusFolders.sync`) only when `focus_file`
-/// (not in test scripts unless GTTY_FOCUS says where).
-focus_folders: FocusFolders,
-focus_file: bool = false,
-focus_synced_ms: u64 = 0,
 /// The saved gtty-sessions (session chip, Session Manager), from the file shared by all gtty processes (read again when
 /// it changed, `tickSessions`); kept only in memory in test scripts
 /// unless GTTY_SESSIONS says where.
@@ -553,32 +545,16 @@ pub fn create(gpa: std.mem.Allocator, opts: Options) !*App {
         .memory = .init(gpa),
         .memory_file = opts.save_config or c.getenv("GTTY_AI_MEMORY") != null,
         .chips = .init(gpa, &standard_chips.all),
-        .focus_folders = .init(gpa),
-        .focus_file = opts.save_config or c.getenv("GTTY_FOCUS") != null,
         .sessions = .init(gpa),
         .quit_on_last_shell = opts.cfg.quit_on_last_shell and (opts.script == null or opts.save_config),
     };
     if (app.memory_file) app.memory.load();
-    if (app.focus_file) app.focus_folders.sync();
-    standard_chips.focus.folders = &app.focus_folders;
-    standard_chips.hooks.ctx = app;
-    standard_chips.hooks.notice = chipNotice;
-    standard_chips.hooks.saveSession = chipSaveSession;
-    standard_chips.hooks.gpa = gpa;
-    standard_chips.hooks.reaper = &app.reaper;
-    standard_chips.hooks.cd = chipCd;
-    standard_chips.hooks.cwd = chipCwd;
-    standard_chips.hooks.remoteDest = chipRemoteDest;
-    standard_chips.hooks.copy = chipCopy;
-    standard_chips.hooks.beep = chipBeep;
-    standard_chips.hooks.branchChanged = chipBranchChanged;
-    standard_chips.hooks.serial = chipSerial;
-    standard_chips.hooks.restore = chipRestore;
-    standard_chips.hooks.manage = chipManage;
-    standard_chips.hooks.askSave = chipAskSave;
-    standard_chips.hooks.syncFocus = chipSyncFocus;
-    standard_chips.hooks.recentSessions = chipRecentSessions;
-    app.chips.setSink(.{ .ctx = app, .setChip = chipChanged, .setDialog = dialogSet, .showDialog = dialogShow, .closeDialog = dialogClose, .setPeek = peekSet, .setEpeek = epeekSet, .setDisplayMode = displayModeSet, .shell = chipShell });
+    // What running inside gtty gives the standard chips; everything else
+    // they ask goes through the SDK, as any extension's requests.
+    standard_chips.inproc.gpa = gpa;
+    standard_chips.inproc.reaper = &app.reaper;
+    standard_chips.inproc.keep_files = opts.save_config;
+    app.chips.setSink(.{ .ctx = app, .setChip = chipChanged, .setDialog = dialogSet, .showDialog = dialogShow, .closeDialog = dialogClose, .setPeek = peekSet, .setEpeek = epeekSet, .setDisplayMode = displayModeSet, .shell = chipShell, .request = chipRequest });
     if (app.tmp) |d| {
         app.ext_log = ExtLog.init(gpa, d.path) catch null;
         if (app.ext_log) |*l| app.chips.log = l;
@@ -647,8 +623,6 @@ pub fn destroy(app: *App) void {
     app.ai_text.deinit(app.gpa);
     if (app.memory_file) app.memory.save();
     app.memory.deinit();
-    if (app.focus_file and app.focus_folders.dirty) app.focus_folders.sync();
-    app.focus_folders.deinit();
     if (app.settings) |sw| sw.close();
     if (app.sessions_win) |sw| sw.close();
     if (app.ext_win) |ew| ew.close();
@@ -829,7 +803,6 @@ pub fn run(app: *App) void {
         app.tickAi();
         app.tickUpdate();
         app.tickPrompt();
-        app.tickFocus();
         app.ensureShell();
         app.chips.pump();
         if (app.rec) |r| if (c.SDL_GetTicks() >= r.next) {
@@ -3272,23 +3245,25 @@ fn openWithName(app: *App, path: [:0]const u8, id: ?[*:0]const u8, name: []const
 
 /// A new window: the chips connect and register, then hear its state.
 fn windowStarted(app: *App, w: *JobWindow) void {
-    app.chips.windowStarted(w.uid);
+    app.chips.windowStarted(w.uid, w.serial);
     app.fireWindowChanged(w);
 }
 
 fn fireWindowChanged(app: *App, w: *JobWindow) void {
-    app.chips.fire(w.uid, .{ .kind = .window_changed, .folder = w.cwd(), .branch = w.branch() orelse "", .remote = w.remoteDest().len > 0 });
+    const host = w.remoteDest();
+    app.chips.fire(w.uid, .{ .kind = .window_changed, .folder = w.cwd(), .branch = w.branch() orelse "", .remote = host.len > 0, .host = host, .busy = w.cmd_busy, .status = w.cmd_status });
 }
 
-/// What changed in a window since the last frame, as events.
+/// What changed in a window since the last frame, as events. A command
+/// that started and ended within one frame: its start goes first.
 fn fireChipEvents(app: *App, w: *JobWindow) void {
-    if (w.changed_seq != w.changed_seen) {
-        w.changed_seen = w.changed_seq;
-        app.fireWindowChanged(w);
-    }
     if (w.started_seq != w.started_seen) {
         w.started_seen = w.started_seq;
         app.chips.fire(w.uid, .{ .kind = .command_started, .folder = w.started_dir.items, .remote = w.remoteDest().len > 0, .command = w.started_cmd.items });
+    }
+    if (w.changed_seq != w.changed_seen) {
+        w.changed_seen = w.changed_seq;
+        app.fireWindowChanged(w);
     }
 }
 
@@ -3451,96 +3426,77 @@ fn chipShell(ctx: *anyopaque, uid: u32, buf: []u8) sdk.Error![]const u8 {
     return buf[0..n];
 }
 
-fn chipCd(ctx: *anyopaque, uid: u32, dir: []const u8) bool {
-    const w = appOf(ctx).jobByUid(uid) orelse return false;
-    if (!w.atPrompt()) return false;
-    w.cdTo(dir);
-    return true;
-}
-
-fn chipCwd(ctx: *anyopaque, uid: u32) []const u8 {
-    const w = appOf(ctx).jobByUid(uid) orelse return "";
-    return w.cwd();
-}
-
-fn chipRemoteDest(ctx: *anyopaque, uid: u32) []const u8 {
-    const w = appOf(ctx).jobByUid(uid) orelse return "";
-    return w.remoteDest();
-}
-
-fn chipCopy(ctx: *anyopaque, text: []const u8, row: bool) void {
+/// The bus's requests (`sdk.Request`), from the standard chips and from
+/// installed extensions alike. `from_user`: while handling the user's
+/// click or key; what changes the user's screen, shell or clipboard needs it.
+fn chipRequest(ctx: *anyopaque, uid: u32, chip: usize, req: sdk.Request, from_user: bool) sdk.Error!sdk.Answer {
     const app = appOf(ctx);
-    const z = app.gpa.dupeZ(u8, text) catch return;
-    defer app.gpa.free(z);
-    app.pushPasteHistory(z);
-    _ = c.SDL_SetClipboardText(z.ptr);
-    if (app.peek) |*pk| pk.flashText(row);
-    app.sayFmt("copied {s}", .{text}, app.theme.ok);
-}
-
-fn chipBeep(_: *anyopaque) void {
-    beep.beep();
-}
-
-fn chipBranchChanged(ctx: *anyopaque, uid: u32) void {
-    if (appOf(ctx).jobByUid(uid)) |w| w.refreshChipsSoon();
-}
-
-fn chipSerial(ctx: *anyopaque, uid: u32) u32 {
-    const w = appOf(ctx).jobByUid(uid) orelse return 0;
-    return w.serial;
-}
-
-fn chipRestore(ctx: *anyopaque, id: []const u8, new_window: bool) void {
-    var ibuf: [64]u8 = undefined;
-    const n = @min(id.len, ibuf.len);
-    @memcpy(ibuf[0..n], id[0..n]);
-    appOf(ctx).restoreSession(ibuf[0..n], if (new_window) .new else .here);
-}
-
-fn chipManage(ctx: *anyopaque) void {
-    const app = appOf(ctx);
-    app.closePeek();
-    app.openSessionsWindow();
-}
-
-fn chipAskSave(ctx: *anyopaque, uid: u32) void {
-    appOf(ctx).askSnapshot(uid);
-}
-
-/// A quick look first: folders removed since are forgotten (`sync` takes
-/// them out of the file too).
-fn chipSyncFocus(ctx: *anyopaque) void {
-    const app = appOf(ctx);
-    if (app.focus_file) {
-        app.focus_folders.sync();
-        app.focus_synced_ms = c.SDL_GetTicks();
-    } else _ = app.focus_folders.dropMissing();
-}
-
-/// The sessions used last, the last used last.
-fn chipRecentSessions(ctx: *anyopaque, out: []standard_chips.hooks.SessionRow) usize {
-    const app = appOf(ctx);
-    _ = app.sessions.refresh();
-    var buf: [Sessions.shown_max]*Sessions.Session = undefined;
-    const list = app.sessions.recent(&buf);
-    const n = @min(list.len, out.len);
-    for (list[0..n], 0..) |x, k| out[n - 1 - k] = .{ .name = x.name, .id = x.id };
-    return n;
-}
-
-fn chipNotice(ctx: *anyopaque, text: []const u8, kind: standard_chips.hooks.Notice) void {
-    const app: *App = @ptrCast(@alignCast(ctx));
-    app.say(text, switch (kind) {
-        .plain => app.theme.dim,
-        .ok => app.theme.ok,
-        .err => app.theme.stderr_accent,
-    });
-}
-
-fn chipSaveSession(ctx: *anyopaque, name: []const u8) void {
-    const app: *App = @ptrCast(@alignCast(ctx));
-    app.takeSnapshot(name);
+    const w = app.jobByUid(uid) orelse return error.WindowClosed;
+    switch (req) {
+        .copy, .cd, .session_restore, .session_manage => if (!from_user) return error.NotFromUser,
+        else => {},
+    }
+    switch (req) {
+        .notice => |n| app.say(n.text, switch (n.kind) {
+            .plain => app.theme.dim,
+            .ok => app.theme.ok,
+            .err => app.theme.stderr_accent,
+        }),
+        .beep => beep.beep(),
+        .copy => |text| {
+            const z = app.gpa.dupeZ(u8, text) catch return error.StorageFailed;
+            defer app.gpa.free(z);
+            app.pushPasteHistory(z);
+            _ = c.SDL_SetClipboardText(z.ptr);
+            if (app.peek) |*pk| if (pk.uid == uid and pk.chip == chip) pk.flashClicked();
+            app.sayFmt("copied {s}", .{text}, app.theme.ok);
+        },
+        .cd => |dir| {
+            if (!w.atPrompt()) return error.ShellBusy;
+            w.cdTo(dir);
+        },
+        .refresh => w.refreshChipsSoon(),
+        .sessions => |q| {
+            _ = app.sessions.refresh();
+            var buf: [Sessions.shown_max]*Sessions.Session = undefined;
+            const list = app.sessions.recent(&buf);
+            var n: usize = 0;
+            var at: usize = 0;
+            // The last used last.
+            var k = @min(list.len, q.out.len);
+            while (k > 0) {
+                k -= 1;
+                const x = list[k];
+                if (at + x.id.len + x.name.len > q.buf.len) break;
+                @memcpy(q.buf[at..][0..x.id.len], x.id);
+                @memcpy(q.buf[at + x.id.len ..][0..x.name.len], x.name);
+                q.out[n] = .{ .id = q.buf[at..][0..x.id.len], .name = q.buf[at + x.id.len ..][0..x.name.len] };
+                at += x.id.len + x.name.len;
+                n += 1;
+            }
+            return .{ .count = n };
+        },
+        .session_name => |out| {
+            if (snapshotCount(app) == 0) return error.NothingToSave;
+            var nbuf: [200]u8 = undefined;
+            const name = app.snapshotName(&nbuf);
+            const n = @min(name.len, out.len);
+            @memcpy(out[0..n], name[0..n]);
+            return .{ .text = out[0..n] };
+        },
+        .session_save => |name| app.takeSnapshot(name),
+        .session_restore => |x| {
+            var ibuf: [64]u8 = undefined;
+            const n = @min(x.id.len, ibuf.len);
+            @memcpy(ibuf[0..n], x.id[0..n]);
+            app.restoreSession(ibuf[0..n], if (x.new_window) .new else .here);
+        },
+        .session_manage => {
+            app.closePeek();
+            app.openSessionsWindow();
+        },
+    }
+    return .none;
 }
 
 // ------------------------------------------------------------ dialogs
@@ -3685,15 +3641,6 @@ fn peekWindow(app: *App) ?*JobWindow {
         return w;
     };
     return null;
-}
-
-/// Each frame: the focus folders' file is synced at most every 10 s.
-fn tickFocus(app: *App) void {
-    const now = c.SDL_GetTicks();
-    if (app.focus_file and app.focus_folders.dirty and now -| app.focus_synced_ms > 10_000) {
-        app.focus_synced_ms = now;
-        app.focus_folders.sync();
-    }
 }
 
 // ------------------------------------------------------------ sessions
@@ -3881,7 +3828,7 @@ fn namePart(a: std.mem.Allocator, w: *JobWindow) ?Sessions.NamePart {
     return .{ .command = aw.written() };
 }
 
-/// The session list's save button (`name` from `askSnapshot`): every
+/// `win.sessions.save` (the session chip's save, `name` from its dialog): every
 /// shell window of this gtty (in the windows area and in the job grid),
 /// saved as a new session in the file all gttys share.
 fn takeSnapshot(app: *App, name: []const u8) void {
@@ -3924,20 +3871,6 @@ fn takeSnapshot(app: *App, name: []const u8) void {
     app.saveSessions();
     app.sessionsChanged();
     app.sayFmt("session saved: {s} ({d} window{s})", .{ name, specs.items.len, if (specs.items.len == 1) "" else "s" }, app.theme.ok);
-}
-
-/// The session list's save button: the session chip asks for a name in
-/// a dialog, the name the snapshot would get (`snapshotName`) suggested
-/// in the click's `data`; it calls `takeSnapshot`.
-fn askSnapshot(app: *App, uid: u32) void {
-    if (snapshotCount(app) == 0) {
-        beep.beep();
-        return app.say("snapshot: no shell window to save", app.theme.stderr_accent);
-    }
-    var nbuf: [200]u8 = undefined;
-    const name = app.snapshotName(&nbuf);
-    app.closePeek();
-    app.chips.click(uid, @intFromEnum(JobWindow.Chip.session), .{ .id = "save", .text = "save", .data = name, .function = "askName" }, true);
 }
 
 fn saveSessions(app: *App) void {

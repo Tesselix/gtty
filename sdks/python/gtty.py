@@ -29,7 +29,8 @@ API_VERSION = 1
 __all__ = [
     "run", "dispatch", "new_text", "Window", "Extension", "Event", "ButtonClick",
     "GttyError", "WindowClosed", "NoChip", "BadName", "NoFile", "FileInUse",
-    "FileClosed", "StorageFull", "StorageFailed",
+    "FileClosed", "StorageFull", "StorageFailed", "ShellBusy", "NotFromUser",
+    "NothingToSave", "Session",
 ]
 
 
@@ -51,7 +52,14 @@ FileInUse = _error_class("FileInUse")
 FileClosed = _error_class("FileClosed")
 StorageFull = _error_class("StorageFull")
 StorageFailed = _error_class("StorageFailed")
-_ERRORS = {c.name: c for c in (WindowClosed, NoChip, BadName, NoFile, FileInUse, FileClosed, StorageFull, StorageFailed)}
+# win.cd: the shell isn't waiting at its prompt.
+ShellBusy = _error_class("ShellBusy")
+# copy, cd, sessions.restore, sessions.manage: only while handling the
+# user's click or key.
+NotFromUser = _error_class("NotFromUser")
+# sessions.suggest_name: no window a session would keep.
+NothingToSave = _error_class("NothingToSave")
+_ERRORS = {c.name: c for c in (WindowClosed, NoChip, BadName, NoFile, FileInUse, FileClosed, StorageFull, StorageFailed, ShellBusy, NotFromUser, NothingToSave)}
 
 
 def _color(v):
@@ -128,6 +136,12 @@ class Event:
         self.folder = d.get("folder", "")
         self.branch = d.get("branch", "")
         self.remote = d.get("remote", False)
+        # window_changed in an ssh / mosh session: the host
+        self.host = d.get("host", "")
+        # window_changed: a command runs in the shell; the exit status of
+        # the last one that ended (None: none yet, or not said)
+        self.busy = d.get("busy", False)
+        self.status = d.get("status")
         self.command = d.get("command", "")
         # key: its name, what it typed, the modifier keys (cmd: ⌘ / Super)
         self.key = d.get("key", "")
@@ -196,7 +210,8 @@ class _Conn:
     def call(self, win, op, **fields):
         self.next_id += 1
         rid = self.next_id
-        msg = {"t": "call", "id": rid, "win": win, "op": op}
+        # ev: gtty checks which calls answer the user's click or key.
+        msg = {"t": "call", "id": rid, "win": win, "op": op, "ev": self.current_ev}
         msg.update(fields)
         self.send(msg)
         while True:
@@ -333,14 +348,60 @@ class Storage:
 _LEVELS = ("debug", "info", "warn", "err")
 
 
-class Window:
-    """The connection to one window: its id, ui, events, ephemeral and
-    stateful storage, shell() and log()."""
+class Session:
+    """A saved session: its id and name."""
 
-    def __init__(self, id):
+    def __init__(self, d):
+        self.id = d.get("id", "")
+        self.name = d.get("name", "")
+
+    def __repr__(self):
+        return "Session(id=%r, name=%r)" % (self.id, self.name)
+
+
+class _Sessions:
+    """win.sessions: gtty's saved screens, shared by every gtty."""
+
+    def __init__(self, win):
+        self._win = win
+
+    def list(self, max=7):
+        """The sessions used last (up to max), the last used last."""
+        return [Session(d) for d in (_rt.conn.call(self._win.id, "sessions", max=max) or []) if isinstance(d, dict)]
+
+    def suggest_name(self):
+        """The name gtty would give the session now. No window a session
+        keeps: NothingToSave."""
+        return _rt.conn.call(self._win.id, "sessionName")
+
+    def save(self, name):
+        """Save this gtty's windows as session `name`."""
+        _rt.conn.call(self._win.id, "sessionSave", name=name)
+
+    def restore(self, id, new_window=False):
+        """Restore session `id` here (in place of this gtty's windows,
+        asking first when some still work), or in a new gtty. Only while
+        handling the user's click or key."""
+        _rt.conn.call(self._win.id, "sessionRestore", id=id, newWindow=bool(new_window))
+
+    def manage(self):
+        """Open the Session Manager. Only while handling the user's click
+        or key."""
+        _rt.conn.call(self._win.id, "sessionManage")
+
+
+class Window:
+    """The connection to one window: its id, number, ui, events, ephemeral
+    and stateful storage, sessions, shell(), log() and gtty's requests
+    (notice, beep, copy, cd, refresh)."""
+
+    def __init__(self, id, number=0):
         self.id = id
+        # The number the user sees on the window (#3).
+        self.number = number
         self.ui = _Ui(self)
         self.events = _Events(self)
+        self.sessions = _Sessions(self)
         self.ephemeral = Storage(self, "ephemeral")
         self.stateful = Storage(self, "stateful")
         self.closed = False
@@ -361,6 +422,34 @@ class Window:
         """A line in `gtty ext logs`, with this window's id. Works from any
         thread and in on_window_close."""
         _log(self.id, level, message)
+
+    def notice(self, text, kind="plain"):
+        """A short notice in gtty's status bar; kind: plain, ok (green) or
+        err (red)."""
+        if kind not in ("plain", "ok", "err"):
+            raise ValueError("kind: plain, ok or err")
+        _rt.conn.call(self.id, "notice", text=str(text), kind=kind)
+
+    def beep(self):
+        """gtty's error beep."""
+        _rt.conn.call(self.id, "beep")
+
+    def copy(self, text):
+        """Put text on the clipboard and in gtty's paste history; what was
+        clicked in the open peek flashes. Only while handling the user's
+        click or key."""
+        _rt.conn.call(self.id, "copy", text=str(text))
+
+    def cd(self, folder):
+        """Type cd to folder and run it in this window's shell. The shell
+        not at its prompt: ShellBusy. Only while handling the user's click
+        or key."""
+        _rt.conn.call(self.id, "cd", dir=str(folder))
+
+    def refresh(self):
+        """Look at the window's folder and branch again now: window_changed
+        follows if they changed."""
+        _rt.conn.call(self.id, "refresh")
 
 
 class Extension:
@@ -473,7 +562,7 @@ def run(ext):
             if t == "gttyClose":
                 return
         elif t == "windowStart":
-            w = windows[win] = Window(win)
+            w = windows[win] = Window(win, m.get("number", 0))
             f = _fn(ext, "on_window_start")
             if f:
                 try:

@@ -31,7 +31,7 @@ exits with a message on stderr.
 |---|---|---|
 | `hello` | `api` (1), `name` | (checks the version) |
 | `gttyStart` | | `onGttyStart(ext)` |
-| `windowStart` | `win` | `onWindowStart(win)`: a new window connection |
+| `windowStart` | `win`, `number` | `onWindowStart(win)`: a new window connection; `number` is the one the user sees on it (`#3`) |
 | `windowClose` | `win` | `onWindowClose(win)`, then the connection is gone |
 | `event` | `win`, `event` | `onEvent(win, event)` |
 | `reply` | `id`, `value` or `error` | the answer to a `call` |
@@ -41,6 +41,8 @@ exits with a message on stderr.
 
 ```json
 {"eventId": 7, "kind": "window_changed", "folder": "/src/app", "branch": "main", "remote": false}
+{"eventId": 11, "kind": "window_changed", "folder": "/src/app", "remote": true, "host": "dev@build1"}
+{"eventId": 12, "kind": "window_changed", "folder": "/src/app", "branch": "main", "status": 2}
 {"eventId": 8, "kind": "command_started", "folder": "/src/app", "command": "make test"}
 {"eventId": 10, "kind": "key", "key": "a", "text": "A", "shift": true}
 {"eventId": 9, "kind": "button_click", "button": {"id": "ok", "text": "OK", "data": "row-2",
@@ -48,7 +50,10 @@ exits with a message on stderr.
   "command": false}}
 ```
 
-Fields at their default (`""`, `false`, `[]`) are left out.
+Fields at their default (`""`, `false`, `[]`, `null`) are left out.
+`window_changed`'s `busy` (a command runs in the shell) and `status` (the
+exit status of the last command that ended) are its own: one comes when a
+command ends, `busy` false, `status` set.
 
 ## Extension → gtty
 
@@ -63,18 +68,20 @@ Messages that change something get no answer. gtty logs an error in one
 | `closeDialog` | `win` |
 | `register` / `unregister` | `win`, `event`: `window_changed`, `command_started` or `key` |
 | `log` | `win` (0: no window), `level`: `debug`, `info`, `warn`, `err`; `message` |
-| `call` | `id` (a number the extension picks), `win`, `op`, and the op's fields |
+| `call` | `id` (a number the extension picks), `win`, `op`, `ev`, and the op's fields |
 
 `ev` is the `eventId` of the event being handled, or 0. A peek, epeek or
-dialog opened while handling the user's click gets the keyboard; gtty
-knows which clicks were the user's, so send the id of the event you are
-handling.
+dialog opened while handling the user's click gets the keyboard, and some
+requests are refused outside one (`NotFromUser`); gtty knows which clicks
+and keys were the user's, so send the id of the event you are handling,
+with every `call` too.
 
 ### Calls
 
 Each `call` gets one `reply` with the same `id`: `value`, or `error` (one
 of the SDK's error names: `WindowClosed`, `NoChip`, `BadName`, `NoFile`,
-`FileInUse`, `FileClosed`, `StorageFull`, `StorageFailed`). Events can
+`FileInUse`, `FileClosed`, `StorageFull`, `StorageFailed`, `ShellBusy`,
+`NotFromUser`, `NothingToSave`). Events can
 arrive before the reply; the SDK keeps them and hands them out after the
 call returns.
 
@@ -87,6 +94,25 @@ call returns.
 | `close` | `handle` | `true` |
 | `delete` | `storage`, `name`, `timeout` | `true` |
 | `list` | `storage` | a list of names |
+
+**Requests** (2026-11-22): what an extension asks gtty to do beyond its
+own UI and files. gtty is the core (windows, their shells, the clipboard,
+sessions); the standard chips make the same requests inside the gtty
+process. Those marked *user* are refused with `NotFromUser` unless `ev` is
+the user's click or key, handled now.
+
+| `op` | Fields | `value` |
+|---|---|---|
+| `notice` | `text`, `kind` (`plain` / `ok` / `err`) | `true`; a short notice in the status bar |
+| `beep` | | `true` |
+| `copy` *user* | `text` | `true`; the clipboard and the paste history, "copied" in the status bar, what was clicked in the open peek flashes |
+| `cd` *user* | `dir` | `true`; `cd -- '<dir>'` typed and run in the window's shell; `ShellBusy` when it isn't at its prompt |
+| `refresh` | | `true`; the window's folder and branch are looked at again now (`window_changed` follows if they changed) |
+| `sessions` | `max` | a list of `{"id", "name"}`, the last used last |
+| `sessionName` | | the name gtty suggests for saving now; `NothingToSave` when no window would be kept |
+| `sessionSave` | `name` | `true` |
+| `sessionRestore` *user* | `id`, `newWindow` (bool) | `true`; here (gtty may ask first) or in a new gtty |
+| `sessionManage` *user* | | `true`; opens the Session Manager |
 
 gtty answers a waiting `open` or `delete` when the file is free or the
 timeout passed (`FileInUse`); it never blocks for it.

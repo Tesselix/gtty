@@ -11,7 +11,7 @@ pub const git = @import("git.zig");
 pub const focus = @import("focus.zig");
 pub const session = @import("session.zig");
 pub const dialog_test = @import("dialog_test.zig");
-pub const hooks = @import("hooks.zig");
+pub const inproc = @import("inproc.zig");
 
 pub const all = [_]sdk.Definition{
     sdk.Definition.of(folder, "folder"),

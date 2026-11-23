@@ -1,7 +1,8 @@
 # Writing gtty extensions
 
 > **Status: partly built.** Built: the events below, text, chips, peeks,
-> epeeks, dialogs and their clicks, storage, logs, `win.shell()`, installed
+> epeeks, dialogs and their clicks, storage, logs, `win.shell()`, the
+> requests to gtty (notice, beep, copy, cd, refresh, sessions), installed
 > extensions as their own programs, SDKs for Zig, Python, JavaScript and Go
 > (`sdks/`), `gtty ext`, the extension manager and debugging from an IDE. Icon files, `windowText`
 > and labels are the agreed design, not code yet, so names can still change.
@@ -38,6 +39,13 @@ each showing more:
 **You describe, gtty draws.** An extension never draws anything. It
 sends a description of what it wants, and gtty does the layout, colors,
 hovering and keyboard. You can change the description at any time.
+
+**gtty is the core, extensions ask it.** gtty manages the windows, runs
+their shells and knows what happens in them (folder, branch, commands,
+keys). It tells extensions through events, and does what they ask through
+requests: a notice in the status bar, a copy, a `cd` in the window's
+shell, the saved sessions. That is the whole bus: events out, requests in.
+The standard chips have no other way in: what they need, yours can have.
 
 **gtty never waits for you.** Your extension can't hold up the terminal.
 When something happens you get an event, and when you want something
@@ -118,6 +126,11 @@ The objects passed to you hold the SDK's connectors, each for one job
 |---|---|
 | `ui` | Sets the chip, peek, epeek and dialog; shows and closes dialogs |
 | `events` | Registers the events you want |
+| `sessions` | gtty's saved sessions: list, suggest a name, save, restore, the manager |
+
+`win` itself also has the requests (`notice`, `beep`, `copy`, `cd`,
+`refresh`, see [Asking gtty](#asking-gtty)), `shell()`, the storages, `log`,
+and `number`: the number the user sees on the window (`#3`).
 
 `win` is your connection to one window: what you do through it applies
 to that window, and its events come only from that window. `ext` has only
@@ -143,12 +156,22 @@ pub fn onEvent(win: *gtty.Window, ev: *const gtty.Event) !void {
 
 | Event | Fires | Carries |
 |---|---|---|
-| `window_changed` | When the window starts, then only when something changed | `folder`, `branch`, `remote` |
+| `window_changed` | When the window starts, then only when something changed, and when a command in its shell ended | `folder`, `branch`, `remote`, `host` (in an ssh / mosh session), `busy`, `status` |
 | `command_started` | When a command starts in the window's shell | `command`, `folder`, `remote` |
 | `key` | When a key is pressed while the window has the keyboard | `key`, `text`, `ctrl`, `shift`, `alt`, `cmd` |
 | `button_click` | When one of your buttons is pressed; no need to register | `button` |
 
-More will come as chips need them, and few on purpose.
+More will come as chips need them, and few on purpose: a new fact goes on
+an existing event when one fits (a command's end is `window_changed`, not
+an event of its own).
+
+**Commands.** `busy` is true while a command runs in the window's shell
+(from its `command_started`). When it ends, `window_changed` comes with
+`busy` false and `status`, the command's exit status (0 = success, 130 =
+Ctrl+C; none before the first command, or when the shell didn't say). A
+command that starts and ends within one frame still gives its
+`command_started` first. Only zsh and bash windows report commands (gtty's
+shell hooks); in an ssh session the command running is ssh itself.
 
 **Keys.** `key` is the key's name: the character on it, unshifted (`a`,
 `1`, `/`), or `enter`, `escape`, `tab`, `backspace`, `delete`, `space`,
@@ -671,6 +694,29 @@ pub fn askName(win: *gtty.Window) !void {
 connected to: `bash`, `sh`, `zsh` or any other shell the system lists. If
 what is in front isn't a shell, such as `vim`, you get the shell the window
 itself runs.
+
+## Asking gtty
+
+Requests are calls that answer (an error, or a value). Some change what
+the user has (their clipboard, their shell, their screen), so gtty takes
+them only while you handle the user's click or key (an event they caused,
+in the last few seconds); otherwise they fail with `NotFromUser`.
+
+| Call | Does | Only for the user's click or key |
+|---|---|---|
+| `win.notice(text, kind)` | A short notice in the status bar; `kind` `plain`, `ok` (green), `err` (red) | |
+| `win.beep()` | gtty's error beep | |
+| `win.copy(text)` | The clipboard and gtty's paste history; the status bar says "copied …", and what was clicked in your open peek flashes (the row of a list, else the top text) | yes |
+| `win.cd(folder)` | Types `cd -- '<folder>'` in the window's shell and runs it. `ShellBusy` when the shell isn't waiting at its prompt with nothing typed | yes |
+| `win.refresh()` | gtty looks at the window's folder and branch again now (else within a second); `window_changed` follows if they changed. After your own `git switch`, say | |
+| `win.sessions.list(…)` | The sessions used last, the last used last: `id` and `name` | |
+| `win.sessions.suggestName(…)` | The name gtty gives the session now (the windows' folders and commands); `NothingToSave` when no window would be kept | |
+| `win.sessions.save(name)` | Saves this gtty's windows as a session | |
+| `win.sessions.restore(id, newWindow)` | Restores a session here (gtty asks first when some windows still work) or in a new gtty | yes |
+| `win.sessions.manage()` | Opens the Session Manager | yes |
+
+`cd` is the only way into the shell, and only at its prompt: an
+extension can't type anything else, nor read the window's text.
 
 ## Storage
 

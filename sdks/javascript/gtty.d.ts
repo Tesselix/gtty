@@ -29,7 +29,10 @@ export interface Dialog {
 }
 export type Update = { chip: Chip } | { peek: Peek | null } | { epeek: Epeek | null } | { dialog: Dialog };
 
-export type ErrorName = "WindowClosed" | "NoChip" | "BadName" | "NoFile" | "FileInUse" | "FileClosed" | "StorageFull" | "StorageFailed";
+export type ErrorName = "WindowClosed" | "NoChip" | "BadName" | "NoFile" | "FileInUse" | "FileClosed" | "StorageFull" | "StorageFailed"
+  /** cd: the shell isn't at its prompt */ | "ShellBusy"
+  /** copy, cd, sessions.restore / manage outside the user's click or key */ | "NotFromUser"
+  /** sessions.suggestName: no window a session keeps */ | "NothingToSave";
 export class GttyError extends Error { name: ErrorName }
 
 export class ButtonClick {
@@ -41,6 +44,12 @@ export class ButtonClick {
 export class Event {
   eventId: number; kind: "window_changed" | "command_started" | "key" | "button_click";
   folder: string; branch: string; remote: boolean; command: string;
+  /** window_changed in an ssh / mosh session: the host */
+  host: string;
+  /** window_changed: a command runs in the shell */
+  busy: boolean;
+  /** window_changed: the exit status of the last command that ended (null: none yet, or not said) */
+  status: number | null;
   /** key: its name, what it typed, the modifier keys (cmd: ⌘ / Super) */
   key: string; text: string; ctrl: boolean; shift: boolean; alt: boolean; cmd: boolean;
   button: ButtonClick | null;
@@ -59,8 +68,11 @@ export class Storage {
   list(): Promise<string[]>;
 }
 export type Level = "debug" | "info" | "warn" | "err";
+export interface Session { id: string; name: string }
 export class Window {
   id: number;
+  /** The number the user sees on the window (#3). */
+  number: number;
   ui: {
     set(update: Update): void;
     setDisplayMode(mode: "chip" | "peek" | "epeek"): void;
@@ -70,8 +82,24 @@ export class Window {
   events: { register(kind: "window_changed" | "command_started" | "key"): void; unregister(kind: "window_changed" | "command_started" | "key"): void };
   ephemeral: Storage;
   stateful: Storage;
+  sessions: {
+    list(max?: number): Promise<Session[]>;
+    suggestName(): Promise<string>;
+    save(name: string): Promise<void>;
+    /** Only while handling the user's click or key. */
+    restore(id: string, newWindow?: boolean): Promise<void>;
+    /** Only while handling the user's click or key. */
+    manage(): Promise<void>;
+  };
   shell(): Promise<string>;
   log(level: Level, message: string): void;
+  notice(text: string, kind?: "plain" | "ok" | "err"): Promise<void>;
+  beep(): Promise<void>;
+  /** Only while handling the user's click or key. */
+  copy(text: string): Promise<void>;
+  /** Only while handling the user's click or key; ShellBusy when not at its prompt. */
+  cd(folder: string): Promise<void>;
+  refresh(): Promise<void>;
 }
 export class Extension { name: string; log(level: Level, message: string): void }
 

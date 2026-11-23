@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"runtime"
 	"strings"
 	"time"
@@ -100,28 +99,7 @@ func save(win *gtty.Window, entries []entry) error {
 	return f.Close() // the write takes the old file's place here
 }
 
-// ---- the clipboard: the SDK can't type into a window ----
-
-// copyText returns "" when copied, else why not.
-func copyText(text string) string {
-	var tools [][]string
-	if runtime.GOOS == "darwin" {
-		tools = append(tools, []string{"pbcopy"})
-	} else {
-		if os.Getenv("WAYLAND_DISPLAY") != "" {
-			tools = append(tools, []string{"wl-copy"})
-		}
-		tools = append(tools, []string{"xclip", "-selection", "clipboard"}, []string{"xsel", "--clipboard", "--input"})
-	}
-	for _, argv := range tools {
-		cmd := exec.Command(argv[0], argv[1:]...)
-		cmd.Stdin = strings.NewReader(text)
-		if cmd.Run() == nil {
-			return ""
-		}
-	}
-	return "no clipboard tool (pbcopy, wl-copy, xclip, xsel)"
-}
+// ---- the clipboard: gtty copies, in answer to the user's click ----
 
 var paste = map[bool]string{true: "⌘V", false: "Ctrl+Shift+V"}[runtime.GOOS == "darwin"]
 
@@ -190,9 +168,9 @@ func (h *commands) setList(win *gtty.Window, entries []entry) error {
 }
 
 func copyIt(win *gtty.Window, cmd string) error {
-	if why := copyText(cmd); why != "" {
-		win.Log("warn", why)
-		return win.UI.Set(gtty.M{"epeek": gtty.M{"state": "err", "message": []string{why}}})
+	if err := win.Copy(cmd); err != nil {
+		win.Log("warn", "copy: "+err.Error())
+		return win.UI.Set(gtty.M{"epeek": gtty.M{"state": "err", "message": []string{"not copied"}}})
 	}
 	return win.UI.Set(gtty.M{"epeek": gtty.M{"state": "ok", "message": []string{"copied: " + paste + " pastes it"}}})
 }

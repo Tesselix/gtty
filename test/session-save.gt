@@ -15,14 +15,14 @@
 /wait 300
 /key cmd+4
 /wait 600
-/click 520 557
+/click 510 557
 /wait 500
 /key enter
 /wait 1200
 /key cmd+4
 /wait 600
 /shot save1-list.bmp
-/click 520 536
+/click 510 536
 /wait 500
 /shot save2-modal.bmp
 /text work

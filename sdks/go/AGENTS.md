@@ -33,8 +33,9 @@ point at it with `go mod edit -replace github.com/Tesselix/gtty/sdks/go=../gtty-
    goroutine; while one runs your extension gets nothing else, and gtty
    drops events it can't send you (logged). For slow work (network, big
    files) start a goroutine and keep its results for the next event.
-3. Call `win.UI`, `win.Events`, storage and `win.Shell()` only from a
-   callback, not from another goroutine. `Log` works anywhere.
+3. Call `win.UI`, `win.Events`, storage, `win.Shell()` and the requests
+   (`win.Notice`, `Copy`, `Cd`, …, `win.Sessions`) only from a callback,
+   not from another goroutine. `Log` works anywhere.
 4. Don't invent events, keys or values. If it isn't here, it doesn't exist.
    Say so to the user. A wrong key is a line in `gtty ext logs`, not an
    error.
@@ -165,13 +166,18 @@ win.Events.Unregister("window_changed")
 
 | `ev.Kind` | When | Fields |
 |---|---|---|
-| `"window_changed"` | At the start, then when something changed | `Folder`, `Branch`, `Remote` |
+| `"window_changed"` | At the start, then when something changed or a command ended | `Folder`, `Branch`, `Remote`, `Host` (the ssh / mosh destination), `Busy`, `Status` |
 | `"command_started"` | A command starts in the window's shell | `Command`, `Folder`, `Remote` |
 | `"key"` | A key pressed while the window has the keyboard | `Key`, `Text`, `Ctrl`, `Shift`, `Alt`, `Cmd` |
 | `"button_click"` | Your click, hover or filter; never register it | `Button` |
 
 Also `ev.EventID`. `Branch` is empty outside a repo. With `Remote` true,
 `Folder` is the local one.
+`Busy` is true while a command runs in the window's shell (from its
+`command_started`); when it ends, `window_changed` comes with `Busy` false
+and `Status`, its exit status (0 = success, 130 = Ctrl+C; nil before the
+first command or when the shell didn't say). Only zsh and bash windows
+report commands; in an ssh session the command running is ssh itself. `Status` is an `*int`.
 
 ### Keys
 
@@ -307,6 +313,43 @@ names, err := win.Stateful.List()
 name, err := win.Shell() // "bash" inside zsh; not a shell in front: the window's own
 ```
 
+## Asking gtty
+
+gtty is the core: it runs the windows and their shells. Besides your own
+UI and files you can ask it for a few things; each waits for gtty's answer
+(call them from a callback). Those marked **user** work only while you
+handle the user's click or key (an event they caused, still recent);
+otherwise they fail with `NotFromUser`, and that is on purpose: an
+extension must not change the clipboard, type in the shell or replace the
+user's windows by itself.
+
+```go
+err := win.Notice("3 hosts found", "ok") // "plain", "ok" (green), "err" (red)
+err = win.Beep()
+err = win.Copy(b.Data) // user
+if err := win.Cd(folder); errors.Is(err, gtty.ErrShellBusy) { // user
+	_ = win.Notice("the shell is busy", "err")
+}
+err = win.Refresh() // folder and branch looked at now
+n := win.Number     // the #3 the user sees
+
+recent, err := win.Sessions.List(7)    // []gtty.Session{ID, Name}, the last used last
+name, err := win.Sessions.SuggestName() // gtty.ErrNothingToSave
+err = win.Sessions.Save(name)
+err = win.Sessions.Restore(recent[0].ID, false) // user; true: a new gtty
+err = win.Sessions.Manage()                     // user
+```
+
+- `cd` is the only thing an extension can make the shell do, and only at its
+  prompt with nothing typed; it can't type anything else, nor read the
+  window's text.
+- `copy` flashes what was clicked in your open peek (the row picked, else
+  the top text) and says "copied …" in the status bar: don't add your own
+  notice for it.
+- Sessions are gtty's saved screens (shell windows and where they were),
+  shared by every gtty. `restore` here replaces this gtty's windows (gtty
+  asks first when some still work); with `new_window` a new gtty opens.
+
 ## Logs
 
 ```go
@@ -331,13 +374,16 @@ something doesn't work, read these first.
 ## Errors
 
 `gtty.ErrWindowClosed`, `ErrNoChip`, `ErrBadName`, `ErrNoFile`,
-`ErrFileInUse`, `ErrFileClosed`, `ErrStorageFull`, `ErrStorageFailed`;
-compare with `errors.Is`.
+`ErrFileInUse`, `ErrFileClosed`, `ErrStorageFull`, `ErrStorageFailed`,
+`ErrShellBusy` (`Cd`: the shell isn't at its prompt), `ErrNotFromUser` (a
+**user** request outside the user's click or key), `ErrNothingToSave`
+(`Sessions.SuggestName`); compare with `errors.Is`.
 
 - `win.UI.*` and `win.Events.*` don't wait for gtty: a mistake gtty finds is
   a line in `gtty ext logs`. A wrong argument here (`SetDisplayMode("x")`)
   returns an error.
-- Storage and `win.Shell()` wait for gtty's answer and return its error.
+- Storage, `win.Shell()` and the requests wait for gtty's answer and
+  return its error.
 
 ## Package and run
 
@@ -469,6 +515,32 @@ user sees nothing. A panic ends the program: recover in your own
 goroutines.
 
 ### `win` and `ext`
+
+**`win.Number uint32`** — the number the user sees on the window (`#3`),
+for text the user reads.
+
+**`win.Notice(text, kind string) error`** — a short notice in the status
+bar; `kind` `"plain"`, `"ok"` (green), `"err"` (red).
+
+**`win.Beep() error`** — gtty's error beep.
+
+**`win.Copy(text string) error`** — **user**. The clipboard and gtty's
+paste history; "copied …" in the status bar; what was clicked in your open
+peek flashes. `ErrNotFromUser` outside the user's click or key.
+
+**`win.Cd(folder string) error`** — **user**. `cd -- '<folder>'` typed and
+run in the window's shell; `ErrShellBusy` when it isn't waiting at its
+prompt with nothing typed.
+
+**`win.Refresh() error`** — gtty looks at the folder and branch now;
+`window_changed` follows if they changed (after your own `git switch`).
+
+**`win.Sessions.List(max int) ([]gtty.Session, error)`** — `ID`, `Name`,
+the last used last. **`SuggestName() (string, error)`** — the name gtty
+gives a session now; `ErrNothingToSave` when no window would be kept.
+**`Save(name string) error`**. **`Restore(id string, newWindow bool)
+error`** — **user**; here (gtty may ask first) or in a new gtty.
+**`Manage() error`** — **user**; opens the Session Manager.
 
 **`win.ID uint32`** — the window's id, the same in every call for that
 window and unique in this gtty. Key your state by it.

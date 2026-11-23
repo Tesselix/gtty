@@ -11,10 +11,8 @@ run, and a click (or the mouse resting on it) opens the list:
 - The oldest at the top, the newest at the bottom, next to the chip, and
   selected. A command run several times shows `×N` and moves down.
 - Type to filter (any case; the matching letters are marked).
-- A click on a command copies it to the clipboard; ⌘V (Linux Ctrl+Shift+V)
-  pastes it. The SDK has no way to type into a window, so the clipboard is
-  the way in: the extension runs `pbcopy` (macOS), else `wl-copy`
-  (Wayland), `xclip` or `xsel` (X11).
+- A click on a command copies it to the clipboard (`win.copy`: gtty
+  copies, in answer to the click); ⌘V (Linux Ctrl+Shift+V) pastes it.
 - Its ⋮: Copy, Forget (removes it from the list).
 
 The list is shared by every window and every gtty (the extension's

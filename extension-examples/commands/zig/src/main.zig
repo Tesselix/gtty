@@ -83,28 +83,7 @@ fn save(win: *gtty.Window, list: []const rules.Entry) !void {
     try f.close(); // the write takes the old file's place here
 }
 
-// ---- the clipboard: the SDK can't type into a window ----
-
-const FILE = opaque {};
-extern "c" fn popen(command: [*:0]const u8, mode: [*:0]const u8) ?*FILE;
-extern "c" fn pclose(f: *FILE) c_int;
-extern "c" fn fwrite(p: [*]const u8, size: usize, n: usize, f: *FILE) usize;
-
-const tools: []const [*:0]const u8 = if (builtin.os.tag == .macos)
-    &.{"pbcopy 2>/dev/null"}
-else
-    &.{ "wl-copy 2>/dev/null", "xclip -selection clipboard 2>/dev/null", "xsel --clipboard --input 2>/dev/null" };
-
-/// null when copied, else why not.
-fn copy(text: []const u8) ?[]const u8 {
-    for (tools) |cmd| {
-        if (std.mem.startsWith(u8, std.mem.span(cmd), "wl-copy") and std.c.getenv("WAYLAND_DISPLAY") == null) continue;
-        const p = popen(cmd, "w") orelse continue;
-        const wrote = fwrite(text.ptr, 1, text.len, p) == text.len;
-        if (pclose(p) == 0 and wrote) return null;
-    }
-    return "no clipboard tool (pbcopy, wl-copy, xclip, xsel)";
-}
+// ---- the clipboard: gtty copies, in answer to the user's click ----
 
 const paste = if (builtin.os.tag == .macos) "⌘V" else "Ctrl+Shift+V";
 
@@ -174,14 +153,14 @@ fn setList(win: *gtty.Window, list: []const rules.Entry) !void {
 }
 
 fn copyIt(win: *gtty.Window, cmd: []const u8) !void {
-    if (copy(cmd)) |why| {
-        win.log(.warn, "{s}", .{why});
-        const msg = [_]gtty.Text{gtty.newText(why)};
+    win.copy(cmd) catch |e| {
+        win.log(.warn, "copy: {s}", .{@errorName(e)});
+        const msg = [_]gtty.Text{gtty.newText("not copied")};
         try win.ui.set(.{ .epeek = gtty.EpeekUpdate{ .state = .{ .set = .err }, .message = .{ .set = &msg } } });
-    } else {
-        const msg = [_]gtty.Text{gtty.newText("copied: " ++ paste ++ " pastes it")};
-        try win.ui.set(.{ .epeek = gtty.EpeekUpdate{ .state = .{ .set = .ok }, .message = .{ .set = &msg } } });
-    }
+        return;
+    };
+    const msg = [_]gtty.Text{gtty.newText("copied: " ++ paste ++ " pastes it")};
+    try win.ui.set(.{ .epeek = gtty.EpeekUpdate{ .state = .{ .set = .ok }, .message = .{ .set = &msg } } });
 }
 
 /// Every `onclick` / `onhover` name is a `pub fn` here.

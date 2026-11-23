@@ -10,6 +10,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 
@@ -140,8 +141,13 @@ func (h *hosts) actions() map[string]gtty.Action {
 			h.filters[win.ID] = b.Text
 			return h.setList(win)
 		},
+		// The host on the chip, and on the clipboard (the user's click:
+		// gtty allows the copy).
 		"pick": func(win *gtty.Window, b *gtty.ButtonClick) error {
 			if err := win.UI.Set(gtty.M{"chip": gtty.M{"text": b.Data}}); err != nil {
+				return err
+			}
+			if err := win.Copy(b.Data); err != nil {
 				return err
 			}
 			return win.UI.SetDisplayMode("chip") // gtty only reports: close it here
@@ -160,7 +166,7 @@ func (h *hosts) actions() map[string]gtty.Action {
 			}
 			if err := win.UI.Set(gtty.M{"dialog": gtty.M{
 				"title": "About hosts", "layout": "form", "timeout": 20, "buttons": "ok", "onclick": "closeIt",
-				"fields": []gtty.M{{"id": "info", "type": "label", "label": "running under " + shell}},
+				"fields": []gtty.M{{"id": "info", "type": "label", "label": fmt.Sprintf("window #%d, running under %s", win.Number, shell)}},
 			}}); err != nil {
 				return err
 			}

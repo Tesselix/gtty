@@ -51,12 +51,19 @@ var (
 	ErrFileClosed    = errors.New("FileClosed")
 	ErrStorageFull   = errors.New("StorageFull")
 	ErrStorageFailed = errors.New("StorageFailed")
+	// Cd: the shell isn't waiting at its prompt.
+	ErrShellBusy = errors.New("ShellBusy")
+	// Copy, Cd, Sessions.Restore, Sessions.Manage: only while handling the
+	// user's click or key.
+	ErrNotFromUser = errors.New("NotFromUser")
+	// Sessions.SuggestName: no window a session would keep.
+	ErrNothingToSave = errors.New("NothingToSave")
 )
 
 var errorsByName = map[string]error{}
 
 func init() {
-	for _, e := range []error{ErrWindowClosed, ErrNoChip, ErrBadName, ErrNoFile, ErrFileInUse, ErrFileClosed, ErrStorageFull, ErrStorageFailed} {
+	for _, e := range []error{ErrWindowClosed, ErrNoChip, ErrBadName, ErrNoFile, ErrFileInUse, ErrFileClosed, ErrStorageFull, ErrStorageFailed, ErrShellBusy, ErrNotFromUser, ErrNothingToSave} {
 		errorsByName[e.Error()] = e
 	}
 }
@@ -128,6 +135,12 @@ type Event struct {
 	Folder  string `json:"folder"`
 	Branch  string `json:"branch"`
 	Remote  bool   `json:"remote"`
+	// Host: window_changed in an ssh / mosh session.
+	Host string `json:"host"`
+	// Busy, Status: window_changed. A command runs in the shell; the exit
+	// status of the last one that ended (nil: none yet, or not said).
+	Busy    bool   `json:"busy"`
+	Status  *int   `json:"status"`
 	Command string `json:"command"`
 	// key: its name, what it typed, the modifier keys (Cmd: ⌘ / Super).
 	Key    string       `json:"key"`
@@ -212,7 +225,8 @@ func num(m map[string]json.RawMessage, k string) uint32 {
 func (cn *conn) call(win uint32, op string, fields M, out any) error {
 	cn.nextID++
 	id := cn.nextID
-	msg := M{"t": "call", "id": id, "win": win, "op": op}
+	// ev: gtty checks which calls answer the user's click or key.
+	msg := M{"t": "call", "id": id, "win": win, "op": op, "ev": cn.currentEv}
 	for k, v := range fields {
 		msg[k] = v
 	}
@@ -404,20 +418,64 @@ func (s *Storage) List() ([]string, error) {
 	return names, err
 }
 
+// Session is a saved session.
+type Session struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// Sessions is gtty's saved screens, shared by every gtty.
+type Sessions struct{ w *Window }
+
+// List is the sessions used last (up to max), the last used last.
+func (s *Sessions) List(max int) ([]Session, error) {
+	var out []Session
+	err := c.call(s.w.ID, "sessions", M{"max": max}, &out)
+	return out, err
+}
+
+// SuggestName is the name gtty would give the session now;
+// ErrNothingToSave when no window a session keeps.
+func (s *Sessions) SuggestName() (string, error) {
+	var name string
+	err := c.call(s.w.ID, "sessionName", nil, &name)
+	return name, err
+}
+
+// Save saves this gtty's windows as session name.
+func (s *Sessions) Save(name string) error {
+	return c.call(s.w.ID, "sessionSave", M{"name": name}, nil)
+}
+
+// Restore restores session id here (in place of this gtty's windows,
+// asking first when some still work), or newWindow: in a new gtty. Only
+// while handling the user's click or key.
+func (s *Sessions) Restore(id string, newWindow bool) error {
+	return c.call(s.w.ID, "sessionRestore", M{"id": id, "newWindow": newWindow}, nil)
+}
+
+// Manage opens the Session Manager. Only while handling the user's click
+// or key.
+func (s *Sessions) Manage() error { return c.call(s.w.ID, "sessionManage", nil, nil) }
+
 // Window is the connection to one window.
 type Window struct {
-	ID        uint32
+	ID uint32
+	// Number is the number the user sees on the window (#3).
+	Number    uint32
 	UI        *UI
 	Events    *Events
+	Sessions  *Sessions
 	Ephemeral *Storage
 	Stateful  *Storage
 	closed    bool
 }
 
-func newWindow(id uint32) *Window {
-	w := &Window{ID: id}
+func newWindow(id, number uint32) *Window {
+	w := &Window{ID: id, Number: number}
 	w.UI = &UI{w}
 	w.Events = &Events{w}
+	w.Sessions = &Sessions{w}
 	w.Ephemeral = &Storage{w, "ephemeral"}
 	w.Stateful = &Storage{w, "stateful"}
 	return w
@@ -446,6 +504,33 @@ func (w *Window) Shell() (string, error) {
 // Log writes a line in `gtty ext logs` with this window's id. Level:
 // debug, info, warn or err. Safe from any goroutine.
 func (w *Window) Log(level, message string) { logLine(w.ID, level, message) }
+
+// Notice shows a short notice in gtty's status bar; kind: plain, ok
+// (green) or err (red).
+func (w *Window) Notice(text, kind string) error {
+	switch kind {
+	case "plain", "ok", "err":
+	default:
+		kind = "plain"
+	}
+	return c.call(w.ID, "notice", M{"text": text, "kind": kind}, nil)
+}
+
+// Beep is gtty's error beep.
+func (w *Window) Beep() error { return c.call(w.ID, "beep", nil, nil) }
+
+// Copy puts text on the clipboard and in gtty's paste history; what was
+// clicked in the open peek flashes. Only while handling the user's click
+// or key.
+func (w *Window) Copy(text string) error { return c.call(w.ID, "copy", M{"text": text}, nil) }
+
+// Cd types cd to folder and runs it in this window's shell; ErrShellBusy
+// when it isn't at its prompt. Only while handling the user's click or key.
+func (w *Window) Cd(folder string) error { return c.call(w.ID, "cd", M{"dir": folder}, nil) }
+
+// Refresh looks at the window's folder and branch again now:
+// window_changed follows if they changed.
+func (w *Window) Refresh() error { return c.call(w.ID, "refresh", nil, nil) }
 
 // Ext is the extension, for OnGttyStart and OnGttyClose.
 type Ext struct{ Name string }
@@ -559,7 +644,7 @@ func Run(ext any) error {
 			sock.Close()
 			return nil
 		case "windowStart":
-			w := newWindow(win)
+			w := newWindow(win, num(m, "number"))
 			windows[win] = w
 			if f, ok := ext.(interface{ OnWindowStart(*Window) error }); ok {
 				report(win, "OnWindowStart", f.OnWindowStart(w))

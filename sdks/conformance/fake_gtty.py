@@ -23,6 +23,8 @@ import time
 
 VERBOSE = "--verbose" in sys.argv
 WIN = 7
+# The number the user sees on the window.
+NUMBER = 3
 
 
 class Fake:
@@ -41,6 +43,8 @@ class Fake:
         self.next_handle = 1
         self.next_event = 100
         self.seen = []
+        # The requests gtty got (notice, copy, cd, …), in order.
+        self.requests = []
 
     def send(self, msg):
         if VERBOSE:
@@ -72,6 +76,15 @@ class Fake:
             return self.send({"t": "reply", "id": rid, "error": "WindowClosed"})
         if op == "shell":
             return self.send({"t": "reply", "id": rid, "value": "zsh"})
+        if op in ("notice", "beep", "copy", "cd", "refresh", "sessionSave", "sessionRestore", "sessionManage"):
+            self.requests.append(m)
+            return self.send({"t": "reply", "id": rid, "value": True})
+        if op == "sessions":
+            self.requests.append(m)
+            return self.send({"t": "reply", "id": rid, "value": [{"id": "s1", "name": "gtty"}]})
+        if op == "sessionName":
+            self.requests.append(m)
+            return self.send({"t": "reply", "id": rid, "value": "gtty"})
         if op == "open":
             name = m["name"]
             if "/" in name or name.startswith("."):
@@ -218,7 +231,7 @@ def main():
     g = Fake(argv)
     g.send({"t": "hello", "api": 1, "name": "hosts"})
     g.send({"t": "gttyStart"})
-    g.send({"t": "windowStart", "win": WIN})
+    g.send({"t": "windowStart", "win": WIN, "number": NUMBER})
     got = g.settle(5, first=20)
     regs = [m["event"] for m in got if m["t"] == "register" and m.get("win") == WIN]
     check("window_changed" in regs and "key" in regs, "registers window_changed and key")
@@ -229,7 +242,7 @@ def main():
     ep = find(got, "set", "epeek")
     check(ep is not None and ep["epeek"].get("lines") == [] and "filter" in ep["epeek"].get("frame", {}), "sets an empty epeek with a filter (no hosts file yet)")
 
-    g.send({"t": "event", "win": WIN, "event": {"eventId": 50, "kind": "window_changed", "folder": "/tmp", "remote": True}})
+    g.send({"t": "event", "win": WIN, "event": {"eventId": 50, "kind": "window_changed", "folder": "/tmp", "remote": True, "busy": True, "status": 130}})
     got = g.settle()
     chip = find(got, "set", "chip")
     check(chip is not None and chip["chip"].get("dimmed") is True, "window_changed in a remote session dims the chip")
@@ -285,16 +298,19 @@ def main():
     ep = find(got, "set", "epeek")
     check(ep is not None and ep["epeek"].get("lines") == [], "a filter that matches nothing: no lines")
 
-    g.click("pick", data="alpha")
+    ev = g.click("pick", data="alpha")
     got = g.settle()
     mode = find(got, "mode")
     check(mode is not None and mode["mode"] == "chip", "a pick closes the epeek (mode chip)")
+    copy = next((r for r in g.requests if r["op"] == "copy"), None)
+    check(copy is not None and copy.get("text") == "alpha" and copy.get("ev") == ev, "a pick copies the host (call copy, with the event's id)")
 
     g.click("about")
     got = g.settle()
     d = find(got, "set", "dialog")
     label = text_of(d["dialog"]["fields"][0].get("label")) if d and d["dialog"].get("fields") else ""
     check("zsh" in label, "about: a dialog naming the shell (win.shell)")
+    check("#%d" % NUMBER in label, "about: and the window's number (windowStart's number)")
 
     g.click("closeIt", id="kill")
     got = g.settle()
