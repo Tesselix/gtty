@@ -103,7 +103,7 @@ pub fn parseResponse(gpa: std.mem.Allocator, out: []const u8) Result {
     };
 }
 
-/// How this gtty was installed on Linux: what updates it.
+/// How this gtty was installed: what updates it.
 pub const Installer = enum {
     apt,
     dnf,
@@ -117,6 +117,11 @@ pub const Installer = enum {
     dnf_repo,
     yum_repo,
     zypper_repo,
+    /// macOS: the Homebrew cask (README: `brew install --cask
+    /// tesselix/tap/gtty`).
+    brew,
+    /// macOS: gtty.app from the dmg, by hand: the new dmg, opened.
+    dmg,
     /// Not from a package (tar.gz, source): no command.
     none,
 
@@ -170,11 +175,21 @@ pub fn installCommand(buf: []u8, inst: Installer, arch: Arch, r: *const Release)
         .apt => std.fmt.bufPrint(buf, "curl -fL -o /tmp/gtty-{0s}-{2s}.deb " ++ download_url ++ "{1s}/gtty-{0s}-{2s}.deb && sudo apt install /tmp/gtty-{0s}-{2s}.deb", .{ v, t, d }) catch null,
         .dnf, .yum, .zypper => std.fmt.bufPrint(buf, "sudo {s} install " ++ download_url ++ "{s}/gtty-{s}-{s}.rpm", .{ @tagName(inst), t, v, a }) catch null,
         .rpm => std.fmt.bufPrint(buf, "sudo rpm -U " ++ download_url ++ "{s}/gtty-{s}-{s}.rpm", .{ t, v, a }) catch null,
-        .apt_repo => "sudo apt update && sudo apt install gtty",
-        .dnf_repo => "sudo dnf upgrade --refresh gtty",
-        .yum_repo => "sudo yum update gtty",
-        .zypper_repo => "sudo zypper refresh gtty && sudo zypper update gtty",
+        .apt_repo => fixed(buf, "sudo apt update && sudo apt install gtty"),
+        .dnf_repo => fixed(buf, "sudo dnf upgrade --refresh gtty"),
+        .yum_repo => fixed(buf, "sudo yum update gtty"),
+        .zypper_repo => fixed(buf, "sudo zypper refresh gtty && sudo zypper update gtty"),
+        .brew => fixed(buf, "brew upgrade --cask tesselix/tap/gtty"),
+        .dmg => std.fmt.bufPrint(buf, "curl -fL -o /tmp/gtty-{0s}-macos.dmg " ++ download_url ++ "{1s}/gtty-{0s}-macos.dmg && open /tmp/gtty-{0s}-macos.dmg", .{ v, t }) catch null,
     };
+}
+
+/// A command with nothing to fill in, copied into `buf` like the others
+/// (the caller keeps only the length).
+fn fixed(buf: []u8, cmd: []const u8) ?[]const u8 {
+    if (cmd.len > buf.len) return null;
+    @memcpy(buf[0..cmd.len], cmd);
+    return buf[0..cmd.len];
 }
 
 /// One check in flight: curl on pipes.
@@ -290,4 +305,10 @@ test "install commands" {
     try t.expectEqual(Installer.apt_repo, Installer.fromName("apt_repo"));
     try t.expectEqual(Installer.dnf_repo, Installer.repo(.dnf));
     try t.expectEqual(Installer.rpm, Installer.repo(.rpm));
+    try t.expectEqualStrings("brew upgrade --cask tesselix/tap/gtty", installCommand(&buf, .brew, .aarch64, &r).?);
+    try t.expectEqualStrings("curl -fL -o /tmp/gtty-0.4.0-macos.dmg https://github.com/Tesselix/gtty/releases/download/v0.4.0/gtty-0.4.0-macos.dmg && open /tmp/gtty-0.4.0-macos.dmg", installCommand(&buf, .dmg, .aarch64, &r).?);
+    try t.expectEqual(Installer.brew, Installer.fromName("brew"));
+    // Every command is written into the buffer (App keeps only its length).
+    const cmd = installCommand(&buf, .apt_repo, .x86_64, &r).?;
+    try t.expectEqual(@intFromPtr(&buf), @intFromPtr(cmd.ptr));
 }
