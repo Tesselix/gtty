@@ -405,6 +405,9 @@ jobs:
             for f in "gtty-$v-amd64.deb" "gtty-$v-arm64.deb" "gtty-$v-x86_64.rpm" "gtty-$v-aarch64.rpm"; do
               gh release download "$t" --repo "$GITHUB_REPOSITORY" --dir dl --pattern "$f" 2>/dev/null || true
             done
+            # Releases before the hyphen names (gtty_<v>_amd64.deb, …) have none
+            # of these, and no signed rpms either: nothing to check or keep.
+            ls dl/gtty-* >/dev/null 2>&1 || { echo "$t: left out (no packages under the current names)"; continue; }
             gh release download "$t" --repo "$GITHUB_REPOSITORY" --dir dl --pattern SHA256SUMS
             (cd dl && sha256sum -c --ignore-missing --quiet SHA256SUMS) || { echo "::error::$t: a package doesn't match its SHA256SUMS"; exit 1; }
             rm dl/SHA256SUMS
