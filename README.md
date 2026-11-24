@@ -19,25 +19,7 @@ Apple Silicon, macOS 13 or later. With [Homebrew](https://brew.sh):
 brew install --cask tesselix/tap/gtty
 ```
 
-`brew upgrade` updates it. Or download the latest stable release and
-open it:
-
-```sh
-curl -fLO https://github.com/Tesselix/gtty/releases/latest/download/gtty-macos.dmg && open gtty-macos.dmg
-```
-
-1. In the window that opens, drag the **gtty** icon onto the
-   **Applications** folder.
-2. Eject the disk image (the ⏏ next to "gtty" in Finder's sidebar). You
-   can delete `gtty-macos.dmg`.
-3. Open gtty from Applications (or Spotlight: ⌘Space, type `gtty`). The
-   first time, macOS may ask whether to open an app downloaded from the
-   internet: click **Open**. gtty is signed and notarized by Apple.
-4. If macOS still won't open it, go to **System Settings → Privacy &
-   Security**, scroll down to the message about gtty and click **Open
-   Anyway**.
-
-To update, do the same again and let Finder replace the old copy.
+`brew upgrade` updates it.
 
 ### Linux
 
@@ -87,19 +69,42 @@ must be:
 
 It is also on [tesselix.github.io/gtty](https://tesselix.github.io/gtty/).
 
-Without the repository, the latest stable release in one line (run it
-again to update):
+### More installation methods
+
+Straight from GitHub, without Homebrew or the repositories. These don't
+update by themselves: run the same again for a new release.
+
+**macOS**, the latest stable release:
+
+```sh
+curl -fLO https://github.com/Tesselix/gtty/releases/latest/download/gtty-macos.dmg && open gtty-macos.dmg
+```
+
+1. In the window that opens, drag the **gtty** icon onto the
+   **Applications** folder.
+2. Eject the disk image (the ⏏ next to "gtty" in Finder's sidebar). You
+   can delete `gtty-macos.dmg`.
+3. Open gtty from Applications (or Spotlight: ⌘Space, type `gtty`). The
+   first time, macOS may ask whether to open an app downloaded from the
+   internet: click **Open**. gtty is signed and notarized by Apple.
+4. If macOS still won't open it, go to **System Settings → Privacy &
+   Security**, scroll down to the message about gtty and click **Open
+   Anyway**.
+
+To update, do the same again and let Finder replace the old copy.
+
+**Linux**, the latest stable release in one line (it picks your machine's
+package):
 
 ```sh
 # Debian / Ubuntu
 a=$(dpkg --print-architecture) && curl -fLO https://github.com/tesselix/gtty/releases/latest/download/gtty-$a.deb && sudo apt install ./gtty-$a.deb
-# Fedora / RHEL (zypper / rpm -U the same)
+# Fedora / RHEL (openSUSE: zypper install, other rpm systems: rpm -U)
 sudo dnf install https://github.com/tesselix/gtty/releases/latest/download/gtty-$(uname -m).rpm
 ```
 
-### Other ways
-
-Or download from the **[latest release](https://github.com/Tesselix/gtty/releases/latest)**
+**From the release page**: download from the
+**[latest release](https://github.com/Tesselix/gtty/releases/latest)**
 (each release lists its files and a `SHA256SUMS`):
 
 - **macOS** (Apple Silicon, 13+): `gtty-<version>-macos.dmg`; open it and
