@@ -6,7 +6,8 @@
 # files here: the self-contained binaries, the signed + notarized macOS
 # dmg (scripts/sign-macos.sh), the .deb / .rpm / .tar.gz, the SDKs for
 # extensions (gtty-sdk-*.tar.gz), SHA256SUMS and SLSA build provenance
-# (*.intoto.jsonl).
+# (*.intoto.jsonl). A stable release also updates the Homebrew cask in
+# tesselix/homebrew-tap (job homebrew).
 #
 # The tag is the version (written into build.zig.zon before the build, not
 # committed); nothing in the repo holds one. Its MINOR picks the kind of release:
@@ -200,6 +201,90 @@ jobs:
       provenance-name: gtty.intoto.jsonl
       upload-assets: true
       upload-tag-name: ${{ needs.channel.outputs.tag }}
+
+  # The Homebrew cask (brew install --cask tesselix/tap/gtty): stable
+  # releases only, and only the newest one (a patch to an older stable
+  # line doesn't move the cask back). packaging/homebrew/gtty.rb.in with
+  # the version and the dmg's sha256 (from the release's SHA256SUMS) is
+  # written to Casks/gtty.rb in tesselix/homebrew-tap through the API (no
+  # checkout of the tap, no token in a git URL), as the GitHub App
+  # tesselix-release-bot (installed on homebrew-tap only; Contents write).
+  # Its client ID is the variable TAP_CLIENT_ID, its private key the
+  # secret TAP_APP_KEY, both in the environment "release" only.
+  homebrew:
+    name: Homebrew cask
+    needs: [channel, build]
+    if: needs.channel.outputs.environment == 'release'
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: packaging/homebrew
+
+      - name: Newest stable release?
+        id: latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          latest=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)
+          if [ "$latest" = "$TAG" ]; then
+            echo "write=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "$TAG isn't the latest release ($latest): the cask stays"
+            echo "write=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fill in the cask
+        if: steps.latest.outputs.write == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v=${TAG#v}
+          sha=$(gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS --output - |
+            awk -v f="gtty-$v-macos.dmg" '$2 == f {print $1}')
+          if ! [[ "$sha" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::no sha256 for gtty-$v-macos.dmg in the release's SHA256SUMS"
+            exit 1
+          fi
+          sed -e "s/@VERSION@/$v/g" -e "s/@SHA256@/$sha/g" packaging/homebrew/gtty.rb.in > gtty.rb
+          if grep -q @ gtty.rb; then
+            echo "::error::a placeholder is left in the cask"
+            exit 1
+          fi
+          cat gtty.rb
+
+      - name: Token for the tap
+        if: steps.latest.outputs.write == 'true'
+        id: app
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
+        with:
+          client-id: ${{ vars.TAP_CLIENT_ID }}
+          private-key: ${{ secrets.TAP_APP_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: homebrew-tap
+          permission-contents: write
+
+      # One commit on the tap's main; none when the cask is already this
+      # (a re-run).
+      - name: Write Casks/gtty.rb in the tap
+        if: steps.latest.outputs.write == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          TAP: ${{ github.repository_owner }}/homebrew-tap
+        run: |
+          path=repos/$TAP/contents/Casks/gtty.rb
+          old_sha=$(gh api "$path" --jq .sha 2>/dev/null) || old_sha=
+          if [ -n "$old_sha" ] && [ "$(gh api "$path" --jq .content | base64 -d)" = "$(cat gtty.rb)" ]; then
+            echo "Casks/gtty.rb is already $TAG"
+            exit 0
+          fi
+          args=(-X PUT "$path" -f message="gtty ${TAG#v}" -f content="$(base64 -w0 < gtty.rb)")
+          [ -n "$old_sha" ] && args+=(-f sha="$old_sha")
+          gh api "${args[@]}" --jq '"wrote \(.content.path) in \(.commit.sha)"'
 
   # The README's edge badge: the last published pre-release's tag in a
   # shields.io endpoint file, edge.json, alone on the orphan branch

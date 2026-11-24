@@ -1576,7 +1576,19 @@ decisions; items marked *open* are undecided.
   (one commit, replaced each release through the git API; the README's
   edge badge reads it from raw.githubusercontent.com: shields refuses
   github.com release assets; the `main` ruleset covers only the default
-  branch));
+  branch); job `homebrew` (2026-11-24; stable only, and only when the tag
+  is the latest release): `packaging/homebrew/gtty.rb.in` (BSD-2-Clause,
+  as the tap; `@VERSION@`, `@SHA256@` from the release's `SHA256SUMS`)
+  → `Casks/gtty.rb` in **tesselix/homebrew-tap** (public, BSD-2;
+  `brew install --cask tesselix/tap/gtty`) through the contents API, as
+  the GitHub App **tesselix-release-bot** (org-owned, installed on
+  homebrew-tap only, Contents write, no webhook): variable
+  `TAP_CLIENT_ID` + secret `TAP_APP_KEY` (its private key) in the
+  environment `release` only, token from `actions/create-github-app-token`
+  scoped to homebrew-tap; no commit when the cask is unchanged. Check a
+  cask change locally: fill the template into a scratch tap under
+  `$(brew --repository)/Library/Taps/`, then `brew style --cask` and
+  `brew audit --cask --online --strict`);
   `deps.yml` (2026-10-22; called by ci.yml as job `deps`, part of
   `build-and-test`; also weekly and by hand): `zig build --fetch=all`,
   then `scripts/check-deps.py` against **`.github/deps.toml`** (every
