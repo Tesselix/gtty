@@ -61,12 +61,27 @@ contents:
   - src: ./src/assets/JetBrainsMono-OFL.txt
     dst: /usr/share/doc/gtty/JetBrainsMono-OFL.txt
     file_info: {mode: 0644}
+  # The repository's public key (packaging/linux/gtty.asc, staged by
+  # package.sh). postinstall.sh copies it over /usr/share/keyrings/gtty.asc
+  # when the user set up the apt repository, so a renewed key (same key,
+  # later expiry) arrives with the upgrade. The keyring itself isn't the
+  # package's: removing gtty must not break the user's apt sources.
+  - src: ./.zig-cache/package/linux/gtty.asc
+    dst: /usr/share/gtty/gtty.asc
+    file_info: {mode: 0644}
   - src: ./LICENSE
     dst: /usr/share/doc/gtty/LICENSE
     file_info: {mode: 0644}
   - src: ./THIRD_PARTY.md
     dst: /usr/share/doc/gtty/THIRD_PARTY.md
     file_info: {mode: 0644}
+
+# Stable releases sign the rpm (release.yml: the repository key, secret
+# REPO_GPG_KEY; passphrase in NFPM_RPM_PASSPHRASE). Unset: unsigned (edge,
+# local builds).
+rpm:
+  signature:
+    key_file: ${NFPM_RPM_KEY_FILE}
 
 scripts:
   postinstall: ./packaging/linux/postinstall.sh

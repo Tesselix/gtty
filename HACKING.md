@@ -25,6 +25,22 @@ files stay outside the repo, in `$GTTY_SIGNING_DIR`, default `~/tmp`).
 `scripts/set-github-secrets.sh` loads them into the GitHub environment
 `release` for CI. Details in CLAUDE.md ("Signed releases").
 
+The Linux packages built on Linux, from a Mac: `make mac-pack` mounts
+this folder in a multipass VM (`VM=u`, `VM_DIR=/mnt/gtty`),
+a native mount: the first time stops and restarts the VM), runs `make
+packages` there and so puts the .deb / .rpm / .tar.gz and SDKs in
+`dist/` here. Once per VM: `make
+vm-setup` (Zig, nfpm, ImageMagick; `scripts/vm-setup.sh`). `make
+vm-shell` opens a shell there.
+
+Stable releases also publish apt and rpm repositories at
+<https://tesselix.github.io/gtty/> (release.yml, jobs `repo` and `pages`;
+`scripts/build-repo.sh`), signed with a key made by
+`scripts/set-repo-key.sh` (kept in `$GTTY_SIGNING_DIR`, loaded into the
+environment `release`; `--extend` renews it). `make vm-repo-test` tries
+the repositories end to end in the VM with a throwaway key: install and
+update in Debian, Ubuntu, Fedora, Rocky and openSUSE containers.
+
 CI (`.github/workflows/ci.yml`) builds gtty on Linux and macOS for every
 pull request to `main` and every push to it; its `build-and-test` check
 must pass before a PR can merge. `main` is the only long-lived branch

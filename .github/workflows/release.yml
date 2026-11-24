@@ -7,7 +7,9 @@
 # dmg (scripts/sign-macos.sh), the .deb / .rpm / .tar.gz, the SDKs for
 # extensions (gtty-sdk-*.tar.gz), SHA256SUMS and SLSA build provenance
 # (*.intoto.jsonl). A stable release also updates the Homebrew cask in
-# tesselix/homebrew-tap (job homebrew).
+# tesselix/homebrew-tap (job homebrew) and the apt / rpm repositories at
+# https://tesselix.github.io/gtty/ (jobs repo, pages); its rpms are signed
+# with the repositories' key.
 #
 # The tag is the version (written into build.zig.zon before the build, not
 # committed); nothing in the repo holds one. Its MINOR picks the kind of release:
@@ -100,11 +102,33 @@ jobs:
           sed -i '' "s/^\( *\.version = \)\"[^\"]*\"/\1\"$v\"/" build.zig.zon
           grep -q "^ *\.version = \"$v\"," build.zig.zon || { echo "could not set the version in build.zig.zon" >&2; exit 1; }
 
+      # Stable releases sign their rpms with the repositories' key
+      # (nfpm.yaml: NFPM_RPM_KEY_FILE, NFPM_RPM_PASSPHRASE; secrets
+      # REPO_GPG_KEY and REPO_GPG_PASSPHRASE, environment "release" only,
+      # loaded by scripts/set-repo-key.sh). Pre-releases: unsigned.
+      - name: Key for the rpms
+        env:
+          CHANNEL: ${{ needs.channel.outputs.environment }}
+          REPO_GPG_KEY: ${{ secrets.REPO_GPG_KEY }}
+        run: |
+          if [ -z "$REPO_GPG_KEY" ]; then
+            if [ "$CHANNEL" = release ]; then
+              echo "::error::no REPO_GPG_KEY in the environment release: run scripts/set-repo-key.sh"
+              exit 1
+            fi
+            echo "pre-release: the rpms stay unsigned"
+            exit 0
+          fi
+          umask 077
+          printf '%s\n' "$REPO_GPG_KEY" > "$RUNNER_TEMP/repo-key.asc"
+          echo "NFPM_RPM_KEY_FILE=$RUNNER_TEMP/repo-key.asc" >> "$GITHUB_ENV"
+
       # build-bin.sh (macOS + Linux binaries, ReleaseSafe),
       # package.sh (dmg, deb, rpm, tar.gz), signing in a temporary
       # keychain, notarization + staple.
       - name: Build, sign and notarize
         env:
+          NFPM_RPM_PASSPHRASE: ${{ secrets.REPO_GPG_PASSPHRASE }}
           MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
           MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
@@ -114,6 +138,10 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           scripts/sign-macos.sh
+
+      - name: Remove the rpm key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/repo-key.asc"
 
       # stapler and spctl ask Apple's servers, which drop the connection
       # now and then (stapler: "The network connection was lost", error
@@ -285,6 +313,146 @@ jobs:
           args=(-X PUT "$path" -f message="gtty ${TAG#v}" -f content="$(base64 -w0 < gtty.rb)")
           [ -n "$old_sha" ] && args+=(-f sha="$old_sha")
           gh api "${args[@]}" --jq '"wrote \(.content.path) in \(.commit.sha)"'
+
+  # The apt and rpm repositories at https://tesselix.github.io/gtty/
+  # (GitHub Pages of this repo, deployed from Actions): rebuilt from scratch
+  # on every stable release that is the newest one, from the packages of
+  # the last KEEP stable releases whose rpms carry the repositories' key
+  # (older ones, before the key, are left out), checked against each
+  # release's SHA256SUMS. scripts/build-repo.sh writes and signs the
+  # indexes (apt InRelease, rpm repomd.xml.asc). The key: secrets
+  # REPO_GPG_KEY + REPO_GPG_PASSPHRASE, variable REPO_GPG_FINGERPRINT, in
+  # the environment "release" only (scripts/set-repo-key.sh). The deploy
+  # itself is the job pages, in the environment github-pages (no secrets).
+  repo:
+    name: apt / rpm repositories
+    needs: [channel, build]
+    if: needs.channel.outputs.environment == 'release'
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: read
+    outputs:
+      deploy: ${{ steps.latest.outputs.write }}
+    env:
+      KEEP: 5
+    steps:
+      - name: Newest stable release?
+        id: latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          latest=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)
+          if [ "$latest" = "$TAG" ]; then
+            echo "write=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "$TAG isn't the latest release ($latest): the repositories stay"
+            echo "write=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.latest.outputs.write == 'true'
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts
+
+      - name: Install the repository tools
+        if: steps.latest.outputs.write == 'true'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends apt-utils createrepo-c rpm gpgv
+
+      # Into a GnuPG home of its own; the fingerprint must be the variable's,
+      # and the key not expire within 60 days (warning) or have expired.
+      - name: Import the key
+        if: steps.latest.outputs.write == 'true'
+        env:
+          REPO_GPG_KEY: ${{ secrets.REPO_GPG_KEY }}
+          REPO_GPG_PASSPHRASE: ${{ secrets.REPO_GPG_PASSPHRASE }}
+          FPR: ${{ vars.REPO_GPG_FINGERPRINT }}
+        run: |
+          [ -n "$REPO_GPG_KEY" ] && [ -n "$FPR" ] || { echo "::error::REPO_GPG_KEY / REPO_GPG_FINGERPRINT missing: run scripts/set-repo-key.sh"; exit 1; }
+          export GNUPGHOME=$RUNNER_TEMP/gnupg
+          mkdir -m 700 "$GNUPGHOME"
+          umask 077
+          printf '%s' "$REPO_GPG_PASSPHRASE" > "$RUNNER_TEMP/repo-key.pass"
+          printf '%s\n' "$REPO_GPG_KEY" | gpg --batch --quiet --pinentry-mode loopback \
+            --passphrase-file "$RUNNER_TEMP/repo-key.pass" --import
+          gpg --batch --with-colons --list-secret-keys "$FPR" >/dev/null || { echo "::error::the key isn't $FPR"; exit 1; }
+          exp=$(gpg --batch --with-colons --list-keys "$FPR" | awk -F: '/^pub/ {print $7; exit}')
+          if [ -n "$exp" ]; then
+            days=$(( (exp - $(date +%s)) / 86400 ))
+            [ "$days" -lt 0 ] && { echo "::error::the repository key expired on $(date -d "@$exp" +%F): scripts/set-repo-key.sh --extend"; exit 1; }
+            [ "$days" -lt 60 ] && echo "::warning::the repository key expires on $(date -d "@$exp" +%F) ($days days): scripts/set-repo-key.sh --extend"
+          fi
+          echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
+
+      - name: Download the packages
+        if: steps.latest.outputs.write == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FPR: ${{ vars.REPO_GPG_FINGERPRINT }}
+        run: |
+          mkdir -p pkgs dl
+          gpg --batch --armor --export "$FPR" > key.asc
+          rpmkeys --dbpath "$RUNNER_TEMP/rpmdb" --initdb
+          rpmkeys --dbpath "$RUNNER_TEMP/rpmdb" --import key.asc
+          tags=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '.[] | select((.prerelease or .draft) | not) | .tag_name' | sort -V -r | head -n "$KEEP")
+          for t in $tags; do
+            v=${t#v}
+            rm -rf dl && mkdir dl
+            for f in "gtty-$v-amd64.deb" "gtty-$v-arm64.deb" "gtty-$v-x86_64.rpm" "gtty-$v-aarch64.rpm"; do
+              gh release download "$t" --repo "$GITHUB_REPOSITORY" --dir dl --pattern "$f" 2>/dev/null || true
+            done
+            gh release download "$t" --repo "$GITHUB_REPOSITORY" --dir dl --pattern SHA256SUMS
+            (cd dl && sha256sum -c --ignore-missing --quiet SHA256SUMS) || { echo "::error::$t: a package doesn't match its SHA256SUMS"; exit 1; }
+            rm dl/SHA256SUMS
+            signed=true
+            for f in dl/*.rpm; do
+              [ -e "$f" ] || { signed=false; break; }
+              case $(rpmkeys --dbpath "$RUNNER_TEMP/rpmdb" --checksig "$f" 2>&1) in *" signatures OK") ;; *) signed=false ;; esac
+            done
+            if [ "$signed" = true ] && ls dl/*.deb >/dev/null 2>&1; then
+              echo "$t: $(cd dl && echo *)"
+              mv dl/* pkgs/
+            else
+              echo "$t: left out (no rpm signed with the repository key)"
+            fi
+          done
+          ls pkgs/gtty-"${TAG#v}"-* >/dev/null 2>&1 || { echo "::error::$TAG's own packages are missing or unsigned"; exit 1; }
+
+      - name: Build and sign the repositories
+        if: steps.latest.outputs.write == 'true'
+        env:
+          REPO_GPG_FINGERPRINT: ${{ vars.REPO_GPG_FINGERPRINT }}
+        run: |
+          REPO_GPG_PASSPHRASE_FILE=$RUNNER_TEMP/repo-key.pass scripts/build-repo.sh pkgs site
+          rm -f "$RUNNER_TEMP/repo-key.pass"
+          rm -rf "$GNUPGHOME"
+
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        if: steps.latest.outputs.write == 'true'
+        with:
+          path: site
+
+  # The site of the job repo onto GitHub Pages. The environment
+  # github-pages must allow tags v* (Settings → Environments → github-pages
+  # → Deployment branches and tags), as releases run on their tag.
+  pages:
+    name: Deploy the repositories
+    needs: repo
+    if: needs.repo.outputs.deploy == 'true'
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    permissions:
+      pages: write # deploy
+      id-token: write # prove it's this workflow
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
 
   # The README's edge badge: the last published pre-release's tag in a
   # shields.io endpoint file, edge.json, alone on the orphan branch

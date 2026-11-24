@@ -13,7 +13,8 @@ VERSION=${GTTY_VERSION:-$(sed -n 's/^ *\.version = "\(.*\)",.*/\1/p' build.zig.z
 [ -n "$VERSION" ] || { echo "no .version in build.zig.zon" >&2; exit 1; }
 
 STAGE=.zig-cache/package-sdks
-rm -rf "$STAGE" && mkdir -p "$STAGE" dist
+DIST=${GTTY_DIST:-dist}
+rm -rf "$STAGE" && mkdir -p "$STAGE" "$DIST"
 export COPYFILE_DISABLE=1 # no ._ files from macOS tar
 
 for dir in sdks/*/; do
@@ -33,6 +34,6 @@ for dir in sdks/*/; do
         mv "$zon.new" "$zon"
         grep -q "^ *\.version = \"$VERSION\"," "$zon" || { echo "could not set the version in $zon" >&2; exit 1; }
     fi
-    tar -C "$STAGE" -czf "dist/$name.tar.gz" "$name"
-    echo "dist/$name.tar.gz"
+    tar -C "$STAGE" -czf "$DIST/$name.tar.gz" "$name"
+    echo "$DIST/$name.tar.gz"
 done

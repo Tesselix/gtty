@@ -51,9 +51,16 @@ the shell. Users expect it to behave like a shell in a terminal.
   Linux x86_64 from the packages (`/usr/bin/gtty`: dpkg's list → apt,
   else dnf / zypper / yum / rpm; `installer()`) a button with the install
   command (`Update.installCommand`): a click copies it (clipboard + paste
-  history, white flash); × closes the line for this run. Tests:
+  history, white flash); × closes the line for this run. gtty's package
+  repository set up (2026-11-24; `repoSetUp`: the README's file,
+  `/etc/apt/sources.list.d/gtty.sources` or `.list`,
+  `/etc/yum.repos.d/gtty.repo`, `/etc/zypp/repos.d/gtty.repo`) → the
+  `_repo` installers: `sudo apt update && sudo apt install gtty`, `sudo
+  dnf upgrade --refresh gtty`, `sudo yum update gtty`, `sudo zypper
+  refresh gtty && sudo zypper update gtty`. Tests:
   `test/update.gt` with `GTTY_UPDATE_REPLY=test/update-reply.json`,
-  `GTTY_UPDATE_VERSION`, `GTTY_UPDATE_INSTALLER`.
+  `GTTY_UPDATE_VERSION`, `GTTY_UPDATE_INSTALLER` (`apt_repo` …, taken as
+  given).
 - **Window system:** the **current job window** fills the windows area
   (full height); every other job window is minimized into the **job grid**.
   **A window coming into the windows area joins it** (`setFocus` on a
@@ -1128,7 +1135,14 @@ decisions; items marked *open* are undecided.
   (→ `build_options.version`; `-Dversion` overrides): `0.0.0-dev` in
   git; release.yml writes the tag's version there before building,
   never committed (the version lives only in the tag); package.sh names
-  the packages after it (`GTTY_VERSION` overrides that only). Every package carries `LICENSE` and
+  the packages after it (`GTTY_VERSION` overrides it: build-bin.sh passes
+  it as `-Dversion`; `GTTY_DIST` = another output folder than `dist/`).
+  The Linux packages ship the repositories' public key
+  (`packaging/linux/gtty.asc` → `/usr/share/gtty/gtty.asc`; postinstall
+  copies it over `/usr/share/keyrings/gtty.asc` when that exists, so a
+  renewed key reaches apt users; the keyring isn't the package's, so a
+  removal doesn't break apt); stable rpms are signed by nfpm
+  (`NFPM_RPM_KEY_FILE` / `NFPM_RPM_PASSPHRASE`). Every package carries `LICENSE` and
   `THIRD_PARTY.md` (gtty.app: `Contents/Resources`; Linux:
   `share/doc/gtty`). gtty.app is signed with
   `packaging/macos/gtty.entitlements` (hardened runtime + `apple-events`,
@@ -1169,6 +1183,46 @@ decisions; items marked *open* are undecided.
   `gtty-icon.png` as its window / Dock icon (`App.setIcon`) and sets the
   SDL app id `gtty` (matches the .desktop file on Wayland / X11).
   `dist/` is not in git (`packaging/` is: CI needs it).
+- **Linux packages in a VM** (2026-11-24; `Makefile`): `make mac-pack`
+  mounts the repo in the multipass VM `u` (Ubuntu 24.04 arm64) at
+  `/mnt/gtty` and runs `make packages` there, on the mount: package.sh's
+  Linux part (on Linux: no dmg, ImageMagick for the icons; build-bin.sh
+  skips macOS) writes `dist/` and `bin/linux*` straight into the repo.
+  The mount is **native** (9p, `--type native`; the VM is stopped for it
+  once): multipass's default sshfs mount lists every file as
+  `DT_UNKNOWN`, and Zig's directory walks skip those (SDL's headers
+  weren't copied: "SDL3/SDL.h file not found"; build.zig's `test/linux`
+  embed too). Zig's local cache stays on the VM's disk
+  (`ZIG_LOCAL_CACHE_DIR`). `make vm-setup` once (Zig from build.zig.zon,
+  nfpm pinned, both sha256-checked; run as the user, sudo inside). The
+  volume /Volumes/e1 has ownership off, so multipassd sees uid 99: the
+  mount maps 99 → 1000 then (`VM_MAPS`), else the VM can't read the files.
+  `make mac-pack` takes the latest stable release's version (GitHub API)
+  unless `GTTY_VERSION` is given. **`make vm-repo-test`**
+  (`scripts/test-repo.sh`): the repositories end to end in the VM with a
+  throwaway key (made and deleted there), the packages of `bin/linux*`
+  as that version and the next patch, signed rpms, the site served on
+  127.0.0.1:8765, then in Docker containers (Debian 12, Ubuntu 20.04 /
+  24.04, Fedora, Rocky 9, openSUSE Leap 15) the README's setup,
+  install, the next version published, the update line's command; arm64
+  only (the VM's).
+- **Package repositories** (2026-11-24; https://tesselix.github.io/gtty/,
+  GitHub Pages of tesselix/gtty from Actions): stable releases only, the
+  last 5 whose rpms carry the key. `scripts/build-repo.sh <packages>
+  <site>`: apt (`apt/dists/stable/main/binary-{amd64,arm64}`,
+  `apt/pool/main/g/gtty/`, apt-ftparchive, signed `InRelease` +
+  `Release.gpg`), rpm (`rpm/`, createrepo_c, `repodata/repomd.xml.asc`,
+  `rpm/gtty.repo` with gpgcheck + repo_gpgcheck), `gtty.asc`,
+  `index.html` (versions, fingerprint), `.nojekyll`; refuses an rpm not
+  signed with the key. **Key** (`scripts/set-repo-key.sh`; `--extend`,
+  `--upload`, `--check`; `GTTY_DRY=1` for tests): RSA 4096, signing only,
+  3 years, made in a temporary GnuPG home; files in `$GTTY_SIGNING_DIR`
+  (`gtty-repo-key.asc` / `.pass` / `.rev`, 0600, never printed), the
+  public key committed as `packaging/linux/gtty.asc`; secrets
+  `REPO_GPG_KEY`, `REPO_GPG_PASSPHRASE`, variable `REPO_GPG_FINGERPRINT`,
+  environment `release` only. Renewal = `--extend` (same fingerprint),
+  then commit `gtty.asc` (a new key: also the fingerprint in the README's Linux install); the repo job warns 60 days before expiry. dnf
+  keeps a key it imported (no renewal through the package for rpm users).
 - **Script mode** (`gtty --script file`) is how to test UI changes: each line
   is typed into the prompt; hooks run directly: `/wait ms`, `/shot x.bmp`
   (screenshot; convert with `sips -s format png`), `/type text` (text + Enter
@@ -1588,7 +1642,17 @@ decisions; items marked *open* are undecided.
   scoped to homebrew-tap; no commit when the cask is unchanged. Check a
   cask change locally: fill the template into a scratch tap under
   `$(brew --repository)/Library/Taps/`, then `brew style --cask` and
-  `brew audit --cask --online --strict`);
+  `brew audit --cask --online --strict`); jobs `repo` + `pages`
+  (2026-11-24; stable and newest only, as homebrew): `repo` (environment
+  `release`) imports the key into its own GnuPG home (fingerprint =
+  `vars.REPO_GPG_FINGERPRINT`; expired: fails, < 60 days: warning),
+  downloads the versioned debs / rpms of the last 5 stable releases
+  (checked against each one's `SHA256SUMS`; a release without rpms signed
+  with the key is left out; this release's must be there), runs
+  `scripts/build-repo.sh`, `upload-pages-artifact`; `pages` (environment
+  `github-pages`, no secrets; it must allow tags `v*`) runs
+  `deploy-pages`. The build job writes `REPO_GPG_KEY` to a temp file for
+  nfpm (a stable release without it fails; pre-releases: unsigned rpms);
   `deps.yml` (2026-10-22; called by ci.yml as job `deps`, part of
   `build-and-test`; also weekly and by hand): `zig build --fetch=all`,
   then `scripts/check-deps.py` against **`.github/deps.toml`** (every

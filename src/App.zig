@@ -9314,9 +9314,28 @@ fn updateResult(app: *App, res: Update.Result) void {
 
 /// What installed this gtty (Linux, x86_64 / arm64: the packages there are):
 /// the deb or rpm tools when it is /usr/bin/gtty, else none (tar.gz,
-/// source). `GTTY_UPDATE_INSTALLER=apt|dnf|…` (tests) says so.
+/// source); the `_repo` form when gtty's package repository is set up
+/// (`repoSetUp`). `GTTY_UPDATE_INSTALLER=apt|apt_repo|dnf|…` (tests) says so.
 fn installer() Update.Installer {
     if (c.getenv("GTTY_UPDATE_INSTALLER")) |v| return Update.Installer.fromName(std.mem.span(v));
+    const i = packageTool();
+    return if (repoSetUp(i)) i.repo() else i;
+}
+
+/// gtty's repository is set up: the file the README has users write for
+/// that package manager (zypper addrepo names it after the .repo's [gtty]).
+fn repoSetUp(i: Update.Installer) bool {
+    const files: []const [:0]const u8 = switch (i) {
+        .apt => &.{ "/etc/apt/sources.list.d/gtty.sources", "/etc/apt/sources.list.d/gtty.list" },
+        .dnf, .yum => &.{"/etc/yum.repos.d/gtty.repo"},
+        .zypper => &.{"/etc/zypp/repos.d/gtty.repo"},
+        else => &.{},
+    };
+    for (files) |f| if (c.access(f.ptr, c.F_OK) == 0) return true;
+    return false;
+}
+
+fn packageTool() Update.Installer {
     if (builtin.os.tag != .linux or Update.Arch.native() == null) return .none;
     var buf: [4096]u8 = undefined;
     const n = c.readlink("/proc/self/exe", &buf, buf.len);

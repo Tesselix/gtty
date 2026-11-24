@@ -19,8 +19,62 @@ Apple Silicon, macOS 13 or later. With [Homebrew](https://brew.sh):
 brew install --cask tesselix/tap/gtty
 ```
 
-`brew upgrade` updates it. Or download the latest stable release and
-open it:
+`brew upgrade` updates it.
+
+### Linux
+
+x86_64 or arm64 (aarch64), glibc 2.31 or later. Add gtty's package
+repository once; your package manager then installs gtty and keeps it up
+to date with the rest of the system. The repositories carry the stable
+releases, signed with gtty's key.
+
+Debian / Ubuntu:
+
+```sh
+sudo curl -fsSLo /usr/share/keyrings/gtty.asc https://tesselix.github.io/gtty/gtty.asc
+sudo tee /etc/apt/sources.list.d/gtty.sources >/dev/null <<'EOF'
+Types: deb
+URIs: https://tesselix.github.io/gtty/apt
+Suites: stable
+Components: main
+Signed-By: /usr/share/keyrings/gtty.asc
+EOF
+sudo apt update && sudo apt install gtty
+```
+
+Fedora / RHEL 9 or later:
+
+```sh
+sudo curl -fsSLo /etc/yum.repos.d/gtty.repo https://tesselix.github.io/gtty/rpm/gtty.repo
+sudo dnf install gtty
+```
+
+openSUSE:
+
+```sh
+sudo zypper addrepo https://tesselix.github.io/gtty/rpm/gtty.repo
+sudo zypper refresh && sudo zypper install gtty
+```
+
+After that, gtty updates with the rest of your system: `sudo apt upgrade`,
+`sudo dnf upgrade` or `sudo zypper update` (gtty's update line shows the
+command too).
+
+dnf and zypper ask you once to trust gtty's signing key. Its fingerprint
+must be:
+
+```text
+17EA C2FE C529 6DED 5304  74D8 4044 11AA 0E72 B09F
+```
+
+It is also on [tesselix.github.io/gtty](https://tesselix.github.io/gtty/).
+
+### More installation methods
+
+Straight from GitHub, without Homebrew or the repositories. These don't
+update by themselves: run the same again for a new release.
+
+**macOS**, the latest stable release:
 
 ```sh
 curl -fLO https://github.com/Tesselix/gtty/releases/latest/download/gtty-macos.dmg && open gtty-macos.dmg
@@ -39,40 +93,18 @@ curl -fLO https://github.com/Tesselix/gtty/releases/latest/download/gtty-macos.d
 
 To update, do the same again and let Finder replace the old copy.
 
-### Linux
-
-x86_64 or arm64 (aarch64), glibc 2.31 or later. The latest stable release
-in one line (it picks your machine's package).
-
-Debian / Ubuntu:
+**Linux**, the latest stable release in one line (it picks your machine's
+package):
 
 ```sh
-a=$(dpkg --print-architecture) && curl -fLO https://github.com/Tesselix/gtty/releases/latest/download/gtty-$a.deb && sudo apt install ./gtty-$a.deb
+# Debian / Ubuntu
+a=$(dpkg --print-architecture) && curl -fLO https://github.com/tesselix/gtty/releases/latest/download/gtty-$a.deb && sudo apt install ./gtty-$a.deb
+# Fedora / RHEL (openSUSE: zypper install, other rpm systems: rpm -U)
+sudo dnf install https://github.com/tesselix/gtty/releases/latest/download/gtty-$(uname -m).rpm
 ```
 
-Fedora / RHEL (older systems: `yum` instead of `dnf`):
-
-```sh
-sudo dnf install https://github.com/Tesselix/gtty/releases/latest/download/gtty-$(uname -m).rpm
-```
-
-openSUSE:
-
-```sh
-sudo zypper install https://github.com/Tesselix/gtty/releases/latest/download/gtty-$(uname -m).rpm
-```
-
-Any other rpm-based distro:
-
-```sh
-sudo rpm -U https://github.com/Tesselix/gtty/releases/latest/download/gtty-$(uname -m).rpm
-```
-
-Run the same line again to update.
-
-### Other ways
-
-Or download from the **[latest release](https://github.com/Tesselix/gtty/releases/latest)**
+**From the release page**: download from the
+**[latest release](https://github.com/Tesselix/gtty/releases/latest)**
 (each release lists its files and a `SHA256SUMS`):
 
 - **macOS** (Apple Silicon, 13+): `gtty-<version>-macos.dmg`; open it and
