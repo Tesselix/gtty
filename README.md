@@ -13,7 +13,13 @@ by side or one click away.
 
 ### macOS
 
-Apple Silicon, macOS 13 or later. Download the latest stable release and
+Apple Silicon, macOS 13 or later. With [Homebrew](https://brew.sh):
+
+```sh
+brew install --cask tesselix/tap/gtty
+```
+
+`brew upgrade` updates it. Or download the latest stable release and
 open it:
 
 ```sh
