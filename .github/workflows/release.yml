@@ -395,7 +395,7 @@ jobs:
         run: |
           mkdir -p pkgs dl
           gpg --batch --armor --export "$FPR" > key.asc
-          rpmkeys --dbpath "$RUNNER_TEMP/rpmdb" --initdb
+          mkdir -p "$RUNNER_TEMP/rpmdb"
           rpmkeys --dbpath "$RUNNER_TEMP/rpmdb" --import key.asc
           tags=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
             --jq '.[] | select((.prerelease or .draft) | not) | .tag_name' | sort -V -r | head -n "$KEEP")
