@@ -10,8 +10,11 @@
 # - gtty-sdk-<language>-<v>.tar.gz  what extensions import (package-sdks.sh)
 # The version is build.zig.zon's .version (0.0.0-dev in git; releases
 # write the tag's there first), the one the binary reports; GTTY_VERSION
-# overrides the packages' version only.
-# Needs nfpm (brew install nfpm).
+# overrides it (build-bin.sh passes it on as -Dversion; with SKIP_BUILD=1
+# only the packages' names and metadata get it).
+# Needs nfpm (brew install nfpm). On Linux (`make mac-pack` in a VM, with
+# scripts/vm-setup.sh's tools: nfpm, ImageMagick) only the Linux packages
+# and the SDKs: the dmg needs macOS.
 #
 # Signing (macOS), optional:
 #   GTTY_SIGN_ID="Developer ID Application: Name (TEAMID)"  sign the app + dmg
@@ -22,7 +25,8 @@
 # Without GTTY_SIGN_ID the app is signed ad hoc: it runs here, but a new Mac
 # says it can't verify it (right click → Open, or xattr -dr com.apple.quarantine).
 #
-# SKIP_BUILD=1 packages the binaries already in bin/.
+# SKIP_BUILD=1 packages the binaries already in bin/. GTTY_DIST: another
+# folder than dist/.
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -30,17 +34,21 @@ GTTY_VERSION=${GTTY_VERSION:-$(sed -n 's/^ *\.version = "\(.*\)",.*/\1/p' build.
 [ -n "$GTTY_VERSION" ] || { echo "no .version in build.zig.zon" >&2; exit 1; }
 export GTTY_VERSION
 VERSION=$GTTY_VERSION
-command -v nfpm >/dev/null || { echo "nfpm not found: brew install nfpm" >&2; exit 1; }
+command -v nfpm >/dev/null || { echo "nfpm not found: brew install nfpm (Linux: scripts/vm-setup.sh)" >&2; exit 1; }
+MACOS=; [ "$(uname)" = Darwin ] && MACOS=1
 
 [ "${SKIP_BUILD:-}" = 1 ] || scripts/build-bin.sh
-for f in bin/macos/gtty bin/linux/gtty bin/linux-arm64/gtty; do
+for f in ${MACOS:+bin/macos/gtty} bin/linux/gtty bin/linux-arm64/gtty; do
     [ -x "$f" ] || { echo "$f missing: run scripts/build-bin.sh" >&2; exit 1; }
 done
 
 STAGE=.zig-cache/package
-rm -rf "$STAGE" && mkdir -p "$STAGE" dist
+DIST=${GTTY_DIST:-dist} # where the packages go
+export GTTY_DIST=$DIST
+rm -rf "$STAGE" && mkdir -p "$STAGE" "$DIST"
 
 # ---- macOS: gtty.app in a dmg ---------------------------------------------
+if [ -n "$MACOS" ]; then
 echo "== macOS app"
 APP="$STAGE/dmg/gtty.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -119,7 +127,7 @@ fi
 rm -rf "$MNT/.fseventsd" "$MNT/.Trashes"
 sync
 retry 5 hdiutil detach "$DEV" >/dev/null || hdiutil detach -force "$DEV" >/dev/null
-DMG="dist/gtty-$VERSION-macos.dmg"
+DMG="$DIST/gtty-$VERSION-macos.dmg"
 convert_dmg() { rm -f "$DMG"; hdiutil convert "$RW" -format UDZO -imagekey zlib-level=9 -o "$DMG" >/dev/null; }
 retry 3 convert_dmg
 if [ -n "${GTTY_SIGN_ID:-}" ]; then
@@ -135,6 +143,7 @@ if [ -n "${GTTY_SIGN_ID:-}" ]; then
         retry 5 xcrun stapler staple "$DMG"
     fi
 fi
+fi # macOS
 
 # ---- Linux: deb, rpm, tar.gz, per architecture ----------------------------
 echo "== Linux packages"
@@ -143,8 +152,19 @@ mkdir -p "$LROOT"
 for n in 16 24 32 48 64 128 256 512; do
     d="$LROOT/icons/${n}x${n}/apps"
     mkdir -p "$d"
-    sips -s format png -z "$n" "$n" src/assets/gtty-icon.png --out "$d/gtty.png" >/dev/null
+    if [ -n "$MACOS" ]; then
+        sips -s format png -z "$n" "$n" src/assets/gtty-icon.png --out "$d/gtty.png" >/dev/null
+    else
+        # ImageMagick 7 is magick, 6 (Ubuntu 24.04) convert.
+        "$(command -v magick || echo convert)" src/assets/gtty-icon.png -resize "${n}x${n}" "PNG32:$d/gtty.png"
+    fi
 done
+
+# The repository's public key, shipped in the packages (nfpm.yaml).
+# GTTY_REPO_PUBKEY: another one (local repository tests).
+PUBKEY=${GTTY_REPO_PUBKEY:-packaging/linux/gtty.asc}
+[ -f "$PUBKEY" ] || { echo "$PUBKEY missing: scripts/set-repo-key.sh makes it" >&2; exit 1; }
+cp "$PUBKEY" "$LROOT/gtty.asc"
 
 # linux_packages <bin folder> <nfpm arch> <deb arch> <rpm / tar arch>
 # Hyphens in the names, as the other packages (nfpm's defaults are
@@ -152,8 +172,8 @@ done
 linux_packages() {
     echo "== Linux $4"
     cp "bin/$1/gtty" "$LROOT/gtty"
-    ARCH=$2 nfpm package --config packaging/linux/nfpm.yaml --packager deb --target "dist/gtty-$VERSION-$3.deb"
-    ARCH=$2 nfpm package --config packaging/linux/nfpm.yaml --packager rpm --target "dist/gtty-$VERSION-$4.rpm"
+    ARCH=$2 nfpm package --config packaging/linux/nfpm.yaml --packager deb --target "$DIST/gtty-$VERSION-$3.deb"
+    ARCH=$2 nfpm package --config packaging/linux/nfpm.yaml --packager rpm --target "$DIST/gtty-$VERSION-$4.rpm"
 
     # Same layout as the packages, under a prefix: install.sh copies it to
     # /usr/local (or PREFIX).
@@ -176,7 +196,7 @@ command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -q -t 
 echo "gtty installed in $PREFIX/bin"
 EOF
     chmod +x "$T/install.sh"
-    tar -C "$STAGE" -czf "dist/gtty-$VERSION-linux-$4.tar.gz" "gtty-$VERSION-linux-$4"
+    tar -C "$STAGE" -czf "$DIST/gtty-$VERSION-linux-$4.tar.gz" "gtty-$VERSION-linux-$4"
 }
 export VERSION
 linux_packages linux amd64 amd64 x86_64
@@ -186,4 +206,4 @@ linux_packages linux-arm64 arm64 arm64 aarch64
 echo "== SDKs"
 scripts/package-sdks.sh
 
-ls -l dist/
+ls -l "$DIST"

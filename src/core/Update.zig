@@ -110,11 +110,29 @@ pub const Installer = enum {
     yum,
     zypper,
     rpm,
+    /// The same, with gtty's package repository set up (README: the
+    /// files it has users write; App.installer): the package manager's
+    /// own update.
+    apt_repo,
+    dnf_repo,
+    yum_repo,
+    zypper_repo,
     /// Not from a package (tar.gz, source): no command.
     none,
 
     pub fn fromName(s: []const u8) Installer {
         return std.meta.stringToEnum(Installer, s) orelse .none;
+    }
+
+    /// The repository form of a package manager (rpm alone has none).
+    pub fn repo(i: Installer) Installer {
+        return switch (i) {
+            .apt => .apt_repo,
+            .dnf => .dnf_repo,
+            .yum => .yum_repo,
+            .zypper => .zypper_repo,
+            else => i,
+        };
     }
 };
 
@@ -152,6 +170,10 @@ pub fn installCommand(buf: []u8, inst: Installer, arch: Arch, r: *const Release)
         .apt => std.fmt.bufPrint(buf, "curl -fL -o /tmp/gtty-{0s}-{2s}.deb " ++ download_url ++ "{1s}/gtty-{0s}-{2s}.deb && sudo apt install /tmp/gtty-{0s}-{2s}.deb", .{ v, t, d }) catch null,
         .dnf, .yum, .zypper => std.fmt.bufPrint(buf, "sudo {s} install " ++ download_url ++ "{s}/gtty-{s}-{s}.rpm", .{ @tagName(inst), t, v, a }) catch null,
         .rpm => std.fmt.bufPrint(buf, "sudo rpm -U " ++ download_url ++ "{s}/gtty-{s}-{s}.rpm", .{ t, v, a }) catch null,
+        .apt_repo => "sudo apt update && sudo apt install gtty",
+        .dnf_repo => "sudo dnf upgrade --refresh gtty",
+        .yum_repo => "sudo yum update gtty",
+        .zypper_repo => "sudo zypper refresh gtty && sudo zypper update gtty",
     };
 }
 
@@ -261,4 +283,11 @@ test "install commands" {
     try t.expect(installCommand(&buf, .none, .x86_64, &r) == null);
     try t.expectEqual(Installer.zypper, Installer.fromName("zypper"));
     try t.expectEqual(Installer.none, Installer.fromName("pacman"));
+    try t.expectEqualStrings("sudo apt update && sudo apt install gtty", installCommand(&buf, .apt_repo, .x86_64, &r).?);
+    try t.expectEqualStrings("sudo dnf upgrade --refresh gtty", installCommand(&buf, .dnf_repo, .aarch64, &r).?);
+    try t.expectEqualStrings("sudo yum update gtty", installCommand(&buf, .yum_repo, .x86_64, &r).?);
+    try t.expectEqualStrings("sudo zypper refresh gtty && sudo zypper update gtty", installCommand(&buf, .zypper_repo, .x86_64, &r).?);
+    try t.expectEqual(Installer.apt_repo, Installer.fromName("apt_repo"));
+    try t.expectEqual(Installer.dnf_repo, Installer.repo(.dnf));
+    try t.expectEqual(Installer.rpm, Installer.repo(.rpm));
 }
