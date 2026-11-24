@@ -9312,12 +9312,14 @@ fn updateResult(app: *App, res: Update.Result) void {
     app.relayout();
 }
 
-/// What installed this gtty (Linux, x86_64 / arm64: the packages there are):
-/// the deb or rpm tools when it is /usr/bin/gtty, else none (tar.gz,
+/// What installed this gtty. Linux (x86_64 / arm64: the packages there
+/// are): the deb or rpm tools when it is /usr/bin/gtty, else none (tar.gz,
 /// source); the `_repo` form when gtty's package repository is set up
-/// (`repoSetUp`). `GTTY_UPDATE_INSTALLER=apt|apt_repo|dnf|…` (tests) says so.
+/// (`repoSetUp`). macOS: `macInstaller`. `GTTY_UPDATE_INSTALLER=apt|
+/// apt_repo|dnf|brew|dmg|…` (tests) says so.
 fn installer() Update.Installer {
     if (c.getenv("GTTY_UPDATE_INSTALLER")) |v| return Update.Installer.fromName(std.mem.span(v));
+    if (builtin.os.tag == .macos) return macInstaller();
     const i = packageTool();
     return if (repoSetUp(i)) i.repo() else i;
 }
@@ -9333,6 +9335,25 @@ fn repoSetUp(i: Update.Installer) bool {
     };
     for (files) |f| if (c.access(f.ptr, c.F_OK) == 0) return true;
     return false;
+}
+
+/// macOS: gtty.app (anything else: a build, no command) from Homebrew's
+/// cask when its Caskroom has gtty (`$HOMEBREW_PREFIX`, /opt/homebrew,
+/// /usr/local), else from the dmg.
+fn macInstaller() Update.Installer {
+    var buf: [4096]u8 = undefined;
+    if (c.gtty_self_path(&buf, buf.len) != 0) return .none;
+    const exe = std.mem.sliceTo(&buf, 0);
+    if (!std.mem.endsWith(u8, exe, ".app/Contents/MacOS/gtty")) return .none;
+    var prefixes: [3][]const u8 = .{ "", "/opt/homebrew", "/usr/local" };
+    if (c.getenv("HOMEBREW_PREFIX")) |p| prefixes[0] = std.mem.span(p);
+    for (prefixes) |p| {
+        if (p.len == 0) continue;
+        var pb: [1024]u8 = undefined;
+        const room = std.fmt.bufPrintZ(&pb, "{s}/Caskroom/gtty", .{p}) catch continue;
+        if (c.access(room.ptr, c.F_OK) == 0) return .brew;
+    }
+    return .dmg;
 }
 
 fn packageTool() Update.Installer {

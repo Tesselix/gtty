@@ -48,10 +48,17 @@ the shell. Users expect it to behave like a shell in a terminal.
   the yellow line on top (`update_r`, under the drawn menu bar,
   `Theme.update`; `layoutUpdate` moves `desktop_r` down): its text opens
   the release page (`SDL_OpenURL`, `GTTY_SHOW_DRY=1` only says so); on
-  Linux x86_64 from the packages (`/usr/bin/gtty`: dpkg's list → apt,
-  else dnf / zypper / yum / rpm; `installer()`) a button with the install
-  command (`Update.installCommand`): a click copies it (clipboard + paste
-  history, white flash); × closes the line for this run. gtty's package
+  a button with the update command for the way gtty was installed
+  (`installer()`, `Update.installCommand`; every command written into
+  the buffer, App keeps only its length): Linux from the packages
+  (`/usr/bin/gtty`: dpkg's list → apt, else dnf / zypper / yum / rpm;
+  gtty's repository set up, `repoSetUp` → `apt_repo` …: the package
+  manager's own update, else the release's package), macOS gtty.app
+  (`macInstaller`: a Caskroom/gtty under `$HOMEBREW_PREFIX`,
+  /opt/homebrew or /usr/local → `brew upgrade --cask tesselix/tap/gtty`,
+  else the dmg downloaded to /tmp and opened), none for a tar.gz /
+  build; a click copies it (clipboard + paste history, white flash); ×
+  closes the line for this run. gtty's package
   repository set up (2026-11-24; `repoSetUp`: the README's file,
   `/etc/apt/sources.list.d/gtty.sources` or `.list`,
   `/etc/yum.repos.d/gtty.repo`, `/etc/zypp/repos.d/gtty.repo`) → the
