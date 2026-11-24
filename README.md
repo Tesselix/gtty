@@ -35,30 +35,31 @@ To update, do the same again and let Finder replace the old copy.
 
 ### Linux
 
-x86_64, glibc 2.31 or later. The latest stable release in one line.
+x86_64 or arm64 (aarch64), glibc 2.31 or later. The latest stable release
+in one line (it picks your machine's package).
 
 Debian / Ubuntu:
 
 ```sh
-curl -fLO https://github.com/Tesselix/gtty/releases/latest/download/gtty_amd64.deb && sudo apt install ./gtty_amd64.deb
+a=$(dpkg --print-architecture) && curl -fLO https://github.com/Tesselix/gtty/releases/latest/download/gtty-$a.deb && sudo apt install ./gtty-$a.deb
 ```
 
 Fedora / RHEL (older systems: `yum` instead of `dnf`):
 
 ```sh
-sudo dnf install https://github.com/Tesselix/gtty/releases/latest/download/gtty.x86_64.rpm
+sudo dnf install https://github.com/Tesselix/gtty/releases/latest/download/gtty-$(uname -m).rpm
 ```
 
 openSUSE:
 
 ```sh
-sudo zypper install https://github.com/Tesselix/gtty/releases/latest/download/gtty.x86_64.rpm
+sudo zypper install https://github.com/Tesselix/gtty/releases/latest/download/gtty-$(uname -m).rpm
 ```
 
 Any other rpm-based distro:
 
 ```sh
-sudo rpm -U https://github.com/Tesselix/gtty/releases/latest/download/gtty.x86_64.rpm
+sudo rpm -U https://github.com/Tesselix/gtty/releases/latest/download/gtty-$(uname -m).rpm
 ```
 
 Run the same line again to update.
@@ -70,12 +71,13 @@ Or download from the **[latest release](https://github.com/Tesselix/gtty/release
 
 - **macOS** (Apple Silicon, 13+): `gtty-<version>-macos.dmg`; open it and
   drag gtty to Applications.
-- **Debian / Ubuntu** (x86_64): `gtty_<version>_amd64.deb`, then
-  `sudo apt install ./gtty_*_amd64.deb`
-- **Fedora / RHEL / openSUSE** (x86_64): `gtty-<version>-1.x86_64.rpm`, then
-  `sudo dnf install ./gtty-*.x86_64.rpm` (openSUSE: `sudo zypper install …`)
-- **Other Linux:** `gtty-<version>-linux-x86_64.tar.gz`, then `./install.sh`
-  inside it.
+- **Debian / Ubuntu**: `gtty-<version>-amd64.deb` (x86_64) or
+  `gtty-<version>-arm64.deb`, then `sudo apt install ./gtty-*.deb`
+- **Fedora / RHEL / openSUSE**: `gtty-<version>-x86_64.rpm` or
+  `gtty-<version>-aarch64.rpm` (arm64), then `sudo dnf install ./gtty-*.rpm`
+  (openSUSE: `sudo zypper install …`)
+- **Other Linux:** `gtty-<version>-linux-x86_64.tar.gz` or
+  `gtty-<version>-linux-aarch64.tar.gz`, then `./install.sh` inside it.
 - **From source:** see [HACKING.md](HACKING.md) (Zig 0.16 + SDL3).
 
 To check a download: `shasum -a 256 -c SHA256SUMS --ignore-missing`

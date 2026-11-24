@@ -10,6 +10,7 @@
 //! network), `GTTY_UPDATE_VERSION` (pretend to be that version).
 
 const std = @import("std");
+const builtin = @import("builtin");
 const c = @import("../c.zig").c;
 
 pub const repo = "Tesselix/gtty";
@@ -117,16 +118,40 @@ pub const Installer = enum {
     }
 };
 
-/// The shell command that installs `r` (x86_64 packages), with sudo;
+/// The Linux packages' architecture: what their names say.
+pub const Arch = enum {
+    x86_64,
+    aarch64,
+
+    /// This build's; null where gtty has no packages.
+    pub fn native() ?Arch {
+        return switch (builtin.cpu.arch) {
+            .x86_64 => .x86_64,
+            .aarch64 => .aarch64,
+            else => null,
+        };
+    }
+
+    fn deb(a: Arch) []const u8 {
+        return switch (a) {
+            .x86_64 => "amd64",
+            .aarch64 => "arm64",
+        };
+    }
+};
+
+/// The shell command that installs `r` (the `arch` package), with sudo;
 /// null for `.none`.
-pub fn installCommand(buf: []u8, inst: Installer, r: *const Release) ?[]const u8 {
+pub fn installCommand(buf: []u8, inst: Installer, arch: Arch, r: *const Release) ?[]const u8 {
     const v = r.number();
     const t = r.tag();
+    const d = arch.deb();
+    const a = @tagName(arch);
     return switch (inst) {
         .none => null,
-        .apt => std.fmt.bufPrint(buf, "curl -fL -o /tmp/gtty_{0s}_amd64.deb " ++ download_url ++ "{1s}/gtty_{0s}_amd64.deb && sudo apt install /tmp/gtty_{0s}_amd64.deb", .{ v, t }) catch null,
-        .dnf, .yum, .zypper => std.fmt.bufPrint(buf, "sudo {s} install " ++ download_url ++ "{s}/gtty-{s}-1.x86_64.rpm", .{ @tagName(inst), t, v }) catch null,
-        .rpm => std.fmt.bufPrint(buf, "sudo rpm -U " ++ download_url ++ "{s}/gtty-{s}-1.x86_64.rpm", .{ t, v }) catch null,
+        .apt => std.fmt.bufPrint(buf, "curl -fL -o /tmp/gtty-{0s}-{2s}.deb " ++ download_url ++ "{1s}/gtty-{0s}-{2s}.deb && sudo apt install /tmp/gtty-{0s}-{2s}.deb", .{ v, t, d }) catch null,
+        .dnf, .yum, .zypper => std.fmt.bufPrint(buf, "sudo {s} install " ++ download_url ++ "{s}/gtty-{s}-{s}.rpm", .{ @tagName(inst), t, v, a }) catch null,
+        .rpm => std.fmt.bufPrint(buf, "sudo rpm -U " ++ download_url ++ "{s}/gtty-{s}-{s}.rpm", .{ t, v, a }) catch null,
     };
 }
 
@@ -228,10 +253,12 @@ test "install commands" {
     const t = std.testing;
     const r = parseResponse(t.allocator, "{\"tag_name\":\"v0.4.0\"}\n200").release;
     var buf: [512]u8 = undefined;
-    try t.expectEqualStrings("curl -fL -o /tmp/gtty_0.4.0_amd64.deb https://github.com/Tesselix/gtty/releases/download/v0.4.0/gtty_0.4.0_amd64.deb && sudo apt install /tmp/gtty_0.4.0_amd64.deb", installCommand(&buf, .apt, &r).?);
-    try t.expectEqualStrings("sudo dnf install https://github.com/Tesselix/gtty/releases/download/v0.4.0/gtty-0.4.0-1.x86_64.rpm", installCommand(&buf, .dnf, &r).?);
-    try t.expectEqualStrings("sudo rpm -U https://github.com/Tesselix/gtty/releases/download/v0.4.0/gtty-0.4.0-1.x86_64.rpm", installCommand(&buf, .rpm, &r).?);
-    try t.expect(installCommand(&buf, .none, &r) == null);
+    try t.expectEqualStrings("curl -fL -o /tmp/gtty-0.4.0-amd64.deb https://github.com/Tesselix/gtty/releases/download/v0.4.0/gtty-0.4.0-amd64.deb && sudo apt install /tmp/gtty-0.4.0-amd64.deb", installCommand(&buf, .apt, .x86_64, &r).?);
+    try t.expectEqualStrings("sudo dnf install https://github.com/Tesselix/gtty/releases/download/v0.4.0/gtty-0.4.0-x86_64.rpm", installCommand(&buf, .dnf, .x86_64, &r).?);
+    try t.expectEqualStrings("sudo rpm -U https://github.com/Tesselix/gtty/releases/download/v0.4.0/gtty-0.4.0-x86_64.rpm", installCommand(&buf, .rpm, .x86_64, &r).?);
+    try t.expectEqualStrings("curl -fL -o /tmp/gtty-0.4.0-arm64.deb https://github.com/Tesselix/gtty/releases/download/v0.4.0/gtty-0.4.0-arm64.deb && sudo apt install /tmp/gtty-0.4.0-arm64.deb", installCommand(&buf, .apt, .aarch64, &r).?);
+    try t.expectEqualStrings("sudo zypper install https://github.com/Tesselix/gtty/releases/download/v0.4.0/gtty-0.4.0-aarch64.rpm", installCommand(&buf, .zypper, .aarch64, &r).?);
+    try t.expect(installCommand(&buf, .none, .x86_64, &r) == null);
     try t.expectEqual(Installer.zypper, Installer.fromName("zypper"));
     try t.expectEqual(Installer.none, Installer.fromName("pacman"));
 }

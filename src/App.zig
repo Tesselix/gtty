@@ -9305,17 +9305,19 @@ fn updateResult(app: *App, res: Update.Result) void {
     }
     app.update_rel = rel;
     app.update_cmd_len = 0;
-    if (Update.installCommand(&app.update_cmd_buf, installer(), &app.update_rel.?)) |cmd| app.update_cmd_len = cmd.len;
+    if (Update.Arch.native()) |arch| {
+        if (Update.installCommand(&app.update_cmd_buf, installer(), arch, &app.update_rel.?)) |cmd| app.update_cmd_len = cmd.len;
+    }
     if (manual) app.sayFmt("gtty {s} is available", .{rel.number()}, app.theme.ok);
     app.relayout();
 }
 
-/// What installed this gtty (Linux, x86_64: the packages there are):
+/// What installed this gtty (Linux, x86_64 / arm64: the packages there are):
 /// the deb or rpm tools when it is /usr/bin/gtty, else none (tar.gz,
 /// source). `GTTY_UPDATE_INSTALLER=apt|dnf|…` (tests) says so.
 fn installer() Update.Installer {
     if (c.getenv("GTTY_UPDATE_INSTALLER")) |v| return Update.Installer.fromName(std.mem.span(v));
-    if (builtin.os.tag != .linux or builtin.cpu.arch != .x86_64) return .none;
+    if (builtin.os.tag != .linux or Update.Arch.native() == null) return .none;
     var buf: [4096]u8 = undefined;
     const n = c.readlink("/proc/self/exe", &buf, buf.len);
     if (n <= 0 or !std.mem.eql(u8, buf[0..@intCast(n)], "/usr/bin/gtty")) return .none;

@@ -1101,7 +1101,8 @@ decisions; items marked *open* are undecided.
   `zig build test` does **not** reinstall `zig-out/bin/gtty` — run `zig build`
   before testing the binary.
 - Release binaries: `scripts/build-bin.sh` (`-Dstrip`, no debug info) → `bin/macos/gtty` (arm64,
-  macOS 13+) and `bin/linux/gtty` (x86_64, glibc 2.31+), self-contained:
+  macOS 13+), `bin/linux/gtty` (x86_64) and `bin/linux-arm64/gtty` (aarch64; both glibc
+  2.31+), self-contained:
   `-Dbundled-sdl` builds SDL3 (castholm/SDL), SDL3_ttf and freetype (with
   libpng + zlib, for the PNG color emoji fonts; SDL3_ttf without the C
   sanitizer: its color blending reads unaligned) from source (lazy deps in build.zig.zon, unpacked into `zig-pkg/`) and links
@@ -1115,7 +1116,15 @@ decisions; items marked *open* are undecided.
   `dmg-background.swift`),
   `.deb` + `.rpm` (`packaging/linux/nfpm.yaml`: `/usr/bin/gtty`,
   `gtty.desktop`, hicolor icons resized from `src/assets/gtty-icon.png`)
-  and a `.tar.gz` with `install.sh`. Version = build.zig.zon's `.version`
+  and a `.tar.gz` with `install.sh`, for x86_64 and arm64
+  (`linux_packages`). Names all hyphens (2026-11-24, the user's rule;
+  nfpm's `--target` file): `gtty-<v>-amd64.deb` / `-arm64.deb`,
+  `gtty-<v>-x86_64.rpm` / `-aarch64.rpm`, `gtty-<v>-linux-x86_64.tar.gz`
+  / `-aarch64`; release.yml adds copies without the version
+  (`gtty-arm64.deb`, …) and, for older gttys' update line, the old
+  x86_64 names (`gtty_<v>_amd64.deb`, `gtty_amd64.deb`,
+  `gtty-<v>-1.x86_64.rpm`, `gtty.x86_64.rpm`) until dropped. The update
+  line's install command picks the build's arch (`Update.Arch`). Version = build.zig.zon's `.version`
   (→ `build_options.version`; `-Dversion` overrides): `0.0.0-dev` in
   git; release.yml writes the tag's version there before building,
   never committed (the version lives only in the tag); package.sh names
@@ -1702,4 +1711,4 @@ checking its license first; record third-party components in
 - New jobs started from the prompt still run in gtty's own folder (the git
   chip follows each window's process folder already).
 - Readable minimum scale for grid content; default size 120×30 / font 15.
-- Packages: Linux arm64; a Developer ID to sign + notarize the dmg.
+- Packages: the Linux arm64 build is untested on a real arm64 machine.
