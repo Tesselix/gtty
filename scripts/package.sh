@@ -4,9 +4,9 @@
 # Installable packages from the self-contained binaries of build-bin.sh
 # (SDL3, SDL3_ttf, freetype linked in), into dist/:
 # - gtty-<v>-macos.dmg        gtty.app (icon src/assets/AppIcon.icns), arm64, macOS 13+
-# - gtty-<v>-amd64.deb        Ubuntu / Debian      } /usr/bin/gtty, a launcher and
-# - gtty-<v>-x86_64.rpm       Fedora               } icons (src/assets/gtty-icon.png)
-# - gtty-<v>-linux-x86_64.tar.gz  the same files, for any other distro
+# - gtty-<v>-amd64.deb, gtty-<v>-arm64.deb        Ubuntu / Debian } /usr/bin/gtty, a launcher and
+# - gtty-<v>-x86_64.rpm, gtty-<v>-aarch64.rpm     Fedora          } icons (src/assets/gtty-icon.png)
+# - gtty-<v>-linux-x86_64.tar.gz, …-linux-aarch64.tar.gz  the same files, for any other distro
 # - gtty-sdk-<language>-<v>.tar.gz  what extensions import (package-sdks.sh)
 # The version is build.zig.zon's .version (0.0.0-dev in git; releases
 # write the tag's there first), the one the binary reports; GTTY_VERSION
@@ -33,7 +33,7 @@ VERSION=$GTTY_VERSION
 command -v nfpm >/dev/null || { echo "nfpm not found: brew install nfpm" >&2; exit 1; }
 
 [ "${SKIP_BUILD:-}" = 1 ] || scripts/build-bin.sh
-for f in bin/macos/gtty bin/linux/gtty; do
+for f in bin/macos/gtty bin/linux/gtty bin/linux-arm64/gtty; do
     [ -x "$f" ] || { echo "$f missing: run scripts/build-bin.sh" >&2; exit 1; }
 done
 
@@ -136,32 +136,34 @@ if [ -n "${GTTY_SIGN_ID:-}" ]; then
     fi
 fi
 
-# ---- Linux: deb, rpm, tar.gz ----------------------------------------------
+# ---- Linux: deb, rpm, tar.gz, per architecture ----------------------------
 echo "== Linux packages"
-LROOT="$STAGE/linux"
+LROOT="$STAGE/linux" # path fixed in nfpm.yaml
 mkdir -p "$LROOT"
-cp bin/linux/gtty "$LROOT/gtty"
 for n in 16 24 32 48 64 128 256 512; do
     d="$LROOT/icons/${n}x${n}/apps"
     mkdir -p "$d"
     sips -s format png -z "$n" "$n" src/assets/gtty-icon.png --out "$d/gtty.png" >/dev/null
 done
 
-export VERSION ARCH=amd64 # files: $LROOT (path fixed in nfpm.yaml)
+# linux_packages <bin folder> <nfpm arch> <deb arch> <rpm / tar arch>
 # Hyphens in the names, as the other packages (nfpm's defaults are
 # gtty_<v>_amd64.deb and gtty-<v>-1.x86_64.rpm).
-nfpm package --config packaging/linux/nfpm.yaml --packager deb --target "dist/gtty-$VERSION-amd64.deb"
-nfpm package --config packaging/linux/nfpm.yaml --packager rpm --target "dist/gtty-$VERSION-x86_64.rpm"
+linux_packages() {
+    echo "== Linux $4"
+    cp "bin/$1/gtty" "$LROOT/gtty"
+    ARCH=$2 nfpm package --config packaging/linux/nfpm.yaml --packager deb --target "dist/gtty-$VERSION-$3.deb"
+    ARCH=$2 nfpm package --config packaging/linux/nfpm.yaml --packager rpm --target "dist/gtty-$VERSION-$4.rpm"
 
-# Same layout as the packages, under a prefix: install.sh copies it to
-# /usr/local (or PREFIX).
-T="$STAGE/gtty-$VERSION-linux-x86_64"
-mkdir -p "$T/bin" "$T/share/applications" "$T/share/icons" "$T/share/doc/gtty"
-cp "$LROOT/gtty" "$T/bin/"
-cp packaging/linux/gtty.desktop "$T/share/applications/"
-cp -R "$LROOT/icons" "$T/share/icons/hicolor"
-install -m 644 src/assets/JetBrainsMono-OFL.txt LICENSE THIRD_PARTY.md "$T/share/doc/gtty/"
-cat > "$T/install.sh" <<'EOF'
+    # Same layout as the packages, under a prefix: install.sh copies it to
+    # /usr/local (or PREFIX).
+    T="$STAGE/gtty-$VERSION-linux-$4"
+    mkdir -p "$T/bin" "$T/share/applications" "$T/share/icons" "$T/share/doc/gtty"
+    cp "$LROOT/gtty" "$T/bin/"
+    cp packaging/linux/gtty.desktop "$T/share/applications/"
+    cp -R "$LROOT/icons" "$T/share/icons/hicolor"
+    install -m 644 src/assets/JetBrainsMono-OFL.txt LICENSE THIRD_PARTY.md "$T/share/doc/gtty/"
+    cat > "$T/install.sh" <<'EOF'
 #!/bin/sh
 # Copy gtty to $PREFIX (default /usr/local; ~/.local for just you).
 set -eu
@@ -173,8 +175,12 @@ command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database -q
 command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -q -t -f "$PREFIX/share/icons/hicolor" || true
 echo "gtty installed in $PREFIX/bin"
 EOF
-chmod +x "$T/install.sh"
-tar -C "$STAGE" -czf "dist/gtty-$VERSION-linux-x86_64.tar.gz" "gtty-$VERSION-linux-x86_64"
+    chmod +x "$T/install.sh"
+    tar -C "$STAGE" -czf "dist/gtty-$VERSION-linux-$4.tar.gz" "gtty-$VERSION-linux-$4"
+}
+export VERSION
+linux_packages linux amd64 amd64 x86_64
+linux_packages linux-arm64 arm64 arm64 aarch64
 
 # ---- SDKs -------------------------------------------------------------------
 echo "== SDKs"
