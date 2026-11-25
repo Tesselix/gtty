@@ -117,13 +117,16 @@ class Fake:
             return self.send({"t": "reply", "id": rid, "value": True})
         self.send({"t": "reply", "id": rid, "error": "StorageFailed"})
 
-    def settle(self, wait=1.5, first=0.4):
+    def settle(self, wait=1.5, first=1.5):
         """Answer calls and collect messages until the extension is quiet.
 
         `first`: how long to wait for its first message. Startup passes a
-        long one: an interpreter starting cold on a busy CI runner (node,
+        longer one: an interpreter starting cold on a busy CI runner (node,
         python) can take well over the 0.4 s quiet gap before it says
-        anything, and its startup messages then landed in the next settle.
+        anything. Every other step waits 1.5 s too: on a busy runner node
+        once took more than 0.4 s to answer a click, its messages landed
+        in the next settle and five checks failed in a row. A step that
+        expects nothing waits the whole `first`.
         """
         got = []
         quiet = 0.4
