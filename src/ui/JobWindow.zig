@@ -3020,6 +3020,8 @@ pub fn statusText(w: *const JobWindow, buf: []u8) []const u8 {
 // ------------------------------------------------------------ drawing
 
 pub fn draw(w: *JobWindow, gfx: *Gfx, theme: *const Theme) void {
+    w.out.body_fg = theme.fg;
+    w.out.body_bg = theme.bg;
     const ui = w.scale.ui;
     const chrome = w.chromeFace(gfx) catch return;
     const f = w.textFace(gfx) catch return;
