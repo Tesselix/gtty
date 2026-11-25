@@ -238,7 +238,10 @@ the shell. Users expect it to behave like a shell in a terminal.
     each one more costs ~0.5 s, the user's rule), **oldest first, the
     newest at the bottom** next to the chip (ties: more uses), shown as
     `~/…`, the current one green, the selection on the newest other one
-    (bottom); a pick = `Action.cd` as the folder peek. **Use** = a command started in the folder (`Screen.cmd_seq` →
+    (bottom); a pick = `Action.cd` as the folder peek. The filter
+    searches the whole history (`top`'s `filter`, the path after home;
+    the 7 newest matches; 2026-11-25: the list once showed only the
+    last 3 days, `window_s`, so older work folders were out of reach). **Use** = a command started in the folder (`Screen.cmd_seq` →
     `JobWindow.started_seq` / `started_dir`, the folder reported at that
     prompt → `command_started`, `src/chips/focus.zig`)
     that isn't a look-up or bookkeeping (`FocusFolders.countsAsUse`:
