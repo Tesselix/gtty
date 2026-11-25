@@ -5497,7 +5497,8 @@ fn onKey(app: *App, key: c.SDL_Keycode, mod: c.SDL_Keymod) void {
     if (ctrl or cmd) {
         switch (key) {
             c.SDLK_EQUALS, c.SDLK_PLUS, c.SDLK_KP_PLUS => return app.zoomFocused(.in),
-            c.SDLK_MINUS, c.SDLK_KP_MINUS => return app.zoomFocused(.out),
+            // Not with Shift and Ctrl: that is Ctrl+_ (0x1f, Emacs' undo).
+            c.SDLK_MINUS, c.SDLK_KP_MINUS => if (cmd or !shift) return app.zoomFocused(.out),
             c.SDLK_0, c.SDLK_KP_0 => return app.zoomFocused(.reset),
             c.SDLK_TAB => return app.cycleFocus(if (shift) -1 else 1),
             else => {},
@@ -5552,6 +5553,9 @@ fn onKey(app: *App, key: c.SDL_Keycode, mod: c.SDL_Keymod) void {
             return;
         }
         if (jobKeyBytes(key, ctrl, shift, w.out.app_cursor, w.out.alt != null)) |bytes| {
+            // Ctrl+Space and the like may also come as text (" "): only the
+            // control byte goes (Ctrl+letters never did).
+            if (ctrl and ctrlSymbol(key, shift) != null) app.drop_text = true;
             w.typeBytes(bytes);
         } else switch (key) {
             c.SDLK_PAGEUP => w.out.scrollBy(@intCast(w.rows -| 1)),
@@ -5726,6 +5730,17 @@ fn fnKeyBytes(key: c.SDL_Keycode, shift: bool, alt: bool, ctrl: bool, buf: *[16]
         std.fmt.bufPrint(buf, "\x1b[{d};{d}~", .{ num, m }) catch null;
 }
 
+test "Ctrl with keys that aren't letters, as xterm sends them" {
+    const t = std.testing;
+    try t.expectEqualStrings("\x00", jobKeyBytes(c.SDLK_SPACE, true, false, false, true).?);
+    try t.expectEqualStrings("\x1f", jobKeyBytes(c.SDLK_SLASH, true, false, false, true).?);
+    try t.expectEqualStrings("\x1f", jobKeyBytes(c.SDLK_MINUS, true, true, false, true).?); // Ctrl+_
+    try t.expectEqualStrings("\x1d", jobKeyBytes(c.SDLK_RIGHTBRACKET, true, false, false, true).?);
+    try t.expectEqualStrings("\x1c", jobKeyBytes(c.SDLK_BACKSLASH, true, false, false, true).?);
+    try t.expect(jobKeyBytes(c.SDLK_2, true, true, false, true) == null); // Ctrl+Shift+2: a chip
+    try t.expect(jobKeyBytes(c.SDLK_SPACE, false, false, false, true) == null); // plain: text
+}
+
 test "function keys as xterm sends them" {
     var buf: [16]u8 = undefined;
     try std.testing.expectEqualStrings("\x1bOP", fnKeyBytes(c.SDLK_F1, false, false, false, &buf).?);
@@ -5749,6 +5764,7 @@ fn jobKeyBytes(key: c.SDL_Keycode, ctrl: bool, shift: bool, app_cursor: bool, fu
         };
         return &ctl[key - c.SDLK_A];
     }
+    if (ctrl) if (ctrlSymbol(key, shift)) |b| return b;
     return switch (key) {
         c.SDLK_RETURN, c.SDLK_KP_ENTER => "\r",
         c.SDLK_BACKSPACE => "\x7f",
@@ -5763,6 +5779,24 @@ fn jobKeyBytes(key: c.SDL_Keycode, ctrl: bool, shift: bool, app_cursor: bool, fu
         c.SDLK_DELETE => "\x1b[3~",
         c.SDLK_PAGEUP => if (full_screen) "\x1b[5~" else null,
         c.SDLK_PAGEDOWN => if (full_screen) "\x1b[6~" else null,
+        else => null,
+    };
+}
+
+/// Ctrl + a key that isn't a letter, as xterm sends it: Ctrl+Space / 2
+/// NUL (Emacs' set-mark), Ctrl+[ / 3 ESC, Ctrl+\\ / 4 FS, Ctrl+] / 5 GS,
+/// Ctrl+6 RS, Ctrl+/ / 7 / _ US (undo in Emacs, zsh and bash), Ctrl+8
+/// DEL. Ctrl+Shift+digits are gtty's (the chips on Linux).
+fn ctrlSymbol(key: c.SDL_Keycode, shift: bool) ?[]const u8 {
+    if (shift) return if (key == c.SDLK_MINUS or key == c.SDLK_UNDERSCORE) "\x1f" else null;
+    return switch (key) {
+        c.SDLK_SPACE, c.SDLK_2 => "\x00",
+        c.SDLK_LEFTBRACKET, c.SDLK_3 => "\x1b",
+        c.SDLK_BACKSLASH, c.SDLK_4 => "\x1c",
+        c.SDLK_RIGHTBRACKET, c.SDLK_5 => "\x1d",
+        c.SDLK_6 => "\x1e",
+        c.SDLK_SLASH, c.SDLK_7 => "\x1f",
+        c.SDLK_8 => "\x7f",
         else => null,
     };
 }

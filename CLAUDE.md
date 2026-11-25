@@ -1516,7 +1516,10 @@ decisions; items marked *open* are undecided.
   Queries are answered (`Screen.query` → `reply_buf`, written to the PTY
   in `JobWindow.pump`, not through `send`: never mirrored or refused):
   `ESC[6n` / `ESC[?6n` cursor position, `ESC[5n`, `ESC[c` (VT220 +
-  color). Without them gh's / Go survey prompts hang (fixed 2026-10-08,
+  color), `ESC[>c` (`ESC[>41;280;0c`, as xterm; 2026-11-25: Emacs
+  waited 2 s for it at start), OSC 10 / 11 `?` (the theme's fg / bg,
+  `Screen.body_fg` / `body_bg`, set by `JobWindow.draw`; ended as the
+  question was, BEL or ST, `osc_bel`). Without them gh's / Go survey prompts hang (fixed 2026-10-08,
   `test/queries.gt`).
   Full-screen programs (added 2026-10-09, `test/vim.gt`): scroll region
   (`ESC[t;br`, `region_top` / `region_bot`; `scrollRows`, `lineFeed`,
@@ -1545,7 +1548,11 @@ decisions; items marked *open* are undecided.
   special graphics, `Screen.g_dec`; SO / SI pick G1 / G0, `g1_on`;
   `decGraphic`: `_`…`~` → ┌ ─ │ …; off at the A / D marks and `ESC c`,
   `charsetsOff`): ncurses' boxes for TERM xterm-256color. `CSI n b`
-  repeats `last_char` (≤ one width). Box characters U+2500–U+254F, the
+  repeats `last_char` (≤ one width). **Insert mode** (2026-11-25; IRM `ESC[4h` /
+  `ESC[4l`, `Screen.insert_mode`, `insertBlanks`, shared with ICH `CSI
+  n @`): a character printed pushes the row right; ncurses' `smir` /
+  `rmir` for xterm-256color (typing inside a line in nano overwrote the
+  text before); off at the A / D marks and `ESC c`. Box characters U+2500–U+254F, the
   rounded corners and half lines are drawn by `Gfx.drawBox` as
   rectangles to the cell's edges (`boxLines`: arms left / up / right /
   down, light / heavy; dashed drawn solid, rounded square; double lines
@@ -1553,7 +1560,10 @@ decisions; items marked *open* are undecided.
   App.zig's tests run since 2026-11-20, `main.zig`'s test block):
   F1–F4 `ESC O P`…, F5–F10 / F12 `ESC [ 15 ~`…, Insert `ESC [ 2 ~`,
   modifiers as xterm (`ESC [ 1 ; 5 P`, `ESC [ 15 ; 2 ~`); F11 stays
-  gtty's maximize, Shift+Insert paste. **Meta** (`metaOn`, `metaBytes`):
+  gtty's maximize, Shift+Insert paste. Ctrl + keys that aren't letters
+  (2026-11-25; `ctrlSymbol`): Ctrl+Space / 2 NUL, [ / 3 ESC, \\ / 4,
+  ] / 5, 6, / / 7 / Ctrl+_ US, 8 DEL (their text event dropped);
+  Ctrl+minus zooms only without Shift (Ctrl+_ is Emacs' undo). **Meta** (`metaOn`, `metaBytes`):
   Alt + a key that types a character = ESC + that key's character with
   Shift alone (from the layout: ⌥⇧. → `ESC >`); always on Linux, on
   macOS only with config `option-as-meta` (default off, Settings →
