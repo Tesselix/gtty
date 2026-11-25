@@ -247,6 +247,18 @@ mouse_enc: MouseEnc = .x10,
 /// G0. Back to ASCII at the shell's prompt and `ESC c`.
 g_dec: [2]bool = .{ false, false },
 g1_on: bool = false,
+/// Insert mode (IRM, `ESC[4h` / `ESC[4l`): a character printed pushes the
+/// rest of the row right instead of overwriting it. ncurses uses it for
+/// TERM xterm-256color (`smir` / `rmir`): typing inside a line in nano.
+/// Off at the shell's prompt and `ESC c`.
+insert_mode: bool = false,
+/// The body's text and background colors (the theme's, set by the window
+/// as it draws): the answers to OSC 10 / 11 `?` (Emacs and vim ask, to
+/// pick colors for a dark or a light background).
+body_fg: color.Rgb = (color.Theme{}).fg,
+body_bg: color.Rgb = (color.Theme{}).bg,
+/// The OSC being read ended with BEL (else ST): its answer ends the same.
+osc_bel: bool = false,
 /// The slot an `ESC (` / `ESC )` names (2, 3: G2 / G3, not used).
 charset_slot: u2 = 0,
 /// The last character printed, for `CSI n b` (repeat it n times).
@@ -384,14 +396,20 @@ fn feedByte(s: *Screen, b: u8) void {
         },
         .csi => s.csi(b),
         .osc => switch (b) {
-            0x07 => s.oscEnd(),
+            0x07 => {
+                s.osc_bel = true;
+                s.oscEnd();
+            },
             0x1b => s.state = .osc_esc,
             else => {
                 if (s.osc_len < s.osc_buf.len) s.osc_buf[s.osc_len] = b;
                 s.osc_len +|= 1;
             },
         },
-        .osc_esc => if (b == '\\') s.oscEnd() else {
+        .osc_esc => if (b == '\\') {
+            s.osc_bel = false;
+            s.oscEnd();
+        } else {
             s.state = .osc;
         },
         .str => switch (b) {
@@ -504,6 +522,7 @@ fn escape(s: *Screen, b: u8) void {
             s.bracketed_paste = false;
             s.mouseOff();
             s.charsetsOff();
+            s.insert_mode = false;
             s.cursor_shape = .bar;
             s.clear();
         },
@@ -520,6 +539,12 @@ fn oscEnd(s: *Screen) void {
     if (s.osc_len > s.osc_buf.len) return; // too long to read
     const p = s.osc_buf[0..s.osc_len];
     if (std.mem.startsWith(u8, p, "7;")) return s.oscFolder(p[2..]);
+    if (std.mem.eql(u8, p, "10;?") or std.mem.eql(u8, p, "11;?")) {
+        const rgb = if (p[1] == '0') s.body_fg else s.body_bg;
+        // xterm's form: 16 bits a channel (the byte twice).
+        s.reply("\x1b]{s};rgb:{x:0>2}{x:0>2}/{x:0>2}{x:0>2}/{x:0>2}{x:0>2}{s}", .{ p[0..2], rgb.r, rgb.r, rgb.g, rgb.g, rgb.b, rgb.b, @as([]const u8, if (s.osc_bel) "\x07" else "\x1b\\") });
+        return;
+    }
     if (!std.mem.startsWith(u8, p, "133;") or p.len < 5 or (p.len > 5 and p[5] != ';')) return;
     s.has_marks = true;
     switch (p[4]) {
@@ -527,6 +552,7 @@ fn oscEnd(s: *Screen) void {
             s.zone = .none;
             s.mouseOff();
             s.charsetsOff();
+            s.insert_mode = false;
             s.cursor_shape = .bar;
         },
         'B' => {
@@ -547,6 +573,7 @@ fn oscEnd(s: *Screen) void {
             if (s.ai == .running) s.ai = .off;
             s.mouseOff();
             s.charsetsOff();
+            s.insert_mode = false;
             s.cursor_shape = .bar;
             s.at_prompt = true;
             s.prompt_row = s.cur_row;
@@ -768,6 +795,11 @@ fn query(s: *Screen, final: u8) void {
             'c' => if (p0 == 0) s.reply("\x1b[?62;22c", .{}),
             else => {},
         },
+        // Secondary device attributes (`ESC[>c`): xterm's form (41: a
+        // VT420; the version: one whose features programs ask for, such as
+        // Emacs's background question). Unanswered, Emacs waited 2 s at
+        // start.
+        '>' => if (final == 'c' and p0 == 0) s.reply("\x1b[>41;280;0c", .{}),
         '?' => if (final == 'n' and p0 == 6) s.reply("\x1b[?{d};{d}R", .{ row, col }),
         else => {},
     }
@@ -820,16 +852,10 @@ fn dispatchCsi(s: *Screen, final: u8) void {
             if (n > 0) l.replaceRangeAssumeCapacity(s.cur_col, n, &.{});
             s.repairWide(s.cur_row);
         },
-        '@' => { // insert blanks (never more than fit: random input can ask for billions)
-            const l = s.line(s.cur_row);
-            if (s.cur_col < l.items.len) {
-                const n = @min(s.param(0, 1), s.cols -| s.cur_col);
-                l.ensureUnusedCapacity(s.gpa, n) catch return;
-                var i: u32 = 0;
-                while (i < n) : (i += 1) l.insertAssumeCapacity(s.cur_col, s.blank());
-                if (l.items.len > s.cols) l.shrinkRetainingCapacity(s.cols);
-                s.repairWide(s.cur_row);
-            }
+        '@' => s.insertBlanks(s.param(0, 1)),
+        // ANSI modes: only insert mode (4); the rest are ignored.
+        'h', 'l' => for (s.params[0..s.nparams]) |p| {
+            if (p == 4) s.insert_mode = final == 'h';
         },
         'X' => { // erase chars
             const l = s.line(s.cur_row);
@@ -1133,6 +1159,20 @@ fn line(s: *Screen, row: usize) *Line {
     return &s.lines.items[row];
 }
 
+/// Insert `n_in` blanks at the cursor, the rest of the row moving right
+/// (what falls off the right edge is gone). Never more than fit: random
+/// input can ask for billions.
+fn insertBlanks(s: *Screen, n_in: u32) void {
+    const l = s.line(s.cur_row);
+    if (s.cur_col >= l.items.len) return;
+    const n = @min(n_in, s.cols -| s.cur_col);
+    l.ensureUnusedCapacity(s.gpa, n) catch return;
+    var i: u32 = 0;
+    while (i < n) : (i += 1) l.insertAssumeCapacity(s.cur_col, s.blank());
+    if (l.items.len > s.cols) l.shrinkRetainingCapacity(s.cols);
+    s.repairWide(s.cur_row);
+}
+
 fn put(s: *Screen, cp: u21) void {
     s.last_char = cp;
     const w = wcwidth.width(cp);
@@ -1151,6 +1191,7 @@ fn put(s: *Screen, cp: u21) void {
         s.lineFeed();
         s.cur_col = 0;
     }
+    if (s.insert_mode) s.insertBlanks(w);
     var cell = s.pen;
     cell.cp = cp;
     cell.attrs.wide = w == 2 and s.cols >= 2;
@@ -1996,6 +2037,42 @@ test "insert / delete lines and scroll up / down" {
     try std.testing.expectEqualStrings("\n\nc\nd", t3);
 }
 
+test "insert mode pushes the row right (nano typing inside a line)" {
+    var s = Screen.init(std.testing.allocator);
+    defer s.deinit();
+    s.resize(8, 2);
+    // ncurses: move into "hello", insert mode on, the character, off.
+    s.feed("hello\x1b[1;3H\x1b[4hX\x1b[4lY");
+    try std.testing.expect(!s.insert_mode);
+    const t = try textOf(&s);
+    defer std.testing.allocator.free(t);
+    try std.testing.expectEqualStrings("heXYlo", t); // X pushed, Y overwrote
+    // At the edge the row's end falls off; ESC c turns the mode off.
+    s.feed("\x1b[1;1H\x1b[4hABC");
+    const t2 = try textOf(&s);
+    defer std.testing.allocator.free(t2);
+    try std.testing.expectEqualStrings("ABCheXYl", t2);
+    s.feed("\x1bc");
+    try std.testing.expect(!s.insert_mode);
+}
+
+test "Emacs' start-up questions: secondary attributes and the colors" {
+    var s = Screen.init(std.testing.allocator);
+    defer s.deinit();
+    s.resize(10, 3);
+    s.feed("\x1b[>0c");
+    try std.testing.expectEqualStrings("\x1b[>41;280;0c", s.takeReplies());
+    s.body_bg = color.Rgb.hex(0x161a21);
+    s.feed("\x1b]11;?\x1b\\");
+    try std.testing.expectEqualStrings("\x1b]11;rgb:1616/1a1a/2121\x1b\\", s.takeReplies());
+    s.body_fg = color.Rgb.hex(0xd7dae0);
+    s.feed("\x1b]10;?\x07");
+    try std.testing.expectEqualStrings("\x1b]10;rgb:d7d7/dada/e0e0\x07", s.takeReplies());
+    // modifyOtherKeys (`ESC[>4;1m`, Emacs sends it next) isn't a color change.
+    s.feed("\x1b[>4;1mx");
+    try std.testing.expect(s.pen.attrs.underline == false);
+}
+
 test "alternate screen: a page of its own, gone on leaving" {
     var s = Screen.init(std.testing.allocator);
     defer s.deinit();
@@ -2026,7 +2103,7 @@ test "queries: cursor position, device status and attributes are answered" {
     try std.testing.expectEqualStrings("\x1b[2;3R", s.takeReplies());
     try std.testing.expectEqualStrings("", s.takeReplies());
     s.feed("\x1b[5n\x1b[c\x1b[?6n\x1b[>c");
-    try std.testing.expectEqualStrings("\x1b[0n\x1b[?62;22c\x1b[?2;3R", s.takeReplies());
+    try std.testing.expectEqualStrings("\x1b[0n\x1b[?62;22c\x1b[?2;3R\x1b[>41;280;0c", s.takeReplies());
     // Relative to the live screen, not the scrollback.
     s.feed("\r\n\r\n\r\n\r\n\r\nx\x1b[6n");
     try std.testing.expectEqualStrings("\x1b[5;2R", s.takeReplies());
