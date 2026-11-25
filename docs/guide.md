@@ -67,6 +67,22 @@ in (not in an ssh session).
   while the shell waits for your input; while a command runs, the box says
   the shell is busy.
 
+The **focus chip** (clock icon, after the branch chip; not in an ssh
+session) remembers the folders you worked in. A folder counts each time
+you run a command there that does something (a build, git, an editor, a
+script). Getting around and looking don't count: `cd`, `ls`, `find`,
+`pwd`, `du`, `file`, `echo` and the like. Only folders inside your home
+folder (not home itself) are kept, for 90 days back from your latest
+use; folders that no longer exist are dropped. Every gtty window shares
+the history, and it is kept between runs.
+
+- **Click** it: the last 7 folders you worked in, oldest on top and the
+  newest at the bottom, next to the chip; the current folder is marked
+  green, the newest other one is already chosen. Type to filter: the
+  filter searches the whole history (the 7 newest matches show), so an
+  older folder is found too. ↑/↓ to choose, **Enter** (or a click)
+  `cd`s the shell there.
+
 **From the keyboard:** each chip shows a number. **⌘1** opens the folder
 chip's list, **⌘2** the branches, **⌘3** the focus folders, **⌘4** the
 saved sessions (Linux: **Ctrl+Shift+1**, **2**, **3**, **4**), for the

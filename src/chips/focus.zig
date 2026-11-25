@@ -87,13 +87,12 @@ fn setList(win: *sdk.Window, s: *const State) !void {
     const a = arena.allocator();
     const home = homeDir();
     var buf: [FocusFolders.shown_max][]const u8 = undefined;
-    const all = f.top(home, &buf);
+    const all = f.top(home, s.filter.s, &buf);
     const cur = s.dir.s;
     var rows: std.ArrayList(sdk.Line) = .empty;
     var last_other: usize = 0;
     for (all) |d| {
         const rel = homeRel(d, home);
-        if (!list.matches(rel orelse d, s.filter.s)) continue;
         const shown = if (rel) |r| try std.fmt.allocPrint(a, "~{s}", .{r}) else d;
         var l: sdk.Line = .{ .text = sdk.newText(shown), .onclick = "pick", .data = d };
         if (std.mem.eql(u8, d, cur)) list.currentLine(&l, shown) else last_other = rows.items.len;
@@ -107,7 +106,7 @@ fn setList(win: *sdk.Window, s: *const State) !void {
         .lines = .{ .set = rows.items },
         // The newest one that isn't the current folder.
         .selected = .{ .set = last_other },
-        .empty = .{ .set = sdk.newText(if (all.len == 0) "no focus folders yet" else "no folder matches") },
+        .empty = .{ .set = sdk.newText(if (s.filter.s.len == 0) "no focus folders yet" else "no folder matches") },
     } });
 }
 

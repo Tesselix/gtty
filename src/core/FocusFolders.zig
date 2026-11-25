@@ -108,15 +108,20 @@ fn better(_: void, a: Entry, b: Entry) bool {
 }
 
 /// The chip's list, the history window: the `out.len` folders used last
-/// that still exist and are under `home`, oldest first (the newest
-/// last). The slices point into the entries (valid until the next
-/// change).
-pub fn top(r: *FocusFolders, home: []const u8, out: [][]const u8) []const []const u8 {
+/// that still exist and are under `home` and match `filter` (any case,
+/// in the path after `home`; empty: all), oldest first (the newest
+/// last). A filter searches the whole history, so a folder worked in
+/// weeks ago is found too. The slices point into the entries (valid
+/// until the next change).
+pub fn top(r: *FocusFolders, home: []const u8, filter: []const u8, out: [][]const u8) []const []const u8 {
     std.mem.sort(Entry, r.entries.items, {}, better);
+    const h = std.mem.trimEnd(u8, home, "/");
     var n: usize = 0;
     for (r.entries.items) |e| {
         if (n == out.len) break;
-        if (!underHome(e.path, home) or !isDir(r.gpa, e.path)) continue;
+        if (!underHome(e.path, home)) continue;
+        if (filter.len > 0 and std.ascii.indexOfIgnoreCase(e.path[h.len..], filter) == null) continue;
+        if (!isDir(r.gpa, e.path)) continue;
         out[n] = e.path;
         n += 1;
     }
@@ -430,10 +435,25 @@ test "the list: the folders used last, oldest first" {
     r.useAt("/usr/share", 200);
     r.useAt("/usr/no-such-folder-gtty-test", 400);
     var buf: [2][]const u8 = undefined;
-    const list = r.top("/usr", &buf);
+    const list = r.top("/usr", "", &buf);
     try t.expectEqual(@as(usize, 2), list.len);
     try t.expectEqualStrings("/usr/share", list[0]);
     try t.expectEqualStrings("/usr/bin", list[1]);
+}
+
+test "a filter searches the whole history" {
+    const t = std.testing;
+    var r = FocusFolders.init(t.allocator);
+    defer r.deinit();
+    r.useAt("/usr/lib", 100); // older than the two shown
+    r.useAt("/usr/share", 200);
+    r.useAt("/usr/bin", 300);
+    var buf: [2][]const u8 = undefined;
+    const list = r.top("/usr", "LI", &buf);
+    try t.expectEqual(@as(usize, 1), list.len);
+    try t.expectEqualStrings("/usr/lib", list[0]);
+    // The home part isn't searched: "usr" matches nothing.
+    try t.expectEqual(@as(usize, 0), r.top("/usr", "usr", &buf).len);
 }
 
 test "folders that are gone are dropped" {

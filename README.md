@@ -176,12 +176,17 @@ the GNOME / KDE file manager. Hover a name and it gets an outline:
 
 ![After cd and ls in Downloads, the focus chip lists only folders where commands were run; typing filters the list and Enter cds there](docs/images/focus.webp)
 
-The **focus** chip at the bottom of every window lists the folders you
-did real work in lately (ran a build, git, an editor, a script): the
-last seven at most, the newest at the bottom, right above the chip. Just looking around doesn't count: `cd`, `ls`, `pwd` and the
-like leave no trace, so the list stays short and useful. Click it (or
-⌘3), type a few letters, press Enter, and you're there. Shared by every
-gtty window, kept between sessions.
+The **focus** chip at the bottom of every window remembers the folders
+you actually worked in: each time you run a real command in a folder (a
+build, git, an editor, a script), that folder counts. Getting around and
+searching don't: `cd`, `ls`, `find`, `pwd`, `du` and the like leave no
+trace, so a look around never pushes your work folders out. The history
+is kept for months, shared by every gtty window and between runs.
+
+Its list shows the last seven folders you worked in, the newest at the
+bottom, right above the chip. Click it (or ⌘3), type a few letters
+(they search the whole history, so a folder from weeks ago turns up
+too), press Enter, and you're there.
 
 ### Sessions: save your screen, bring it back
 
