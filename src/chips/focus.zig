@@ -5,7 +5,9 @@
 //! (`FocusFolders.countsAsUse`), not in a remote session, where the chip
 //! isn't shown either. A click opens its epeek: the folders under home
 //! used lately, the newest at the bottom by the chip, the current one
-//! marked; a pick cds there. The list and its file, shared by every gtty
+//! marked; a pick cds there. Each row's ⋮: Pin / Unpin (pinned folders
+//! stay on top, a pin before them) and Remove from List (forgotten until
+//! used again). The list and its file, shared by every gtty
 //! (`FocusFolders.sync`), are the chip's own: read at start, synced at
 //! most every 10 s after a use, on opening the list and when gtty closes.
 //! A test script run keeps them in memory unless `GTTY_FOCUS` says where.
@@ -86,16 +88,26 @@ fn setList(win: *sdk.Window, s: *const State) !void {
     defer arena.deinit();
     const a = arena.allocator();
     const home = homeDir();
-    var buf: [FocusFolders.shown_max][]const u8 = undefined;
+    var buf: [FocusFolders.list_max]FocusFolders.Shown = undefined;
     const all = f.top(home, s.filter.s, &buf);
     const cur = s.dir.s;
     var rows: std.ArrayList(sdk.Line) = .empty;
     var last_other: usize = 0;
-    for (all) |d| {
+    for (all) |e| {
+        const d = e.path;
         const rel = homeRel(d, home);
         const shown = if (rel) |r| try std.fmt.allocPrint(a, "~{s}", .{r}) else d;
         var l: sdk.Line = .{ .text = sdk.newText(shown), .onclick = "pick", .data = d };
         if (std.mem.eql(u8, d, cur)) list.currentLine(&l, shown) else last_other = rows.items.len;
+        // A pin marks a pinned row (the current one keeps its green text).
+        if (e.pinned) l.prefixButton = .{ .icon = "pin" };
+        const items = try a.alloc(sdk.Item, 2);
+        items[0] = if (e.pinned)
+            .{ .id = "unpin", .text = sdk.newText("Unpin"), .data = d }
+        else
+            .{ .id = "pin", .text = sdk.newText("Pin"), .data = d };
+        items[1] = .{ .id = "remove", .text = sdk.newText("Remove from List"), .data = d };
+        l.postButton = .{ .dots = .vertical, .onclick = "row", .items = items };
         try rows.append(a, l);
     }
     try win.ui.set(.{ .epeek = sdk.EpeekUpdate{
@@ -155,11 +167,28 @@ pub const Actions = struct {
         try setList(win, s);
     }
 
+    /// A row's ⋮: pin, unpin or remove its folder; the list is shown
+    /// again and, with the file, every gtty hears of it at once.
+    pub fn row(win: *sdk.Window, b: sdk.ButtonClick) !void {
+        const s = try windows.of(win.id);
+        const f = if (folders) |*x| x else return;
+        if (std.mem.eql(u8, b.id, "remove")) {
+            f.remove(b.data);
+        } else if (!f.setPinned(b.data, std.mem.eql(u8, b.id, "pin"))) {
+            var msg: [64]u8 = undefined;
+            try win.beep();
+            try win.notice(std.fmt.bufPrint(&msg, "{d} folders pinned at most", .{FocusFolders.pins_max}) catch "too many pins", .err);
+            return;
+        }
+        if (file_on) sync();
+        try setList(win, s);
+    }
+
     pub fn pick(win: *sdk.Window, b: sdk.ButtonClick) !void {
         const s = try windows.of(win.id);
         if (std.mem.eql(u8, b.data, s.dir.s)) {
-            var row: [1]sdk.Text = undefined;
-            return win.ui.set(.{ .epeek = sdk.EpeekUpdate{ .state = .{ .set = .ok }, .message = .{ .set = list.oneRow(&row, "already here") } } });
+            var one: [1]sdk.Text = undefined;
+            return win.ui.set(.{ .epeek = sdk.EpeekUpdate{ .state = .{ .set = .ok }, .message = .{ .set = list.oneRow(&one, "already here") } } });
         }
         try folder_chip.sendCd(win, b.data, &s.sent);
     }

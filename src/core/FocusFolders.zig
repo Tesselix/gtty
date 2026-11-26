@@ -15,8 +15,16 @@
 //! `$GTTY_FOCUS`, else `$XDG_STATE_HOME/gtty/focus-folders`, else
 //! `~/.local/state/gtty/focus-folders` (an older `recent-folders` next
 //! to it is moved there); one line per folder, tab-separated `<uses>
-//! <last, unix s> <path>`. Each process counts its own new uses
-//! (`added`) and `sync` merges them into what is on disk.
+//! <last, unix s> <path>`, a pinned one `<uses> <last> pin <path>` (an
+//! older gtty skips those lines). Each process counts its own new uses
+//! (`added`) and `sync` merges them into what is on disk, with the pins,
+//! unpins and removals it made (`ops`).
+//!
+//! **Pinned** folders (the user's, 2026-11-26) are always on the list,
+//! above the history window, and never forgotten for age or number; one
+//! that is gone from the disk is forgotten as any other. **Removed**
+//! ones are forgotten with all their uses (`remove`); the next use
+//! brings the folder back, counted from there.
 
 const std = @import("std");
 const c = @import("../c.zig").c;
@@ -27,8 +35,10 @@ const FocusFolders = @This();
 pub const keep_s: i64 = 90 * 24 * 3600;
 /// Folders on the chip's list.
 pub const shown_max = 7;
-/// Folders kept at most (the least recently used go).
+/// Folders kept at most (the least recently used go; pinned ones stay).
 const keep_max = 200;
+/// Pinned folders at most.
+pub const pins_max = 10;
 
 pub const Entry = struct {
     path: []u8,
@@ -36,12 +46,28 @@ pub const Entry = struct {
     last: i64,
     /// Uses this process added since its last `sync`.
     added: u32 = 0,
+    /// Always on the list.
+    pinned: bool = false,
+};
+
+/// A change the user made to the list, carried to the file by `sync`.
+pub const Op = struct {
+    kind: enum { pin, unpin, remove },
+    path: []u8,
+};
+
+/// One row of the chip's list (`top`).
+pub const Shown = struct {
+    path: []const u8,
+    pinned: bool,
 };
 
 gpa: std.mem.Allocator,
 entries: std.ArrayList(Entry) = .empty,
 /// Changed since the last `sync`.
 dirty: bool = false,
+/// Pins, unpins and removals since the last `sync`, in order.
+ops: std.ArrayList(Op) = .empty,
 
 pub fn init(gpa: std.mem.Allocator) FocusFolders {
     return .{ .gpa = gpa };
@@ -50,6 +76,45 @@ pub fn init(gpa: std.mem.Allocator) FocusFolders {
 pub fn deinit(r: *FocusFolders) void {
     for (r.entries.items) |e| r.gpa.free(e.path);
     r.entries.deinit(r.gpa);
+    for (r.ops.items) |o| r.gpa.free(o.path);
+    r.ops.deinit(r.gpa);
+}
+
+fn find(r: *FocusFolders, dir: []const u8) ?usize {
+    for (r.entries.items, 0..) |e, i| if (std.mem.eql(u8, e.path, dir)) return i;
+    return null;
+}
+
+pub fn pinnedCount(r: *const FocusFolders) usize {
+    var n: usize = 0;
+    for (r.entries.items) |e| n += @intFromBool(e.pinned);
+    return n;
+}
+
+/// Pin or unpin `dir` (a folder on the list). False: not there, or
+/// `pins_max` reached.
+pub fn setPinned(r: *FocusFolders, dir: []const u8, on: bool) bool {
+    const i = r.find(dir) orelse return false;
+    const e = &r.entries.items[i];
+    if (e.pinned == on) return true;
+    if (on and r.pinnedCount() >= pins_max) return false;
+    e.pinned = on;
+    r.addOp(if (on) .pin else .unpin, dir);
+    return true;
+}
+
+/// Forget `dir` and all its uses (pinned or not); the next use adds it
+/// again.
+pub fn remove(r: *FocusFolders, dir: []const u8) void {
+    const i = r.find(dir) orelse return;
+    r.addOp(.remove, dir);
+    r.gpa.free(r.entries.orderedRemove(i).path);
+}
+
+fn addOp(r: *FocusFolders, kind: @FieldType(Op, "kind"), dir: []const u8) void {
+    r.dirty = true;
+    const copy = r.gpa.dupe(u8, dir) catch return;
+    r.ops.append(r.gpa, .{ .kind = kind, .path = copy }) catch r.gpa.free(copy);
 }
 
 fn now() i64 {
@@ -84,20 +149,25 @@ pub fn underHome(dir: []const u8, home: []const u8) bool {
 }
 
 /// Forget what was last used more than `keep_s` before the newest use,
-/// then the least recently used beyond `keep_max`.
+/// then the least recently used beyond `keep_max`; pinned folders stay.
 fn prune(r: *FocusFolders) void {
     var newest: i64 = 0;
     for (r.entries.items) |e| newest = @max(newest, e.last);
     var i: usize = 0;
     while (i < r.entries.items.len) {
-        if (r.entries.items[i].last < newest - keep_s) {
+        const e = r.entries.items[i];
+        if (!e.pinned and e.last < newest - keep_s) {
             r.gpa.free(r.entries.swapRemove(i).path);
         } else i += 1;
     }
     if (r.entries.items.len > keep_max) {
-        std.mem.sort(Entry, r.entries.items, {}, better);
-        for (r.entries.items[keep_max..]) |e| r.gpa.free(e.path);
-        r.entries.shrinkRetainingCapacity(keep_max);
+        // Pinned first, so the cut takes only unpinned ones.
+        std.mem.sort(Entry, r.entries.items, {}, keepFirst);
+        const keep = @max(keep_max, r.pinnedCount());
+        if (r.entries.items.len > keep) {
+            for (r.entries.items[keep..]) |e| r.gpa.free(e.path);
+            r.entries.shrinkRetainingCapacity(keep);
+        }
     }
 }
 
@@ -107,25 +177,46 @@ fn better(_: void, a: Entry, b: Entry) bool {
     return a.uses > b.uses;
 }
 
-/// The chip's list, the history window: the `out.len` folders used last
-/// that still exist and are under `home` and match `filter` (any case,
-/// in the path after `home`; empty: all), oldest first (the newest
-/// last). A filter searches the whole history, so a folder worked in
-/// weeks ago is found too. The slices point into the entries (valid
-/// until the next change).
-pub fn top(r: *FocusFolders, home: []const u8, filter: []const u8, out: [][]const u8) []const []const u8 {
+fn keepFirst(_: void, a: Entry, b: Entry) bool {
+    if (a.pinned != b.pinned) return a.pinned;
+    return better({}, a, b);
+}
+
+fn byPath(_: void, a: Shown, b: Shown) bool {
+    return std.mem.lessThan(u8, a.path, b.path);
+}
+
+/// Room `top` needs: every pin and the history window.
+pub const list_max = pins_max + shown_max;
+
+/// The chip's list: the pinned folders (by path), then the history
+/// window: the `shown_max` unpinned folders used last, oldest first (the
+/// newest last). Only folders that still exist, are under `home` and
+/// match `filter` (any case, in the path after `home`; empty: all). A
+/// filter searches the whole history, so a folder worked in weeks ago is
+/// found too. The paths point into the entries (valid until the next
+/// change).
+pub fn top(r: *FocusFolders, home: []const u8, filter: []const u8, out: *[list_max]Shown) []const Shown {
     std.mem.sort(Entry, r.entries.items, {}, better);
     const h = std.mem.trimEnd(u8, home, "/");
+    var pins: usize = 0;
     var n: usize = 0;
-    for (r.entries.items) |e| {
-        if (n == out.len) break;
-        if (!underHome(e.path, home)) continue;
-        if (filter.len > 0 and std.ascii.indexOfIgnoreCase(e.path[h.len..], filter) == null) continue;
-        if (!isDir(r.gpa, e.path)) continue;
-        out[n] = e.path;
-        n += 1;
+    for ([_]bool{ true, false }) |pinned| {
+        const max: usize = if (pinned) pins_max else shown_max;
+        const start = n;
+        for (r.entries.items) |e| {
+            if (e.pinned != pinned) continue;
+            if (n - start == max) break;
+            if (!underHome(e.path, home)) continue;
+            if (filter.len > 0 and std.ascii.indexOfIgnoreCase(e.path[h.len..], filter) == null) continue;
+            if (!isDir(r.gpa, e.path)) continue;
+            out[n] = .{ .path = e.path, .pinned = pinned };
+            n += 1;
+        }
+        if (pinned) pins = n;
     }
-    std.mem.reverse([]const u8, out[0..n]);
+    std.mem.sort(Shown, out[0..pins], {}, byPath);
+    std.mem.reverse(Shown, out[pins..n]);
     return out[0..n];
 }
 
@@ -285,8 +376,18 @@ pub fn sync(r: *FocusFolders) void {
     if (write) r.save(p);
 }
 
-/// Add this process's new uses to `disk` (theirs stay).
+/// Add this process's pins, unpins and removals, then its new uses, to
+/// `disk` (theirs stay).
 fn mergeInto(r: *FocusFolders, disk: *FocusFolders) void {
+    for (r.ops.items) |o| {
+        defer r.gpa.free(o.path);
+        const i = disk.find(o.path) orelse continue;
+        switch (o.kind) {
+            .pin, .unpin => disk.entries.items[i].pinned = o.kind == .pin,
+            .remove => disk.gpa.free(disk.entries.orderedRemove(i).path),
+        }
+    }
+    r.ops.clearRetainingCapacity();
     for (r.entries.items) |*e| {
         if (e.added == 0) continue;
         const found = for (disk.entries.items) |*d| {
@@ -297,7 +398,7 @@ fn mergeInto(r: *FocusFolders, disk: *FocusFolders) void {
             d.last = @max(d.last, e.last);
         } else {
             const copy = r.gpa.dupe(u8, e.path) catch continue;
-            disk.entries.append(r.gpa, .{ .path = copy, .uses = e.added, .last = e.last }) catch r.gpa.free(copy);
+            disk.entries.append(r.gpa, .{ .path = copy, .uses = e.added, .last = e.last, .pinned = e.pinned }) catch r.gpa.free(copy);
         }
         e.added = 0;
     }
@@ -316,15 +417,24 @@ pub fn parseLine(r: *FocusFolders, line: []const u8) void {
     var it = std.mem.splitScalar(u8, line, '\t');
     const uses = std.fmt.parseInt(u32, it.next() orelse return, 10) catch return;
     const last = std.fmt.parseInt(i64, it.next() orelse return, 10) catch return;
-    const dir = it.rest();
-    if (dir.len == 0 or dir[0] != '/') return;
+    var dir = it.rest();
+    const pinned = std.mem.startsWith(u8, dir, pin_word ++ "\t");
+    if (pinned) dir = dir[pin_word.len + 1 ..];
+    if (dir.len == 0 or dir[0] != '/' or r.find(dir) != null) return;
     const copy = r.gpa.dupe(u8, dir) catch return;
-    r.entries.append(r.gpa, .{ .path = copy, .uses = uses, .last = last }) catch r.gpa.free(copy);
+    r.entries.append(r.gpa, .{ .path = copy, .uses = uses, .last = last, .pinned = pinned }) catch r.gpa.free(copy);
 }
 
+/// Before the path of a pinned folder (a path starts with `/`).
+const pin_word = "pin";
+
 pub fn format(r: *const FocusFolders, w: *std.Io.Writer) !void {
-    try w.writeAll("# gtty focus folders (the focus chip): uses, last use (unix s), folder\n");
-    for (r.entries.items) |e| try w.print("{d}\t{d}\t{s}\n", .{ e.uses, e.last, e.path });
+    try w.writeAll("# gtty focus folders (the focus chip): uses, last use (unix s), [pin,] folder\n");
+    for (r.entries.items) |e| {
+        try w.print("{d}\t{d}\t", .{ e.uses, e.last });
+        if (e.pinned) try w.writeAll(pin_word ++ "\t");
+        try w.print("{s}\n", .{e.path});
+    }
 }
 
 /// Temp file + rename, private.
@@ -434,11 +544,12 @@ test "the list: the folders used last, oldest first" {
     r.useAt("/usr/lib", 120); // used most, but not lately
     r.useAt("/usr/share", 200);
     r.useAt("/usr/no-such-folder-gtty-test", 400);
-    var buf: [2][]const u8 = undefined;
+    var buf: [list_max]Shown = undefined;
     const list = r.top("/usr", "", &buf);
-    try t.expectEqual(@as(usize, 2), list.len);
-    try t.expectEqualStrings("/usr/share", list[0]);
-    try t.expectEqualStrings("/usr/bin", list[1]);
+    try t.expectEqual(@as(usize, 3), list.len);
+    try t.expectEqualStrings("/usr/lib", list[0].path);
+    try t.expectEqualStrings("/usr/share", list[1].path);
+    try t.expectEqualStrings("/usr/bin", list[2].path);
 }
 
 test "a filter searches the whole history" {
@@ -448,10 +559,10 @@ test "a filter searches the whole history" {
     r.useAt("/usr/lib", 100); // older than the two shown
     r.useAt("/usr/share", 200);
     r.useAt("/usr/bin", 300);
-    var buf: [2][]const u8 = undefined;
+    var buf: [list_max]Shown = undefined;
     const list = r.top("/usr", "LI", &buf);
     try t.expectEqual(@as(usize, 1), list.len);
-    try t.expectEqualStrings("/usr/lib", list[0]);
+    try t.expectEqualStrings("/usr/lib", list[0].path);
     // The home part isn't searched: "usr" matches nothing.
     try t.expectEqual(@as(usize, 0), r.top("/usr", "usr", &buf).len);
 }
@@ -489,4 +600,70 @@ test "merge adds only this process's new uses" {
     // Merged once: a second merge adds nothing.
     mine.mergeInto(&disk);
     try t.expectEqual(@as(u32, 6), disk.entries.items[0].uses);
+}
+
+test "pinned: on top, beyond the history window, kept for age" {
+    const t = std.testing;
+    var r = FocusFolders.init(t.allocator);
+    defer r.deinit();
+    const day = 24 * 3600;
+    r.useAt("/usr/lib", 100);
+    try t.expect(r.setPinned("/usr/lib", true));
+    try t.expect(!r.setPinned("/usr/nothing-here", true));
+    // Eight newer folders (only some exist): /usr/lib stays on the list.
+    for ([_][]const u8{ "/usr/bin", "/usr/share", "/usr/sbin", "/usr/libexec", "/usr/include", "/usr/local", "/usr/standalone", "/usr/x-gtty-none" }, 0..) |d, i| r.useAt(d, 1000 + @as(i64, @intCast(i)));
+    var buf: [list_max]Shown = undefined;
+    const list = r.top("/usr", "", &buf);
+    try t.expectEqualStrings("/usr/lib", list[0].path);
+    try t.expect(list[0].pinned);
+    for (list[1..]) |s| try t.expect(!s.pinned);
+    // 100 days on: only the pinned one and the new use are left.
+    r.useAt("/usr/bin", 100 * day);
+    try t.expectEqual(@as(usize, 2), r.entries.items.len);
+    try t.expect(r.setPinned("/usr/lib", false));
+    r.useAt("/usr/bin", 100 * day + 1);
+    try t.expectEqual(@as(usize, 1), r.entries.items.len);
+}
+
+test "removed: forgotten; the next use brings it back" {
+    const t = std.testing;
+    var r = FocusFolders.init(t.allocator);
+    defer r.deinit();
+    r.useAt("/h/a", 100);
+    r.useAt("/h/a", 110);
+    r.remove("/h/a");
+    try t.expectEqual(@as(usize, 0), r.entries.items.len);
+    r.useAt("/h/a", 120);
+    try t.expectEqual(@as(u32, 1), r.entries.items[0].uses);
+}
+
+test "the file: pins and removals reach other gttys' lines" {
+    const t = std.testing;
+    var mine = FocusFolders.init(t.allocator);
+    defer mine.deinit();
+    var disk = FocusFolders.init(t.allocator);
+    defer disk.deinit();
+    disk.parseLine("5\t100\t/h/a");
+    disk.parseLine("2\t90\t/h/b");
+    disk.parseLine("1\t80\t/h/c");
+    mine.parseLine("5\t100\t/h/a");
+    mine.parseLine("2\t90\t/h/b");
+    try t.expect(mine.setPinned("/h/a", true));
+    mine.useAt("/h/b", 95); // used, then removed: gone
+    mine.remove("/h/b");
+    mine.mergeInto(&disk);
+    try t.expectEqual(@as(usize, 0), mine.ops.items.len);
+    var aw: std.Io.Writer.Allocating = .init(t.allocator);
+    defer aw.deinit();
+    try disk.format(&aw.writer);
+    try t.expect(std.mem.indexOf(u8, aw.written(), "5\t100\tpin\t/h/a\n") != null);
+    try t.expect(std.mem.indexOf(u8, aw.written(), "/h/b") == null);
+    try t.expect(std.mem.indexOf(u8, aw.written(), "1\t80\t/h/c\n") != null);
+    // Read back: the pin holds.
+    var again = FocusFolders.init(t.allocator);
+    defer again.deinit();
+    var lines = std.mem.splitScalar(u8, aw.written(), '\n');
+    while (lines.next()) |l| again.parseLine(l);
+    try t.expect(again.entries.items[again.find("/h/a").?].pinned);
+    try t.expect(!again.entries.items[again.find("/h/c").?].pinned);
 }
