@@ -492,12 +492,18 @@ put the list back.
 
 ↑ and ↓ always move in the list, Enter picks the selected line, Esc closes.
 
+A line longer than 44 characters is shown cut in the middle, with `…`.
+When the mouse is on it, or ↑ / ↓ move onto it, gtty shows the whole text
+over the line, as wide as gtty's window and wrapped onto more lines when
+needed. A click there is a click on the line; the line's `postButton` moves
+to its right end. Send the full text: gtty does the cutting.
+
 ## Icons
 
 An icon string is one of:
 
-- **A name from gtty's standard icons**: `copy`, `save`, `list` and `dot`
-  so far. More will come.
+- **A name from gtty's standard icons**: `copy`, `save`, `list`, `dot`
+  and `pin` so far. More will come.
 - **A file name** in the root of your extension's folder, such as
   `kube.png` *(not built yet)*.
 

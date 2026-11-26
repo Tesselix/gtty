@@ -241,7 +241,17 @@ the shell. Users expect it to behave like a shell in a terminal.
     (bottom); a pick = `Action.cd` as the folder peek. The filter
     searches the whole history (`top`'s `filter`, the path after home;
     the 7 newest matches; 2026-11-25: the list once showed only the
-    last 3 days, `window_s`, so older work folders were out of reach). **Use** = a command started in the folder (`Screen.cmd_seq` →
+    last 3 days, `window_s`, so older work folders were out of reach).
+    **Pin / remove** (2026-11-26, the user's): each row's ⋮
+    (`postButton` dots, `Actions.row`) → Pin / Unpin
+    (`FocusFolders.setPinned`, ≤ `pins_max` 10, else beep + notice) and
+    Remove from List (`remove`: the entry and its uses forgotten; the
+    next use adds it again). Pinned: on top (`top` → `Shown`, by path,
+    the `pin` icon, `Prompt.pin`), not counted in the 7 (`list_max`),
+    kept by `prune` (age, `keep_max`); gone from the disk: dropped as
+    any. File line `uses\tlast\tpin\tpath` (an older gtty skips it);
+    pins / unpins / removals reach the file through `ops`, applied by
+    `mergeInto` before the uses, `sync` right after each. **Use** = a command started in the folder (`Screen.cmd_seq` →
     `JobWindow.started_seq` / `started_dir`, the folder reported at that
     prompt → `command_started`, `src/chips/focus.zig`)
     that isn't a look-up or bookkeeping (`FocusFolders.countsAsUse`:
@@ -303,7 +313,16 @@ the shell. Users expect it to behave like a shell in a terminal.
     countdown on the thicker bottom border; any click elsewhere closes it
     (and still acts). Esc closes any peek, folded or expanded, and stops
     there (never reaches the job; the keyboard is the focused window's
-    again; `onKey`, 2026-10-20, `test/peek-esc.gt`).
+    again; `onKey`, 2026-10-20, `test/peek-esc.gt`). **Long rows**
+    (2026-11-26, the user's; any epeek): a row over `Peek.row_max` (44)
+    characters is drawn cut in the middle (`shortText`: 14 + `…` + the
+    end); the mouse on it, or ↑ / ↓ onto it, shows the **tip**
+    (`tip_row`, `tip_r`, `drawTip`): the whole text over the row, as
+    wide as gtty's window, wrapped (`wrapStarts`: after a `/` in the
+    line's second half), moved up when it would leave the window; the
+    tip stays while the mouse is on it, a click on it = the row's
+    (`Part.tip`); the row's ⋮ moves to the tip's right end
+    (`tipPostRect`). A row's button has 2 characters of room before it.
   - **Epeek (the open list):** `git for-each-ref` list (current marked green),
     filter box with the keyboard (prompt label says so), ↑/↓/PgUp/PgDn/
     Enter/Esc, wheel; picking runs `git switch` in the background

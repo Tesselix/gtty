@@ -120,7 +120,7 @@ win.ui.set(epeek={
 | epeek | `frame`, `lines`, `selected`, `empty`, `footer`, `state`, `message` |
 
 - **Button:** with no `onclick` and no `dots`, it's only an icon. Icons:
-  `copy`, `save`, `list`, `dot`. An unknown name draws nothing.
+  `copy`, `save`, `list`, `dot`, `pin`. An unknown name draws nothing.
 - **Dots** (`postButton` only): `"vertical"` shows `items` in a popup, and a
   pick is a click with that item's `id`, `text`, `data` and the button's
   `onclick`. `"horizontal"` is a plain click.

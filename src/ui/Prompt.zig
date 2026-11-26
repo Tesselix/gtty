@@ -358,7 +358,7 @@ fn chevron(gfx: *Gfx, r: Rect, up: bool, col: color.Rgb, ui: f32) void {
 
 /// A push pin in the box `r`: upright while pinned, lying over 45° when
 /// not. Cap, flange across, needle.
-fn pin(gfx: *Gfx, r: Rect, pinned: bool, col: color.Rgb, ui: f32) void {
+pub fn pin(gfx: *Gfx, r: Rect, pinned: bool, col: color.Rgb, ui: f32) void {
     const th = @max(1.5 * ui, 1.5);
     const cx = r.x + r.w / 2;
     const cy = r.y + r.h / 2;

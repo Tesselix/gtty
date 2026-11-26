@@ -237,7 +237,7 @@ widget { id, type, label, value?, options?, filter? }
 
 **Icon** = a standard icon name, or a plain file name in the root of the
 extension's folder. Refuse `/` and `..`. PNG only `[proposed]`. Standard
-names so far: `copy`, `save`, `list`, `dot`. Icon files aren't built. Don't
+names so far: `copy`, `save`, `list`, `dot`, `pin`. Icon files aren't built. Don't
 invent names.
 
 ## Clicks
