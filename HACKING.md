@@ -45,11 +45,16 @@ CI (`.github/workflows/ci.yml`) builds gtty on Linux and macOS for every
 pull request to `main` and every push to it; its `build-and-test` check
 must pass before a PR can merge. `main` is the only long-lived branch
 and changes only through squash-merged pull requests.
-A release is drafted in the GitHub UI (Releases → Draft a new release),
-which creates the tag `vMAJOR.MINOR.PATCH` on main; publishing it runs
-`.github/workflows/release.yml`: build, sign, notarize, upload the
-packages, `SHA256SUMS` and SLSA provenance. Odd minor (v1.9.x) = a
-pre-release; even minor (v1.10.x) = stable. The tag is the version:
+A release starts with a tag `vMAJOR.MINOR.PATCH` pushed on a commit of
+main (`git tag v1.4.0 origin/main && git push origin v1.4.0`; `git tag
+-a -m …` puts its message above the generated notes), which runs
+`.github/workflows/release.yml`: build, sign, notarize, `SHA256SUMS` and
+SLSA provenance, kept as workflow artifacts; only when all of them
+succeeded does its last job create the GitHub release with the files and
+publish it, so the update line and `releases/latest` never see a version
+without its packages (a flaky runner: "Re-run failed jobs"). Odd minor
+(v1.9.x) = a pre-release; even minor (v1.10.x) = stable (latest when it
+is the highest stable version). The tag is the version:
 release.yml writes it into build.zig.zon's `.version` before building
 (never committed; in git it stays `0.0.0-dev`, a development build that
 doesn't check for updates; `zig build -Dversion=…` overrides it).

@@ -1633,16 +1633,25 @@ decisions; items marked *open* are undecided.
   notarized), so every release target (macOS arm64 dmg, Linux x86_64
   deb / rpm / tar.gz) must build on each PR; Zig from `minimum_zig_version`; the job **`build-and-test`** (`needs` + `if:
   always()`) is the ruleset's required check: keep its id and name);
-  `release.yml` (`release: published`: `TAG` from the release, checked
-  against `^v[0-9]+\.[0-9]+\.[0-9]+$`; odd MINOR → `gh release edit
-  --prerelease` + environment `edge`, even → `--prerelease=false
-  --latest` + environment `release` (the `channel` job's output); macos-15,
+  `release.yml` (2026-11-26: `push: tags: v*`, `TAG` = the tag, checked
+  against `^v[0-9]+\.[0-9]+\.[0-9]+$` and to be on main (compare API);
+  odd MINOR → environment `edge`, even → `release` (the `channel` job's
+  output); no release exists until the job **`publish`** (after build +
+  provenance): it downloads the workflow artifacts `packages` and the
+  provenance, checks SHA256SUMS, creates the release as a draft (or reuses
+  one a failed attempt left; notes: an annotated tag's message, signature
+  cut, + `--generate-notes`), uploads with `--clobber`, then one `gh
+  release edit --draft=false`: `--prerelease`, or stable with `--latest`
+  only when it is the highest stable version (else `--latest=false`), so
+  `releases/latest` (the update line) never shows a version without its
+  files; homebrew, repo and edge-badge need `publish`; macos-15,
   each environment holds the signing secrets: `sign-macos.sh` with
   `GTTY_VERSION=${TAG#v}` (CI path: temporary keychain, API-key
   notarization), the tag's version into build.zig.zon → build-bin.sh (ReleaseSafe) + package.sh,
-  dmg checks (codesign, stapler, spctl), `SHA256SUMS`, `gh release
-  upload --clobber`; then slsa-github-generator's generic generator
-  (referenced by tag, as it requires) uploads `gtty.intoto.jsonl`; job
+  dmg checks (codesign, stapler, spctl), `SHA256SUMS`, upload-artifact
+  `packages` (7 days); then slsa-github-generator's generic generator
+  (referenced by tag, as it requires; `upload-assets: false`, `publish`
+  uploads `gtty.intoto.jsonl`); job
   `edge-badge` writes the last published pre-release's tag as a
   shields.io endpoint file `edge.json` (only when published after the
   latest stable release, by date: edge keeps its own lower MINOR; else
@@ -1706,9 +1715,12 @@ decisions; items marked *open* are undecided.
   branch, changed only by squash-merged PRs (ruleset: linear history,
   branch up to date, required check `build-and-test`, no force push /
   deletion, no bypass). Tags `v*` can't be moved or deleted. A release
-  is drafted in the GitHub UI (Releases → Draft a new release), which
-  creates the tag `vMAJOR.MINOR.PATCH` on main; publishing it runs
-  release.yml. **Odd MINOR = pre-release, even MINOR = stable** (latest).
+  = the user pushes a tag `vMAJOR.MINOR.PATCH` on a commit of main from
+  their machine (`git tag v1.4.0 origin/main && git push origin v1.4.0`;
+  2026-11-26, the user's rule: the release appears and becomes latest
+  only once every build job succeeded, never from the Releases page);
+  a failed job (free runners fail now and then): "Re-run failed jobs".
+  **Odd MINOR = pre-release, even MINOR = stable** (latest).
   The version lives **only in the tag**: no version bumps in the repo.
   The Finder layout of the dmg needs Automation access on the runner;
   if it fails the dmg is unarranged (warning only).
