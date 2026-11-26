@@ -1,12 +1,20 @@
 # SPDX-FileCopyrightText: 2026 Sagi Forbes Nagar
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Release: a release published in the GitHub UI (Releases → Draft a new
-# release, which creates the tag vMAJOR.MINOR.PATCH on main) gets its
-# files here: the self-contained binaries, the signed + notarized macOS
-# dmg (scripts/sign-macos.sh), the .deb / .rpm / .tar.gz, the SDKs for
+# Release: pushing a tag vMAJOR.MINOR.PATCH on a commit of main
+#   git tag v1.4.0 origin/main && git push origin v1.4.0
+# builds the self-contained binaries, the signed + notarized macOS dmg
+# (scripts/sign-macos.sh), the .deb / .rpm / .tar.gz, the SDKs for
 # extensions (gtty-sdk-*.tar.gz), SHA256SUMS and SLSA build provenance
-# (*.intoto.jsonl). A stable release also updates the Homebrew cask in
+# (*.intoto.jsonl), all kept as workflow artifacts. Only when all of that
+# succeeded does the job publish create the GitHub release (a draft first,
+# the files uploaded, then published), so the release, "latest" and
+# releases/latest (gtty's update line, the README's download links) never
+# show a version whose files aren't there. A job that failed (a flaky
+# runner): "Re-run failed jobs"; until publish succeeds there is no
+# release. Release notes: GitHub's, generated from the merged PRs, after
+# the tag's message when it is an annotated tag (git tag -a -m …).
+# A stable release then also updates the Homebrew cask in
 # tesselix/homebrew-tap (job homebrew) and the apt / rpm repositories at
 # https://tesselix.github.io/gtty/ (jobs repo, pages); its rpms are signed
 # with the repositories' key.
@@ -14,8 +22,10 @@
 # The tag is the version (written into build.zig.zon before the build, not
 # committed); nothing in the repo holds one. Its MINOR picks the kind of release:
 #   odd  (v1.3.0, v0.5.2)  a pre-release, built in the environment "edge";
-#   even (v1.4.0, v0.6.1)  a stable release, marked latest, built in the
-#                          environment "release".
+#   even (v1.4.0, v0.6.1)  a stable release, built in the environment
+#                          "release"; marked latest when it is the
+#                          highest stable version (a patch to an older
+#                          stable line isn't).
 #
 # The signing secrets (in both environments: MACOS_CERT_P12,
 # MACOS_CERT_PASSWORD, KEYCHAIN_PASSWORD, APPLE_API_KEY_P8,
@@ -24,26 +34,26 @@
 name: Release
 
 on:
-  release:
-    types: [published]
+  push:
+    tags: ["v*"]
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.event.release.tag_name }}
+  group: release-${{ github.ref_name }}
   cancel-in-progress: false
 
 env:
-  TAG: ${{ github.event.release.tag_name }}
+  TAG: ${{ github.ref_name }}
 
 jobs:
-  # The tag's form, and pre-release or stable from its MINOR.
+  # The tag's form, on main, and pre-release or stable from its MINOR.
   channel:
     name: Check the tag, set the release kind
     runs-on: ubuntu-24.04
     permissions:
-      contents: write # gh release edit
+      contents: read
     outputs:
       tag: ${{ steps.check.outputs.tag }}
       environment: ${{ steps.kind.outputs.environment }}
@@ -56,30 +66,37 @@ jobs:
             exit 1
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-      - name: Pre-release or stable
-        id: kind
+      # Releases come from main only: the tag's commit must be on it
+      # (compare main...tag: "behind" or "identical").
+      - name: The tag is on main
         env:
           GH_TOKEN: ${{ github.token }}
+        run: |
+          status=$(gh api "repos/$GITHUB_REPOSITORY/compare/main...$TAG" --jq .status)
+          case $status in
+            identical|behind) echo "$TAG is on main" ;;
+            *) echo "::error::$TAG ($GITHUB_SHA) isn't on main (compare: $status)"; exit 1 ;;
+          esac
+      - name: Pre-release or stable
+        id: kind
         run: |
           minor=${TAG#v*.}
           minor=${minor%%.*}
           if (( 10#$minor % 2 == 1 )); then
             echo "$TAG: odd minor, a pre-release"
-            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease
             echo "environment=edge" >> "$GITHUB_OUTPUT"
           else
-            echo "$TAG: even minor, a stable release (latest)"
-            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease=false --latest
+            echo "$TAG: even minor, a stable release"
             echo "environment=release" >> "$GITHUB_OUTPUT"
           fi
 
   build:
-    name: Build, sign, notarize, upload
+    name: Build, sign, notarize
     needs: channel
     runs-on: macos-15
     environment: ${{ needs.channel.outputs.environment }}
     permissions:
-      contents: write # gh release upload
+      contents: read
     timeout-minutes: 60
     outputs:
       hashes: ${{ steps.sums.outputs.hashes }}
@@ -203,23 +220,34 @@ jobs:
           cat SHA256SUMS
           echo "hashes=$(base64 < SHA256SUMS | tr -d '\n')" >> "$GITHUB_OUTPUT"
 
-      - name: Upload to the release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
-            dist/*.dmg dist/*.deb dist/*.rpm dist/*.tar.gz dist/SHA256SUMS
+      # Kept for the job publish (no release exists yet). Already
+      # compressed: stored as they are.
+      - name: Keep the packages
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: packages
+          path: |
+            dist/*.dmg
+            dist/*.deb
+            dist/*.rpm
+            dist/*.tar.gz
+            dist/SHA256SUMS
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
 
-  # SLSA build provenance for the Signed-Releases check, uploaded to the
-  # release as gtty.intoto.jsonl. The generator must be referenced by tag,
-  # not SHA (its documented requirement; Scorecard accepts it).
+  # SLSA build provenance for the Signed-Releases check, kept as a workflow
+  # artifact; the job publish puts it on the release as gtty.intoto.jsonl
+  # (the generator's own upload can't find a release that doesn't exist
+  # yet). The generator must be referenced by tag, not SHA (its documented
+  # requirement; Scorecard accepts it).
   provenance:
     name: SLSA provenance
     needs: [channel, build]
     permissions:
       actions: read # read the workflow run
       id-token: write # sign the provenance
-      contents: write # upload it to the release
+      contents: write # the generator's reusable workflow asks for it
     # By tag, not SHA: the generator verifies its own ref and fails when
     # pinned to a commit (see its README). CodeQL's unpinned-tag alert
     # for this line is dismissed as "won't fix"; Scorecard exempts it.
@@ -227,8 +255,86 @@ jobs:
     with:
       base64-subjects: ${{ needs.build.outputs.hashes }}
       provenance-name: gtty.intoto.jsonl
-      upload-assets: true
-      upload-tag-name: ${{ needs.channel.outputs.tag }}
+      upload-assets: false
+
+  # The release, only once everything above succeeded: created as a draft
+  # (or the draft / release a failed earlier attempt left), the files
+  # uploaded, then published in one edit: an odd minor as a pre-release,
+  # an even one as stable, marked latest only when it is the highest stable
+  # version. Until this edit nothing outside sees the version:
+  # releases/latest (gtty's update line, Update.zig) never returns drafts
+  # or pre-releases, and the jobs after this one (homebrew, repo, edge-badge)
+  # wait for it. Re-runnable: the files are uploaded with --clobber.
+  publish:
+    name: Publish the release
+    needs: [channel, build, provenance]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # create, upload, publish the release
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: packages
+          path: dist
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ needs.provenance.outputs.provenance-name }}
+          path: dist
+
+      - name: The files against SHA256SUMS
+        run: |
+          cd dist
+          sha256sum -c --quiet SHA256SUMS
+          ls -l
+
+      # An annotated tag's message (its signature cut off) goes before
+      # GitHub's generated notes; a lightweight tag: the generated notes.
+      - name: Draft the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          repo=$GITHUB_REPOSITORY
+          if gh release view "$TAG" --repo "$repo" --json isDraft --jq .isDraft >/dev/null 2>&1; then
+            echo "$TAG: the release is there already (an earlier attempt)"
+            exit 0
+          fi
+          notes=
+          read -r type sha < <(gh api "repos/$repo/git/ref/tags/$TAG" --jq '"\(.object.type) \(.object.sha)"')
+          if [ "$type" = tag ]; then
+            notes=$(gh api "repos/$repo/git/tags/$sha" --jq .message | sed '/^-----BEGIN /,$d')
+          fi
+          gh release create "$TAG" --repo "$repo" --verify-tag --draft \
+            --title "$TAG" --notes "$notes" --generate-notes
+
+      - name: Upload the files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+            dist/*.dmg dist/*.deb dist/*.rpm dist/*.tar.gz dist/SHA256SUMS dist/*.intoto.jsonl
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHANNEL: ${{ needs.channel.outputs.environment }}
+        run: |
+          repo=$GITHUB_REPOSITORY
+          if [ "$CHANNEL" = edge ]; then
+            gh release edit "$TAG" --repo "$repo" --draft=false --prerelease
+            echo "$TAG published as a pre-release"
+            exit 0
+          fi
+          newest=$( { gh api --paginate "repos/$repo/releases?per_page=100" \
+              --jq '.[] | select((.draft or .prerelease) | not) | .tag_name'; echo "$TAG"; } |
+            grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
+          if [ "$newest" = "$TAG" ]; then
+            gh release edit "$TAG" --repo "$repo" --draft=false --prerelease=false --latest
+            echo "$TAG published, the latest release"
+          else
+            gh release edit "$TAG" --repo "$repo" --draft=false --prerelease=false --latest=false
+            echo "$TAG published; $newest stays the latest release"
+          fi
 
   # The Homebrew cask (brew install --cask tesselix/tap/gtty): stable
   # releases only, and only the newest one (a patch to an older stable
@@ -241,7 +347,7 @@ jobs:
   # secret TAP_APP_KEY, both in the environment "release" only.
   homebrew:
     name: Homebrew cask
-    needs: [channel, build]
+    needs: [channel, publish]
     if: needs.channel.outputs.environment == 'release'
     runs-on: ubuntu-24.04
     environment: release
@@ -326,7 +432,7 @@ jobs:
   # itself is the job pages, in the environment github-pages (no secrets).
   repo:
     name: apt / rpm repositories
-    needs: [channel, build]
+    needs: [channel, publish]
     if: needs.channel.outputs.environment == 'release'
     runs-on: ubuntu-24.04
     environment: release
@@ -466,7 +572,7 @@ jobs:
   # transparent, so nothing shows. Through the API: no checkout, no token in a git URL.
   edge-badge:
     name: Edge badge
-    needs: [channel, build]
+    needs: [channel, publish]
     runs-on: ubuntu-24.04
     permissions:
       contents: write # the badges branch
