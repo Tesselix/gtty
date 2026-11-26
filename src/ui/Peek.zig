@@ -14,6 +14,12 @@
 //!     filter in a row of its own, the lines, a dim footer, the message.
 //!     gtty doesn't filter: every change of the box is an `Action.filter`.
 //!   * **Result:** `state` colors the border; `ok` closes it after 1 s.
+//!   * **Long rows:** a row over `row_max` characters is drawn cut in the
+//!     middle (…); the mouse on it, or the keyboard moving onto it, shows
+//!     it whole in the **tip**: a box over the row as wide as gtty's
+//!     window, wrapped onto more lines when needed (after a `/` when one
+//!     is near the line's end). A click on the tip is a click on the row;
+//!     the row's own button stays on top of it.
 //!   * **Dismissal:** the mouse leaving starts a 5 s countdown, shown by
 //!     the thicker bottom border emptying right to left; coming back stops
 //!     it. A click anywhere else or Esc closes it at once.
@@ -33,6 +39,7 @@ const ids = @import("ids.zig");
 const JobWindow = @import("JobWindow.zig");
 const ChipUi = @import("ChipUi.zig");
 const text_mod = @import("text.zig");
+const Prompt = @import("Prompt.zig");
 
 const Peek = @This();
 
@@ -83,6 +90,8 @@ rest_ms: u64 = 0,
 text_buf: [512]u8 = undefined,
 /// The mouse came onto the expand button of a `hoverExpand` peek.
 over_expand: bool = false,
+/// The long row shown whole (the mouse on it, or the keyboard moved to it).
+tip_row: ?usize = null,
 
 // Layout (pixels), from `layout`.
 box: Rect = .{},
@@ -101,10 +110,14 @@ bar_h: f32 = 3,
 icon_s: f32 = 1,
 /// Two cells: where a row's text starts.
 cell2: f32 = 0,
+/// The tip (`tip_row`), its characters a line and its inner margin.
+tip_r: Rect = .{},
+tip_cols: usize = 1,
+tip_pad: f32 = 0,
 
 pub const Rest = union(enum) { head, row: usize };
 
-pub const Part = union(enum) { none, close, expand, left: usize, right: usize, prefix: usize, post: usize, option: usize };
+pub const Part = union(enum) { none, close, expand, left: usize, right: usize, prefix: usize, post: usize, option: usize, tip };
 
 /// A click for the extension; the strings live until the next change.
 pub const Fire = struct {
@@ -141,6 +154,13 @@ const flash_len_ms = 350;
 const max_rows = 10;
 /// Most options offered under the filter.
 const max_options = 5;
+
+/// Rows longer than this (characters) are drawn cut in the middle; the
+/// tip shows them whole. `row_head`: the characters kept before the `…`.
+pub const row_max = 44;
+const row_head = 14;
+/// Most lines in the tip.
+const tip_max_lines = 32;
 
 pub fn open(gpa: std.mem.Allocator, uid: ids.Id, chip: usize, ui: *ChipUi, anchor: Rect, mode: Mode, keys: bool) Peek {
     ui.clearResult();
@@ -215,7 +235,15 @@ pub fn wantsKeys(p: *const Peek) bool {
 }
 
 pub fn contains(p: *const Peek, x: f32, y: f32) bool {
-    return p.box.contains(x, y);
+    return p.box.contains(x, y) or p.inTip(x, y);
+}
+
+fn inTip(p: *const Peek, x: f32, y: f32) bool {
+    return p.tip_row != null and p.tip_r.contains(x, y);
+}
+
+fn longRow(p: *const Peek, k: usize) bool {
+    return k < p.lines().len and textCps(&p.lines()[k].text) > row_max;
 }
 
 /// The window's description changed: follow it.
@@ -233,6 +261,7 @@ pub fn refresh(p: *Peek, now: u64) void {
 /// New lines: back on the extension's choice, and in view.
 fn startList(p: *Peek) void {
     p.lines_seen = p.ui.lines_seq;
+    p.tip_row = null;
     p.sel = if (p.ui.epeek) |e| @min(e.selected, e.lines.len -| 1) else 0;
     p.top = 0;
     p.keepSelVisible();
@@ -303,6 +332,7 @@ fn moveSel(p: *Peek, delta: isize) void {
     const last: isize = @intCast(p.lines().len - 1);
     p.sel = @intCast(std.math.clamp(@as(isize, @intCast(p.sel)) + delta, 0, last));
     p.keepSelVisible();
+    p.tip_row = if (p.longRow(p.sel)) p.sel else null;
 }
 
 /// The options that fit what is typed (not the text itself).
@@ -368,6 +398,11 @@ fn restFire(p: *Peek, r: Rest) ?Action {
 }
 
 fn partAt(p: *const Peek, x: f32, y: f32) Part {
+    if (p.inTip(x, y)) {
+        const k = p.tip_row.?;
+        if (k < p.lines().len and p.lines()[k].postButton != null and p.tipPostRect().contains(x, y)) return .{ .post = k };
+        return .tip;
+    }
     if (p.close_r.contains(x, y)) return .close;
     if (p.expand_r.contains(x, y)) return .expand;
     for (p.left_r, 0..) |r, i| if (r.contains(x, y)) return .{ .left = i };
@@ -387,7 +422,8 @@ fn partAt(p: *const Peek, x: f32, y: f32) Part {
 /// start / stop the countdown.
 pub fn motion(p: *Peek, x: f32, y: f32, now: u64) bool {
     const inside = p.contains(x, y);
-    const was = .{ p.leave_ms != 0, p.hover_row, p.over };
+    const in_tip = p.inTip(x, y);
+    const was = .{ p.leave_ms != 0, p.hover_row, p.over, p.tip_row };
     if (inside) p.leave_ms = 0 else if (p.leave_ms == 0) p.leave_ms = now;
     if (!inside) {
         p.hover_ms = 0;
@@ -395,6 +431,10 @@ pub fn motion(p: *Peek, x: f32, y: f32, now: u64) bool {
     } else if (!p.hold) p.hover_ms = @max(now, 1); // rests from now
     p.over = if (inside) p.partAt(x, y) else .none;
     p.hover_row = p.rowAt(x, y);
+    // A row shows its tip; the tip stays while the mouse is on it.
+    if (p.hover_row) |k| {
+        p.tip_row = if (p.longRow(k)) k else null;
+    } else if (!in_tip) p.tip_row = null;
     const rest: ?Rest = if (p.hover_row) |k| .{ .row = k } else if (p.text_r.contains(x, y)) .head else null;
     if (!std.meta.eql(rest, p.rest)) {
         p.rest = rest;
@@ -405,7 +445,7 @@ pub fn motion(p: *Peek, x: f32, y: f32, now: u64) bool {
             p.over_expand = true;
         };
     }
-    return was[0] != (p.leave_ms != 0) or !std.meta.eql(was[1], p.hover_row) or !std.meta.eql(was[2], p.over);
+    return was[0] != (p.leave_ms != 0) or !std.meta.eql(was[1], p.hover_row) or !std.meta.eql(was[2], p.over) or !std.meta.eql(was[3], p.tip_row);
 }
 
 /// What `motion` asked for: App acts on it as on a click.
@@ -434,7 +474,11 @@ pub fn click(p: *Peek, x: f32, y: f32) Action {
         .left => |i| if (p.leftButton(i)) |b| return p.press(b, p.left_r[i]),
         .right => |i| if (p.rightButton(i)) |b| return p.press(b, p.right_r[i]),
         .prefix => |k| return p.press(&p.lines()[k].prefixButton.?, p.prefixRect(k)),
-        .post => |k| return p.press(&p.lines()[k].postButton.?, p.postRect(k)),
+        .post => |k| return p.press(&p.lines()[k].postButton.?, if (p.tip_row == k and p.tip_r.w > 0) p.tipPostRect() else p.postRect(k)),
+        .tip => if (p.tip_row) |k| if (k < p.lines().len) {
+            p.sel = k;
+            return p.pick();
+        },
         .option => |i| {
             var buf: [max_options][]const u8 = undefined;
             return p.takeOption(p.optionMatches(&buf)[i]);
@@ -521,6 +565,12 @@ fn postRect(p: *const Peek, k: usize) Rect {
     return .{ .x = p.list_r.x + p.list_r.w - s - @round(p.bar_h), .y = y, .w = s, .h = s };
 }
 
+/// A row's button while its tip shows: at the tip's right end, first line.
+fn tipPostRect(p: *const Peek) Rect {
+    const s = p.row_h;
+    return .{ .x = p.tip_r.x + p.tip_r.w - s - p.tip_pad, .y = p.tip_r.y, .w = s, .h = s };
+}
+
 fn textX(p: *const Peek) f32 {
     return p.list_r.x + p.cell2;
 }
@@ -567,7 +617,11 @@ pub fn layout(p: *Peek, gfx: *Gfx, f: *Gfx.Face, sf: *Gfx.Face, ui: f32, bounds:
     const n_opts = p.optionMatches(&obuf).len;
     if (p.mode == .epeek) {
         var longest: f32 = if (filter) |x| text_mod.width(gfx, f, &x.hint) else 0;
-        for (p.lines()) |*l| longest = @max(longest, text_mod.width(gfx, f, &l.text) + (if (l.postButton != null) p.row_h else 0));
+        // A row's button: its square, two characters of room before it.
+        for (p.lines()) |*l| {
+            const shown = shortText(&l.text);
+            longest = @max(longest, text_mod.width(gfx, f, &shown) + (if (l.postButton != null) p.row_h + 2 * f.cell_w else 0));
+        }
         if (p.ui.epeek) |*e| longest = @max(longest, text_mod.width(gfx, f, &e.empty));
         w = @max(w, @max(longest + 2 * f.cell_w + 2 * pad, f.cell_w * 30));
         p.rows = @max(p.visibleRows(), 1);
@@ -638,6 +692,22 @@ pub fn layout(p: *Peek, gfx: *Gfx, f: *Gfx.Face, sf: *Gfx.Face, ui: f32, bounds:
         }
     }
     p.msg_r = if (msg.len > 0) .{ .x = x + pad, .y = cy, .w = w - 2 * pad, .h = @as(f32, @floatFromInt(msg.len)) * sf.cell_h } else .{};
+
+    // The tip: over its row, as wide as gtty's window, as tall as its
+    // lines; moved up when it would leave the window.
+    p.tip_r = .{};
+    if (p.mode == .epeek) if (p.tip_row) |k| if (k < p.lines().len and k >= p.top and k < p.top + p.rows) {
+        p.tip_pad = @round(6 * ui);
+        const tw = bounds.w - 2 * gap;
+        // Clear of the row's button at the right end.
+        const button_w = if (p.lines()[k].postButton != null) p.row_h + p.tip_pad else 0;
+        p.tip_cols = @max(@as(usize, @intFromFloat(@max(@floor((tw - 2 * p.tip_pad - button_w) / f.cell_w), 0))), 8);
+        var starts: [tip_max_lines]usize = undefined;
+        const nl = wrapStarts(&p.lines()[k].text, p.tip_cols, &starts);
+        const th = @as(f32, @floatFromInt(nl)) * p.row_h;
+        const ry = p.list_r.y + @as(f32, @floatFromInt(k - p.top)) * p.row_h;
+        p.tip_r = .{ .x = bounds.x + gap, .y = std.math.clamp(ry, bounds.y, @max(bounds.y + bounds.h - th, bounds.y)), .w = tw, .h = th };
+    };
 }
 
 pub fn draw(p: *const Peek, gfx: *Gfx, theme: *const Theme, f: *Gfx.Face, sf: *Gfx.Face, ui: f32, now: u64) void {
@@ -688,7 +758,8 @@ pub fn draw(p: *const Peek, gfx: *Gfx, theme: *const Theme, f: *Gfx.Face, sf: *G
                     gfx.disc(lr.x + f.cell_w * 0.9, ry + p.row_h / 2, d / 2, theme.ok);
                 } else drawButton(gfx, f, x, iconIn(p.prefixRect(k), p.icon_s), theme, ui, std.meta.eql(p.over, Part{ .prefix = k }));
             }
-            _ = text_mod.draw(gfx, f, lr.x + f.cell_w * 2, ty, &l.text, theme.prompt_fg);
+            const shown = shortText(&l.text);
+            _ = text_mod.draw(gfx, f, lr.x + f.cell_w * 2, ty, &shown, theme.prompt_fg);
             if (l.postButton) |*x| drawButton(gfx, f, x, iconIn(p.postRect(k), p.icon_s), theme, ui, std.meta.eql(p.over, Part{ .post = k }));
             if (p.flash_ms != 0 and p.flash_row == k) {
                 const ft = now -| p.flash_ms;
@@ -767,6 +838,117 @@ pub fn draw(p: *const Peek, gfx: *Gfx, theme: *const Theme, f: *Gfx.Face, sf: *G
         gfx.fill(bar, theme.title_bg.mix(edge, 0.3));
         gfx.fill(.{ .x = bar.x, .y = bar.y, .w = @round(bar.w * left), .h = bar.h }, theme.focus);
     }
+    p.drawTip(gfx, f, theme, ui);
+}
+
+/// The long row whole, wrapped, over its row; its button on top.
+fn drawTip(p: *const Peek, gfx: *Gfx, f: *Gfx.Face, theme: *const Theme, ui: f32) void {
+    const k = p.tip_row orelse return;
+    const r = p.tip_r;
+    if (r.w <= 0 or k >= p.lines().len) return;
+    const l = &p.lines()[k];
+    gfx.fill(r, theme.selection);
+    gfx.outline(r, theme.focus, @max(@round(ui), 1));
+    var starts: [tip_max_lines]usize = undefined;
+    const nl = wrapStarts(&l.text, p.tip_cols, &starts);
+    const n = textCps(&l.text);
+    gfx.clip(r);
+    for (starts[0..nl], 0..) |from, i| {
+        const to = if (i + 1 < nl) starts[i + 1] else n;
+        var part: sdk.Text = .{};
+        appendCps(&part, &l.text, from, to);
+        const y = r.y + @as(f32, @floatFromInt(i)) * p.row_h + @round((p.row_h - f.cell_h) / 2);
+        _ = text_mod.draw(gfx, f, r.x + p.tip_pad, y, &part, theme.prompt_fg);
+    }
+    gfx.clip(null);
+    if (l.postButton) |*x| {
+        const pr = p.tipPostRect();
+        drawButton(gfx, f, x, iconIn(pr, p.icon_s), theme, ui, std.meta.eql(p.over, Part{ .post = k }));
+    }
+}
+
+// ------------------------------------------------------------ long rows
+
+fn cpCount(s: []const u8) usize {
+    var n: usize = 0;
+    for (s) |b| n += @intFromBool(b & 0xc0 != 0x80);
+    return n;
+}
+
+fn textCps(t: *const sdk.Text) usize {
+    var n: usize = 0;
+    for (t.slice()) |part| n += cpCount(part.string);
+    return n;
+}
+
+/// The byte where code point `k` of `s` starts (`s.len` past the end).
+fn cpByte(s: []const u8, k: usize) usize {
+    var n: usize = 0;
+    for (s, 0..) |b, i| if (b & 0xc0 != 0x80) {
+        if (n == k) return i;
+        n += 1;
+    };
+    return s.len;
+}
+
+/// Code points [from, to) of `t` added to `out`, attributes kept.
+fn appendCps(out: *sdk.Text, t: *const sdk.Text, from: usize, to: usize) void {
+    var at: usize = 0;
+    for (t.slice()) |part| {
+        const n = cpCount(part.string);
+        defer at += n;
+        const a = @max(from, at);
+        const b = @min(to, at + n);
+        if (a >= b) continue;
+        if (out.len == sdk.max_parts) return;
+        out.parts[out.len] = .{ .string = part.string[cpByte(part.string, a - at)..cpByte(part.string, b - at)], .attr = part.attr };
+        out.len += 1;
+    }
+}
+
+/// `t` as a row shows it: over `row_max` characters, its start, `…` and
+/// its end (a path's last folders).
+fn shortText(t: *const sdk.Text) sdk.Text {
+    const n = textCps(t);
+    if (n <= row_max) return t.*;
+    var out: sdk.Text = .{};
+    appendCps(&out, t, 0, row_head);
+    if (out.len < sdk.max_parts) {
+        out.parts[out.len] = .{ .string = "…", .attr = if (out.len > 0) out.parts[out.len - 1].attr else .{} };
+        out.len += 1;
+    }
+    appendCps(&out, t, n - (row_max - row_head - 1), n);
+    return out;
+}
+
+/// Where each line of `t` starts (code points), `cols` wide: a line ends
+/// after its last `/` when that is in its second half.
+fn wrapStarts(t: *const sdk.Text, cols: usize, out: []usize) usize {
+    const n = textCps(t);
+    var count: usize = 0;
+    var start: usize = 0;
+    while (count < out.len) {
+        out[count] = start;
+        count += 1;
+        if (n - start <= cols) break;
+        var end = start + cols;
+        if (lastSlash(t, start + cols / 2, end)) |sl| end = sl + 1;
+        start = end;
+    }
+    return count;
+}
+
+/// The last `/` at a code point in [lo, hi).
+fn lastSlash(t: *const sdk.Text, lo: usize, hi: usize) ?usize {
+    var at: usize = 0;
+    var found: ?usize = null;
+    for (t.slice()) |part| for (part.string) |b| {
+        if (b & 0xc0 == 0x80) continue;
+        if (at >= hi) return found;
+        if (b == '/' and at >= lo) found = at;
+        at += 1;
+    };
+    return found;
 }
 
 /// An icon's square in the middle of `r`.
@@ -826,6 +1008,9 @@ fn drawIcon(gfx: *Gfx, name: []const u8, d: Rect, theme: *const Theme, ui: f32) 
         }
     } else if (std.mem.eql(u8, name, "dot")) {
         gfx.disc(d.x + s / 2, d.y + s / 2, s * 0.25, theme.ok);
+    } else if (std.mem.eql(u8, name, "pin")) {
+        // Upright, in the focus blue (as the prompt's pin while pinned).
+        Prompt.pin(gfx, d, true, theme.focus, ui);
     }
 }
 
@@ -949,4 +1134,52 @@ test "ok closes after a second; a change of lines starts the selection over" {
     p.refresh(5000);
     try t.expectEqual(@as(usize, 0), p.sel);
     try t.expectEqual(@as(usize, 1), p.lines().len);
+}
+
+test "long rows: cut in the middle, wrapped whole after a slash" {
+    const t = std.testing;
+    const long = sdk.newText(.{ .{ "~/src/foodineat/flutter-ui/client/lib/", .{} }, .{ "screens_modules", .{ .bold = true } } });
+    const short = shortText(&long);
+    var buf: [128]u8 = undefined;
+    const s = short.plain(&buf);
+    try t.expectEqual(@as(usize, row_max), cpCount(s));
+    try t.expect(std.mem.startsWith(u8, s, "~/src/foodinea…"));
+    try t.expect(std.mem.endsWith(u8, s, "screens_modules"));
+    try t.expect(short.parts[short.len - 1].attr.bold);
+    const ok = sdk.newText("~/src/gtty");
+    try t.expectEqualStrings("~/src/gtty", shortText(&ok).plain(&buf));
+    // 20 a line: "~/src/foodineat/" (the slash in the second half) …
+    var starts: [8]usize = undefined;
+    const n = wrapStarts(&long, 20, &starts);
+    try t.expectEqual(@as(usize, 0), starts[0]);
+    try t.expectEqual(@as(usize, 16), starts[1]);
+    var line: sdk.Text = .{};
+    appendCps(&line, &long, starts[n - 1], textCps(&long));
+    try t.expect(std.mem.endsWith(u8, line.plain(&buf), "screens_modules"));
+}
+
+test "the tip: the mouse on a long row, the keyboard onto one, a click picks" {
+    const t = std.testing;
+    var u: ChipUi = .{ .gpa = t.allocator };
+    defer u.deinit();
+    const rows = [_]sdk.Line{
+        .{ .text = sdk.newText("short"), .onclick = "pick", .data = "S" },
+        .{ .text = sdk.newText("~/a/very/long/folder/name/that/goes/on/and/on/and/on"), .onclick = "pick", .data = "L" },
+    };
+    try u.setEpeek(.{ .lines = .{ .set = &rows } });
+    var p = Peek.open(t.allocator, 1, 0, &u, .{}, .epeek, true);
+    defer p.deinit();
+    p.list_r = .{ .x = 0, .y = 100, .w = 200, .h = 40 };
+    p.row_h = 20;
+    p.rows = 2;
+    _ = p.motion(10, 125, 1);
+    try t.expectEqual(@as(?usize, 1), p.tip_row);
+    _ = p.motion(10, 105, 2);
+    try t.expect(p.tip_row == null);
+    _ = p.key(c.SDLK_DOWN);
+    try t.expectEqual(@as(?usize, 1), p.tip_row);
+    p.tip_r = .{ .x = 0, .y = 120, .w = 800, .h = 40 };
+    p.box = .{ .x = 0, .y = 50, .w = 200, .h = 100 };
+    p.sel = 0;
+    try t.expectEqualStrings("L", p.click(600, 150).fire.data);
 }

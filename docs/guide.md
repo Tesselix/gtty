@@ -82,6 +82,13 @@ the history, and it is kept between runs.
   filter searches the whole history (the 7 newest matches show), so an
   older folder is found too. ↑/↓ to choose, **Enter** (or a click)
   `cd`s the shell there.
+- A folder too long for the list is shown cut in the middle (`…`); point
+  at it, or move onto it with ↑/↓, and the whole path shows over it
+  (wrapped when gtty's window is narrow). A click there `cd`s too.
+- Each row ends in **⋮**: **Pin** keeps the folder on the list for good,
+  above the others with a pin before it (up to 10 pins; they don't take
+  the places of the 7). **Remove from List** forgets the folder and all
+  its uses; run a command there again and it is back.
 
 **From the keyboard:** each chip shows a number. **⌘1** opens the folder
 chip's list, **⌘2** the branches, **⌘3** the focus folders, **⌘4** the

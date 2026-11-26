@@ -9,7 +9,9 @@
 #   printf '9\t%s\t%s\n' $(date +%s) $S/home/gamma > $S/focus
 #   cd $S && HOME=$S/home GTTY_FOCUS=$S/focus gtty --script $REPO/test/focus.gt
 # Shots go to $S; the list: gamma, alpha, beta (bottom, selected: Enter
-# cds there); $S/focus then lists alpha (2), beta (1), gamma (9).
+# cds there). Then the bottom row's ⋮ → Pin: beta moves to the top with a
+# pin (focus4); the new bottom row's ⋮ → Remove from List: alpha goes
+# (focus5). $S/focus then lists beta (1, pin) and gamma (9), no alpha.
 /s bash
 /wait 1500
 /type cd ~/alpha
@@ -37,4 +39,19 @@
 /key enter
 /wait 800
 /shot focus3-cd.bmp
+/click 210 620
+/wait 400
+/click 407 609
+/wait 300
+/key down
+/key enter
+/wait 400
+/shot focus4-pinned.bmp
+/click 407 609
+/wait 300
+/key down
+/key down
+/key enter
+/wait 400
+/shot focus5-removed.bmp
 /quit
